@@ -31,7 +31,7 @@ const uint8_t bio2bufdirpin[] =
         BUFDIR5,
         BUFDIR6,
         BUFDIR7};
-// Pin names for terminal and LCD display, in order
+// Pin names for terminal display, in order
 const char hw_pin_label_ordered[][5] = {
     "Vout",
     "IO0",

@@ -58,9 +58,6 @@ void system_init(void) {
     system_config.debug_uart_enable = false; // initializes a UART for general developer use
     system_config.debug_uart_number = 0;     // which UART to use (0 or 1)
 
-    system_config.lcd_screensaver_active = false;
-    system_config.lcd_timeout = 0;
-
     // NOTE: LED effect is an enum.
     system_config.led_effect = LED_EFFECT_DISABLED;
     system_config.led_color = 0xFF0000u;       // now stores actual RGB value directly (not an index)
@@ -84,7 +81,6 @@ void system_init(void) {
 
     system_config.hiz = 1;
     system_config.mode = 0;
-    system_config.display = 0;
     system_config.subprotocol_name = 0;
     for (int i = 0; i < HW_PINS; i++) {
         system_config.pin_labels[i] = 0;

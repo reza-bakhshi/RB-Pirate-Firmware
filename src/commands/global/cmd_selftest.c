@@ -13,7 +13,6 @@
 #include "pirate/psu.h"
 #include "pirate/bio.h"
 #include "pirate/amux.h"
-#include "display/scope.h"
 #include "pirate/intercore_helpers.h"
 #include "commands/global/bug.h"
 #include "usb_rx.h"
@@ -439,12 +438,6 @@ bool selftest_la_bpio(void) {
 void cmd_selftest(void) {
     uint32_t fails = 0;
 
-    if (scope_running) { // scope is using the analog subsystem
-        printf("Can't self test when the scope is using the analog subsystem - use the 'd 1' command to switch to the "
-               "default display\r\n");
-        return;
-    }
-
     // only allow selftest in HiZ mode
     if (system_config.mode != 0) {
         printf("Selftest only available in HiZ mode\r\n");
@@ -459,7 +452,7 @@ void cmd_selftest(void) {
     #endif
 
     printf("SELF TEST STARTING\r\nDISABLE IRQ: ");
-    icm_core0_send_message_synchronous(BP_ICM_DISABLE_LCD_UPDATES);
+    icm_core0_send_message_synchronous(BP_ICM_DISABLE_SYSTEM_TICK);
     busy_wait_ms(500);
     printf("OK\r\n");
 
@@ -556,7 +549,7 @@ void cmd_selftest(void) {
     system_config.error = false;
 
     // enable system interrupts
-    icm_core0_send_message_synchronous(BP_ICM_ENABLE_LCD_UPDATES);
+    icm_core0_send_message_synchronous(BP_ICM_ENABLE_SYSTEM_TICK);
 }
 
 static const char* const usage[] = {

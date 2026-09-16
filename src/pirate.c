@@ -10,7 +10,6 @@
 #include "pirate.h"
 #include "system_config.h"
 #include "command_struct.h"
-#include "ui/ui_lcd.h"
 #include "pirate/rgb.h"
 #if BP_HW_IOEXP_595
 #include "pirate/shift.h"
@@ -18,7 +17,6 @@
 #include "pirate/bio.h"
 #include "pirate/button.h"
 #include "pirate/storage.h"
-#include "pirate/lcd.h"
 #include "pirate/amux.h"
 #include "pirate/mcu.h"
 #include "ui/ui_init.h"
@@ -36,7 +34,6 @@
 #include "ui/ui_cmdln.h"
 #include "bytecode.h"
 #include "modes.h"
-#include "displays.h"
 #include "system_monitor.h"
 #include "ui/ui_statusbar.h"
 #include "ui/ui_toolbar.h"
@@ -51,15 +48,11 @@
 #include "commands/global/p_pullups.h"
 #include "pirate/psu.h"
 #include "commands/global/w_psu.h"
-// #include "display/scope.h"
 // #include "mode/logicanalyzer.h"
 #include "msc_disk.h"
 #include "pirate/intercore_helpers.h"
 #include "ui/ui_term_linenoise.h"
 // #include "display/robot16.h"
-#ifdef BP_SPLASH_ENABLED
-    #include BP_SPLASH_FILE
-#endif
 #if RPI_PLATFORM == RP2350
     #include "hardware/regs/addressmap.h"
     #include "hardware/regs/otp.h"
@@ -70,13 +63,6 @@ static mutex_t spi_mutex;
 //uint8_t reserve_for_future_mode_specific_allocations[10 * 1024] = { 0 };
 
 void core1_entry(void);
-/*
-int64_t ui_term_screensaver_enable(alarm_id_t id, void* user_data) {
-    system_config.lcd_screensaver_active = true;
-    lcd_screensaver_enable();
-    return 0;
-}
-*/
 void gpio_setup(uint8_t pin, bool direction, bool level) {
     gpio_set_dir(pin, direction);
     gpio_set_function(pin, GPIO_FUNC_SIO);
@@ -193,12 +179,6 @@ static void main_system_initialization(void) {
         );
     psucmd_init();
 
-    // LCD pin init
-    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
-        "Init: LCD\n"
-        );
-    lcd_init();
-
     // ADC pin init
     BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
         "Init: ADC\n"
@@ -217,7 +197,7 @@ static void main_system_initialization(void) {
         );
 #if (BP_HW_IOEXP_595)
     // configure the defaults for shift register attached hardware
-    shift_clear_set_wait(CURRENT_EN_OVERRIDE, (AMUX_S3 | AMUX_S1 | DISPLAY_RESET | CURRENT_EN));
+    shift_clear_set_wait(CURRENT_EN_OVERRIDE, (AMUX_S3 | AMUX_S1 | CURRENT_EN));
 #elif (BP_HW_IOEXP_NONE)
     // todo: current detect
     gpio_setup(CURRENT_EN_OVERRIDE, GPIO_OUT, 0);
@@ -225,7 +205,6 @@ static void main_system_initialization(void) {
     gpio_setup(AMUX_S1, GPIO_OUT, 1);
     gpio_setup(AMUX_S2, GPIO_OUT, 0);
     gpio_setup(AMUX_S3, GPIO_OUT, 1);
-    // gpio_setup(DISPLAY_RESET, GPIO_OUT, 1);
     gpio_setup(CURRENT_EN, GPIO_OUT, 1);
     gpio_setup(LA_BPIO0, GPIO_IN, 0);
     gpio_setup(LA_BPIO1, GPIO_IN, 0);
@@ -281,13 +260,6 @@ static void main_system_initialization(void) {
     }
 #endif
 
-    // busy_wait_ms(10);
-    // reset the LCD
-    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
-        "Init: LCD reset\n"
-        );
-    lcd_reset();
-
     // input button init
     BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
         "Init: button init\n"
@@ -306,7 +278,7 @@ static void main_system_initialization(void) {
         );
     ui_init();
 
-    // voltage and current monitor for toolbar and display
+    // voltage and current monitor for the terminal toolbar
     // highly optimized to only update changed characters
     BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
         "Init: monitor_init()\n"
@@ -403,24 +375,6 @@ static void main_system_initialization(void) {
         );
     multicore_launch_core1(core1_entry);
 
-    // LCD setup
-    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
-        "Init: configuring LCD\n"
-        );
-    lcd_configure();
-
-#ifdef BP_SPLASH_ENABLED
-    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
-        "Init: showing splash\n"
-        );
-    lcd_write_background(splash_data);
-    /*monitor(system_config.psu);
-    if (displays[system_config.display].display_lcd_update){
-        displays[system_config.display].display_lcd_update(UI_UPDATE_ALL);
-    }*/
-    lcd_backlight_enable(true);
-#endif
-
     // turn everything off
     BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
         "Init: make pins safe and PSU disable\n"
@@ -428,17 +382,7 @@ static void main_system_initialization(void) {
     bio_init();       // make all pins safe
     psucmd_disable(); // disable psu and reset pin label, clear any errors
 
-#ifdef BP_SPLASH_ENABLED
-    busy_wait_ms(1000);
-    // draw background after showing splash screen
-    lcd_backlight_enable(false);
-#endif
-
     monitor();
-    if (displays[system_config.display].display_lcd_update) {
-        displays[system_config.display].display_lcd_update(UI_UPDATE_ALL);
-    }
-    lcd_backlight_enable(true);
 
     // //////////////////////////////////////////////////////////////////////
     // Notify the second core to complete initialization now that
@@ -486,7 +430,6 @@ static void core0_infinite_loop(void) {
     //alarm_id_t screensaver;
     bool has_been_connected = false;
 
-    lcd_screensaver_alarm_reset(); //setup the screensaver timer (if configured)
 
     button_irq_enable(0, &button_irq_callback);
 
@@ -538,7 +481,6 @@ static void core0_infinite_loop(void) {
                     break; // still editing, return to main loop
                 }
                 // user hit enter, now used any saved config or prompt the user to select a display mode
-                lcd_screensaver_alarm_reset();
                 // config file option loaded, wait for any key
                 // for ASCII mode terminal_ansi_color is always false
                 // this has the side effect of always prompting if the saved mode is ASCII
@@ -584,8 +526,6 @@ static void core0_infinite_loop(void) {
                 bp_state = BP_SM_COMMAND_PROMPT;
                 break;
             case BP_SM_GET_INPUT:
-                // it seems like we need an array where we can add our function for periodic service?
-                displays[system_config.display].display_periodic();
                 modes[system_config.mode].protocol_periodic();
 
                 if (system_config.binmode_lock_terminal) {
@@ -594,11 +534,6 @@ static void core0_infinite_loop(void) {
                 
                 uint32_t ln_result = ui_term_linenoise_feed();
                 
-                // All keys deal with screensaver
-                if (ln_result) {  // Any non-zero = key activity
-                    lcd_screensaver_alarm_reset();
-                }
-
                 if (ln_result == 0xff) {  // Enter - line complete
                     bp_state = BP_SM_PROCESS_COMMAND;
                     button_irq_disable(0); 
@@ -655,14 +590,11 @@ static void core0_infinite_loop(void) {
                 break;
 
             case BP_SM_TOOLBAR_FOCUS: {
-                displays[system_config.display].display_periodic();
                 modes[system_config.mode].protocol_periodic();
 
                 /* Non-blocking peek: if no input, keep looping */
                 char peek;
                 if (!rx_fifo_try_get(&peek)) break;
-
-                lcd_screensaver_alarm_reset();
 
                 int key = vt100_key_read_rx_fifo(peek);
                 if (toolbar_focus_handle_key(key) == TB_FOCUS_EXIT) {
@@ -731,9 +663,8 @@ int main(void) {
     return 0;
 }
 
-// refresh interrupt flag, serviced in the loop outside interrupt
-bool lcd_update_request = false;
-bool lcd_update_force = false;
+// Periodic service flag, set by the timer and serviced outside interrupt context.
+bool system_tick_request = false;
 
 // begin of code execution for the second core (core1)
 static void core1_initialization(void) {
@@ -773,9 +704,9 @@ static void core1_initialization(void) {
     }
 
     BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
-        "Init: Core1: lcd_irq_enable()\n"
+        "Init: Core1: system_tick_enable()\n"
         );
-    lcd_irq_enable(BP_LCD_REFRESH_RATE_MS);
+    system_tick_enable(BP_SYSTEM_TICK_MS);
 
     // terminal debug uart enable
     if (system_config.terminal_uart_enable) {
@@ -848,14 +779,9 @@ static void core1_infinite_loop(void) {
             psucmd_irq_callback();
         }
 
-        if (lcd_update_request) {
+        if (system_tick_request) {
             monitor(); // TODO: fix monitor to return bool up_volts and up_current
-            uint32_t update_flags = 0;//core0_requested_update_flags;
-            //core0_requested_update_flags = 0;
-            if (lcd_update_force) {
-                lcd_update_force = false;
-                update_flags |= UI_UPDATE_FORCE | UI_UPDATE_ALL;
-            }
+            uint32_t update_flags = 0;
             if (system_config.pin_changed) {
                 update_flags |= UI_UPDATE_LABELS | UI_UPDATE_VOLTAGES; // pin labels + values (type may have changed)
             }
@@ -867,16 +793,6 @@ static void core1_infinite_loop(void) {
             }
             if (system_config.info_bar_changed) {
                 update_flags |= UI_UPDATE_INFOBAR; // info bar
-            }
-
-            if (!system_config.lcd_screensaver_active) {
-                assert(system_config.display < MAXDISPLAY);
-                //assert(system_config.mode <= MAXMODE);
-
-                // BUGBUG -- comments describing intent here would be helpful
-                if (displays[system_config.display].display_lcd_update) {
-                    displays[system_config.display].display_lcd_update(update_flags);
-                }
             }
 
             if (system_config.terminal_ansi_color &&
@@ -893,7 +809,7 @@ static void core1_infinite_loop(void) {
 
             freq_measure_period_irq(); // update frequency periodically
             monitor_reset();
-            lcd_update_request = false;
+            system_tick_request = false;
         }
 
         // service any requests with priority
@@ -903,18 +819,13 @@ static void core1_infinite_loop(void) {
                 case BP_ICM_UPDATE_TOOLBARS:
                     toolbar_core1_begin_update(UI_UPDATE_ALL);
                     break;
-                case BP_ICM_DISABLE_LCD_UPDATES:
-                    lcd_irq_disable();
-                    lcd_update_request = false;
+                case BP_ICM_DISABLE_SYSTEM_TICK:
+                    system_tick_disable();
+                    system_tick_request = false;
                     break;
-                case BP_ICM_ENABLE_LCD_UPDATES:
-                    lcd_irq_enable(BP_LCD_REFRESH_RATE_MS);
-                    lcd_update_request = true;
-                    break;
-                case BP_ICM_FORCE_LCD_UPDATE:
-                    lcd_irq_enable(BP_LCD_REFRESH_RATE_MS);
-                    lcd_update_force = true;
-                    lcd_update_request = true;
+                case BP_ICM_ENABLE_SYSTEM_TICK:
+                    system_tick_enable(BP_SYSTEM_TICK_MS);
+                    system_tick_request = true;
                     break;
                 case BP_ICM_ENABLE_RGB_UPDATES:
                     rgb_irq_enable(false);
@@ -943,24 +854,24 @@ void core1_entry(void) {
     assert(false); // infinite loop above should never exit
 }
 
-struct repeating_timer lcd_timer;
+struct repeating_timer system_tick_timer;
 
-bool lcd_timer_callback(struct repeating_timer* t) {
-    lcd_update_request = true;
+bool system_tick_callback(struct repeating_timer* t) {
+    system_tick_request = true;
     return true;
 }
 
-void lcd_irq_disable(void) {
-    cancel_repeating_timer(&lcd_timer);
+void system_tick_disable(void) {
+    cancel_repeating_timer(&system_tick_timer);
 }
 
-void lcd_irq_enable(int16_t repeat_interval) {
+void system_tick_enable(int16_t repeat_interval) {
     // Create a repeating timer that calls repeating_timer_callback.
     // If the delay is negative (see below) then the next call to the callback will be exactly 500ms after the
     // start of the call to the last callback
     // Negative delay so means we will call repeating_timer_callback, and call it again
     // 500ms later regardless of how long the callback took to execute
-    add_repeating_timer_ms(repeat_interval, lcd_timer_callback, NULL, &lcd_timer);
+    add_repeating_timer_ms(repeat_interval, system_tick_callback, NULL, &system_tick_timer);
 }
 
 // gives protected access to spi (core safe)

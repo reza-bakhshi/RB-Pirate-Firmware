@@ -8,7 +8,6 @@
 #include "ui/ui_term.h"
 #include "usb_tx.h"
 #include "ui/ui_flags.h"
-#include "display/scope.h"
 #include "tusb.h"
 #include "pirate/psu.h"
 #include "ui/ui_toolbar.h"
@@ -109,11 +108,6 @@ static uint32_t ui_statusbar_info(char* buf, size_t buffLen) {
         temp = snprintf(&buf[len],
                         SREM(len, buffLen),
                         "Pull-ups: ON | ");
-        len += temp;
-        cnt += temp;
-    }
-    if (scope_running) { // scope is using the analog subsystem
-        temp = snprintf(&buf[len], SREM(len, buffLen), "V update slower when scope running");
         len += temp;
         cnt += temp;
     }

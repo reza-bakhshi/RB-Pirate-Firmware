@@ -28,7 +28,6 @@
 #include "pirate/shift.h"
 #include "pirate/amux.h"
 #include "command_struct.h"
-#include "display/scope.h"
 #include "hardware/sync.h"
 #include "pico/lock_core.h"
 
@@ -76,13 +75,8 @@ void adc_busy_wait(bool enable) {
  * - Spinlock for multi-core protection
  * - Averaging reset flag
  * 
- * @note Does nothing if scope is running (scope owns ADC)
  */
 void amux_init(void) {
-    if (scope_running) { // scope is using the analog subsystem
-        return;
-    }
-
     adc_init();
     adc_gpio_init(AMUX_OUT);
     adc_gpio_init(CURRENT_SENSE);
@@ -99,15 +93,12 @@ void amux_init(void) {
  * input channel to the ADC.
  * 
  * @param channel Channel number (0-15, platform-specific defines)
- * @return true if successful, false if scope is running
+ * @return true if successful
  * 
  * @note Does not affect current sense input (separate ADC channel)
  * @note Channel definitions are platform-specific (see platform headers)
  */
 bool amux_select_input(uint16_t channel) {
-    if (scope_running) {
-        return false; // scope is using the analog subsystem
-    }
     // clear the amux control bits, set the amux channel bits
     #if BP_HW_IOEXP_595
         shift_clear_set((0b1111 << 1), (channel << 1) & 0b11110, true);
@@ -133,12 +124,9 @@ bool amux_select_input(uint16_t channel) {
  * Convenience function that maps BIO pin numbers to AMUX channels.
  * 
  * @param bio BIO pin number (0-7)
- * @return true if successful, false if scope is running
+ * @return true if successful
  */
 bool amux_select_bio(uint8_t bio) {
-    if (scope_running) {
-        return false; // scope is using the analog subsystem
-    }
     amux_select_input(bufio2amux(bio));
     return true;
 }
@@ -150,15 +138,12 @@ bool amux_select_bio(uint8_t bio) {
  * Uses spinlock for multi-core safety.
  * 
  * @param channel AMUX channel number
- * @return 12-bit ADC reading (0-4095), or 0 if scope is running
+ * @return 12-bit ADC reading (0-4095)
  * 
  * @note Briefly grounds the channel before measurement to clear charge
  * @note Includes 60μs settling time
  */
 uint32_t amux_read(uint8_t channel) {
-    if (scope_running) { // scope is using the analog subsystem
-        return 0;
-    }
     adc_busy_wait(true);
     adc_select_input(AMUX_OUT_ADC);
     amux_select_input(HW_ADC_MUX_GND); // to clear any charge from a floating pin
@@ -170,9 +155,6 @@ uint32_t amux_read(uint8_t channel) {
 }
 
 uint32_t amux_read_present_channel(void) {
-    if (scope_running) { // scope is using the analog subsystem
-        return 0;
-    }
     adc_busy_wait(true);
     uint32_t ret = adc_read();
     adc_busy_wait(false);
@@ -181,9 +163,6 @@ uint32_t amux_read_present_channel(void) {
 
 // read from AMUX using BIO pin number
 uint32_t amux_read_bio(uint8_t bio) {
-    if (scope_running) {
-        return 0; // scope is using the analog subsystem
-    }
     return amux_read(bufio2amux(bio));
 }
 
@@ -191,9 +170,6 @@ uint32_t amux_read_bio(uint8_t bio) {
 // but this is the best place for it I think
 // voltage is not /2 so we can use the full range of the ADC
 uint32_t amux_read_current(void) {
-    if (scope_running) {
-        return 0; // scope is using the analog subsystem
-    }
     adc_busy_wait(true);
     adc_select_input(CURRENT_SENSE_ADC);
     uint32_t ret = adc_read();
@@ -204,9 +180,6 @@ uint32_t amux_read_current(void) {
 // read all the AMUX channels and the current sense
 // place into the global arrays hw_adc_raw and hw_adc_voltage
 void amux_sweep(void) {
-    if (scope_running) { // scope is using the analog subsystem
-        return;
-    }
     adc_busy_wait(true);
     adc_select_input(AMUX_OUT_ADC);
     for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {

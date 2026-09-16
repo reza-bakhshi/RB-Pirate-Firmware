@@ -11,7 +11,6 @@
 #include "modes.h"
 #include "system_config.h"
 #include "ui/ui_cmdln.h"
-#include "displays.h"
 #include "lib/bp_args/bp_cmd.h"
 
 // Syntax operators: not real commands, always manually maintained
@@ -47,23 +46,20 @@ static const struct ui_help_options global_commands_more_help[] = {
 };
 
 static const char* const help_usage[] = {
-    "?|help [global|mode|display] [-n(opager)] [-h(elp)]",
+    "?|help [global|mode] [-n(opager)] [-h(elp)]",
     "Show help and all commands:%s help",
     "Show help and all commands:%s help global",
     "Show help and commands for current mode:%s help mode",
-    "Show help and commands for current display mode:%s help display",
 };
 
 enum help_actions {
     HELP_GLOBAL = 0,
-    HELP_MODE,
-    HELP_DISPLAY
+    HELP_MODE
 };
 
 static const bp_command_action_t help_action_defs[] = {
     { HELP_GLOBAL,  "global",  T_HELP_SYS_COMMAND },
     { HELP_MODE,    "mode",    T_HELP_SYS_MODE },
-    { HELP_DISPLAY, "display", T_HELP_SYS_DISPLAY },
 };
 
 static const bp_command_opt_t help_opts[] = {
@@ -80,14 +76,6 @@ const struct bp_command_def help_def = {
     .usage = help_usage,
     .usage_count = count_of(help_usage)
 };
-
-void help_display(void) {
-    if (displays[system_config.display].display_help) {
-        displays[system_config.display].display_help();
-    } else {
-        printf("No display help available for this display mode\r\n");
-    }
-}
 
 void help_mode(void) {
     // ui_help_options(&help_commands[0],count_of(help_commands));
@@ -134,9 +122,6 @@ void help_handler(struct command_result* res) {
     switch (help_action) {
         case HELP_MODE:
             help_mode();
-            break;
-        case HELP_DISPLAY:
-            help_display();
             break;
         case HELP_GLOBAL:
         default:

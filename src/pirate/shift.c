@@ -4,7 +4,6 @@
  * @details Controls 16-bit I/O expansion using two cascaded 74HC595 shift registers.
  *          Used on BP5 Rev8/Rev9 for hardware control that requires more GPIO pins
  *          than the RP2040 package provides:
- *          - Display backlight and reset
  *          - PSU current limit control and fuse reset
  *          - Analog multiplexer channel selection
  *          
@@ -18,7 +17,6 @@
 #include "hardware/spi.h"
 #include "pirate.h"
 #include "command_struct.h"
-#include "display/scope.h"
 
 static uint8_t shift_out[2] = { 0, 0 };
 
@@ -69,9 +67,6 @@ void shift_clear_set_wait(uint16_t clear_bits, uint16_t set_bits) {
 void shift_adc_select(uint8_t channel)
 {
     extern uint8_t shift_out[2];
-
-    if (scope_running) // scope is using the analog subsystem
-       return;
 
     shift_out[1]&=~((uint8_t)(0b1111<<1)); //clear the amux control bits      
     shift_out[1]|=(uint8_t)(channel<<1); //set the amux channel bits

@@ -15,7 +15,6 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "pirate.h"
-#include "pirate/shift.h"
 
 void lcd_init(void) {
     gpio_set_function(DISPLAY_CS, GPIO_FUNC_SIO);

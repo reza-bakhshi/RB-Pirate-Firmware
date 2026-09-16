@@ -40,13 +40,8 @@ endif()
 message(GIT_COMMIT_HASH="${GIT_COMMIT_HASH}")
 message(BP_FIRMWARE_HASH="${BP_FIRMWARE_HASH}")
 
-if(${BP_PICO_PLATFORM} MATCHES "rp2350")
-    set(PICO_PLATFORM "rp2350") #compile for 5XL and 6 
-    set(PICO_BOARD buspirate6)   
-else()
-    set(PICO_PLATFORM "rp2040") #compile for 5 rev8 and 5 rev10
-    set(PICO_BOARD buspirate5)
-endif()
+set(PICO_PLATFORM "rp2350")
+set(PICO_BOARD buspirate6)
 
 #set(PICO_SDK_PATH "~/pico-sdk")
 

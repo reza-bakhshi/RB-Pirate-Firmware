@@ -17,7 +17,6 @@
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "pirate.h"
-#include "pirate/shift.h"
 #include "pirate/pullup.h"
 
 #if BP_HW_PULLX

@@ -143,17 +143,7 @@ uint8_t storage_format(void) {
     fr = f_mkfs("", 0, work_buffer, FF_MAX_SS);
     mem_free(work_buffer);
     if (fr == FR_OK) {
-        #if BP_VER == 5
-            #define BP_STORAGE_LABEL "Bus_Pirate5"
-        #elif BP_VER == XL5
-            #define BP_STORAGE_LABEL "Bus_Pirate5"
-        #elif BP_VER == 6
-            #define BP_STORAGE_LABEL "Bus_Pirate6"
-        #elif BP_VER == 7
-            #define BP_STORAGE_LABEL "Bus_Pirate7"
-        #else
-            #error "Unknown Bus Pirate version"
-        #endif
+        #define BP_STORAGE_LABEL "RB_Pirate"
         fr = f_setlabel(BP_STORAGE_LABEL);
     }
     return fr;

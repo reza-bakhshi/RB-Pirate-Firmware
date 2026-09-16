@@ -50,13 +50,7 @@ static const char* const usage[] = {
     "show logic analyzer:%s logic show",
     "navigate logic analyzer:%s logic nav",
     "configure logic analyzer:%s logic -i -o 8 -f 1000000 -d 0",
-    #if (BP_VER == 5 || BP_VER == XL5)
-        "set base pin (0=bufdir, 8=bufio):%s -b: logic -b 8",
-    #elif (BP_VER == 6 || BP_VER == 7)
-        "set base pin (0=bufdir, 8=bufio, 20=follow along):%s -b: logic -b 20",
-    #else
-        #error "Unknown Bus Pirate version in logic.c"
-    #endif
+    "set base pin (0=bufdir, 8=bufio, 20=follow along):%s -b: logic -b 20",
 };
 
 const bp_command_def_t logic_def = {

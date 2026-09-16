@@ -16,7 +16,6 @@
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
 #include "pirate.h"
-#include "pirate/shift.h"
 #include "pirate/psu.h"
 #include "pirate/amux.h"
 #if BP_HW_PSU_DAC

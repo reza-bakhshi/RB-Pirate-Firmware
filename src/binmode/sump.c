@@ -139,18 +139,8 @@ static void sump_do_meta(void) {
     uint32_t sysclk;
 
     sysclk = clock_get_hz(clk_sys) / SAMPLING_DIVIDER;
-    snprintf(cpu, sizeof(cpu), "RP2040 %uMhz", sysclk / ONE_MHZ);
-    #if (BP_VER == 5)
-        ptr = sump_add_metas(ptr, SUMP_META_NAME, "Bus Pirate 5");
-    #elif (BP_VER == XL5)
-        ptr = sump_add_metas(ptr, SUMP_META_NAME, "Bus Pirate 5XL");
-    #elif (BP_VER == 6)
-        ptr = sump_add_metas(ptr, SUMP_META_NAME, "Bus Pirate 6");
-    #elif (BP_VER == 7)
-        ptr = sump_add_metas(ptr, SUMP_META_NAME, "Bus Pirate 7");
-    #else
-        #error "Unknown platform version in sump.c"
-    #endif
+    snprintf(cpu, sizeof(cpu), "RP2350 %uMhz", sysclk / ONE_MHZ);
+    ptr = sump_add_metas(ptr, SUMP_META_NAME, "RB-Pirate");
     ptr = sump_add_metas(ptr, SUMP_META_FPGA_VERSION, "PIO+DMA!");
     ptr = sump_add_metas(ptr, SUMP_META_CPU_VERSION, cpu);
     ptr = sump_add_meta4(ptr, SUMP_META_SAMPLE_RATE, sysclk);

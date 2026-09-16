@@ -25,7 +25,6 @@
 #include "pico/stdlib.h"
 #include "hardware/adc.h"
 #include "pirate.h"
-#include "pirate/shift.h"
 #include "pirate/amux.h"
 #include "command_struct.h"
 #include "display/scope.h"

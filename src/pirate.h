@@ -64,62 +64,16 @@
 #define BIG_BUFFER_SIZE (128 * 1024)
 
 
-#define RP2040 2040
 #define RP2350 2350
 
 
-// clang-format off
-// include platform
-#ifndef BP_REV
-    #error "No /platform/ file included in pirate.h"
-#else
-    #if BP_VER == 5
-        #if BP_REV == 8
-            #include "platform/bpi5-rev8.h"
-            #define BP_HW_STORAGE_TFCARD 1
-            #define BP_HW_PSU_PWM_IO_BUG 1
-        #elif BP_REV == 9
-            #include "platform/bpi5-rev9.h"
-            #define BP_HW_STORAGE_NAND 1
-        #elif BP_REV == 10
-            #include "platform/bpi5-rev10.h"
-            #define BP_HW_STORAGE_NAND 1
-        #else
-            #error "Unknown platform version in pirate.h"
-        #endif
-        #define BP_HW_IOEXP_595 1
-        #define RPI_PLATFORM RP2040
-        #define BP_HW_PSU_PWM 1
-    #elif BP_VER == XL5
-        #include "platform/bpi5xl-rev0.h"
-        #define RPI_PLATFORM RP2350
-        #define BP_HW_STORAGE_NAND 1
-        #define BP_HW_IOEXP_595 1
-        #define BP_HW_PSU_PWM 1
-    #elif BP_VER == 6
-        #include "platform/bpi6-rev2.h"  
-        #define RPI_PLATFORM RP2350
-        // #define BP_HW_STORAGE_NAND 1
-        #define BP_HW_STORAGE_TFCARD 1
-        //#define BP_HW_PULLX 1
-        #define BP_HW_IOEXP_NONE 1
-        #define BP_HW_FALA_BUFFER 1
-        #define BP_HW_PSU_PWM 1
-        #define BP_HW_RP2350_E9_BUG 1
-    #elif BP_VER == 7
-        #include "platform/bpi7-rev0.h"
-        #define RPI_PLATFORM RP2350
-        #define BP_HW_STORAGE_NAND 1
-        #define BP_HW_PULLX 1
-        #define BP_HW_IOEXP_I2C 1
-        #define BP_HW_FALA_BUFFER 1
-        #define BP_HW_PSU_DAC 1
-        #define BP_HW_RP2350_E9_BUG 1
-    #else
-        #error "Unknown platform version in pirate.h"
-    #endif
-#endif
-// clang-format on
+#include "platform/bpi6-rev2.h"
+#define RPI_PLATFORM RP2350
+#define BP_HW_STORAGE_TFCARD 1
+#define BP_HW_IOEXP_NONE 1
+#define BP_HW_FALA_BUFFER 1
+#define BP_HW_PSU_PWM 1
+#define BP_HW_RP2350_E9_BUG 1
 
 #include "translation/base.h"
 #include "printf-4.0.0/printf.h"
@@ -135,13 +89,8 @@ void spi_busy_wait_internal(bool enable, const char *file, int line);
 
 //#define BP_PIO_SHOW_ASSIGNMENT
 
-#if BP_VER == 6
 #define PIO_RGB_LED_PIO pio2
 #define PIO_RGB_LED_SM 0
-#else
-#define PIO_RGB_LED_PIO pio0
-#define PIO_RGB_LED_SM 1
-#endif
 
 #define PIO_LOGIC_ANALYZER_PIO pio0
 #define PIO_LOGIC_ANALYZER_SM 0

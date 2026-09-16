@@ -47,6 +47,7 @@
 // #define		BP_USE_LCDI2C
 #define BP_USE_DIO
 #define BP_USE_INFRARED
+#define BP_USE_SUBGHZ
 // #define 	BP_USE_DUMMY1
 // #define 	BP_USE_DUMMY2
 #define BP_USE_SCOPE

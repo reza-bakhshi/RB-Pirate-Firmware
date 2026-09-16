@@ -51,6 +51,9 @@ enum {
 #ifdef BP_USE_INFRARED
     INFRARED, /**< Infrared transmit/receive */
 #endif
+#ifdef BP_USE_SUBGHZ
+    SUBGHZ,   /**< CC1101 Sub-GHz radio */
+#endif
 #ifdef BP_USE_JTAG
     JTAG,     /**< JTAG protocol */
 #endif

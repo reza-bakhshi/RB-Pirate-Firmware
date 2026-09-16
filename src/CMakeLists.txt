@@ -411,6 +411,12 @@ set(buspirate_common
         commands/infrared/irtxrx.c
         commands/infrared/irtxrx.h
 
+        # CC1101 Sub-GHz radio
+        mode/subghz.c
+        mode/subghz.h
+        pirate/cc1101.c
+        pirate/cc1101.h
+
         # JTAG
         mode/jtag.h
         mode/jtag.c

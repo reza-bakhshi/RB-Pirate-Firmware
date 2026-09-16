@@ -50,6 +50,9 @@
 #ifdef BP_USE_INFRARED
 #include "mode/infrared.h"
 #endif
+#ifdef BP_USE_SUBGHZ
+#include "mode/subghz.h"
+#endif
 #ifdef BP_USE_DUMMY1
 #include "mode/dummy1.h"
 #endif
@@ -510,6 +513,36 @@ struct _mode modes[] = {
         .protocol_get_speed = infrared_get_speed,        // get the current speed setting of the protocol
         .protocol_preflight_sanity_check = infrared_preflight_sanity_check,      // sanity check before executing syntax
         .setup_def = &infrared_setup_def,        // command def for mode setup flags
+    },
+#endif
+#ifdef BP_USE_SUBGHZ
+    [SUBGHZ] = {
+        .protocol_name = "SUBGHZ",
+        .protocol_start = nullfunc1_temp,
+        .protocol_start_alt = nullfunc1_temp,
+        .protocol_stop = nullfunc1_temp,
+        .protocol_stop_alt = nullfunc1_temp,
+        .protocol_write = nullfunc1_temp,
+        .protocol_read = nullfunc1_temp,
+        .protocol_clkh = nullfunc1_temp,
+        .protocol_clkl = nullfunc1_temp,
+        .protocol_dath = nullfunc1_temp,
+        .protocol_datl = nullfunc1_temp,
+        .protocol_dats = nullfunc1_temp,
+        .protocol_tick_clock = nullfunc1_temp,
+        .protocol_bitr = nullfunc1_temp,
+        .protocol_periodic = noperiodic,
+        .protocol_macro = nullfunc4,
+        .protocol_setup = subghz_setup,
+        .protocol_setup_exc = subghz_setup_exc,
+        .protocol_cleanup = subghz_cleanup,
+        .protocol_settings = subghz_settings,
+        .protocol_help = subghz_help,
+        .mode_commands = subghz_commands,
+        .mode_commands_count = &subghz_commands_count,
+        .protocol_get_speed = nullfunc7_no_error,
+        .protocol_preflight_sanity_check = subghz_preflight_sanity_check,
+        .setup_def = &subghz_setup_def,
     },
 #endif
 #ifdef BP_USE_JTAG

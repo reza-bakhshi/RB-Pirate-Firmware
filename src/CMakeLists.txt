@@ -705,7 +705,9 @@ if(${PICO_PLATFORM} MATCHES "rp2350")
 
         add_executable(bus_pirate6
                 ${buspirate_common}
-                ${buspirate_nandflash}
+                #${buspirate_nandflash}
+                fatfs/tf_card.c
+                fatfs/tf_card.h
                 ${buspirate_rtt}
                 ${rp2350_common}
                 platform/bpi6-rev2.h

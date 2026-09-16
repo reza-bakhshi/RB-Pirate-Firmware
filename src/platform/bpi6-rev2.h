@@ -137,13 +137,13 @@ extern const uint8_t bio2bufdirpin[8];
 #define BP_SPI_CDO 35 //19
 
 // NAND flash is on the BP_SPI_PORT, define Chip Select
-#define FLASH_STORAGE_CS 31 //26 
+#define FLASH_STORAGE_CS 30 //26 
 
 // LCD is on the BP_SPI_PORT, define CS and DP pins
 #define DISPLAY_CS 29 //25
 #define DISPLAY_DP 28 //24
 #define DISPLAY_BACKLIGHT  33
-#define DISPLAY_RESET      30
+#define DISPLAY_RESET      31
 
 //pull-up resistor control
 #define PULLUP_EN           42
@@ -157,9 +157,9 @@ extern const uint8_t bio2bufdirpin[8];
 #define PSU_PWM_CURRENT_ADJ 45 //10B
 #define PSU_PWM_VREG_ADJ 44 //10A
 #define CURRENT_EN          18
-#define CURRENT_RESET       17
-#define CURRENT_EN_OVERRIDE 16
-#define CURRENT_FUSE_DETECT 19 
+#define CURRENT_RESET       16
+#define CURRENT_EN_OVERRIDE 19
+#define CURRENT_FUSE_DETECT 17 
 
 //Look behind logic analyzer buffer
 #define LA_BPIO0 20
@@ -193,18 +193,19 @@ extern const uint8_t bio2bufdirpin[8];
 // ADC connections as they appear on the analog mux pins
 // will be disambiguated in the hw_pin_voltages_ordered'
 enum adc_mux{
-    HW_ADC_MUX_BPIO7, //0
-    HW_ADC_MUX_BPIO6, //1
-    HW_ADC_MUX_BPIO5, //2
-    HW_ADC_MUX_BPIO4, //3
-    HW_ADC_MUX_BPIO3, //4
-    HW_ADC_MUX_BPIO2, //5
-    HW_ADC_MUX_BPIO1, //6
     HW_ADC_MUX_BPIO0, //7
+    HW_ADC_MUX_BPIO1, //6
+    HW_ADC_MUX_BPIO2, //5
+    HW_ADC_MUX_BPIO3, //4
+    HW_ADC_MUX_BPIO4, //3
+    HW_ADC_MUX_BPIO5, //2
+    HW_ADC_MUX_BPIO6, //1
+    HW_ADC_MUX_BPIO7, //0
     HW_ADC_MUX_VUSB, //8
     HW_ADC_MUX_CURRENT_DETECT,    //9
     HW_ADC_MUX_VREG_OUT, //10
     HW_ADC_MUX_VREF_VOUT, //11
+    HW_ADC_MUX_CARD_DETECT,
     HW_ADC_MUX_COUNT
 };
 

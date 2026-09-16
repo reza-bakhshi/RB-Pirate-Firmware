@@ -99,7 +99,8 @@
     #elif BP_VER == 6
         #include "platform/bpi6-rev2.h"  
         #define RPI_PLATFORM RP2350
-        #define BP_HW_STORAGE_NAND 1
+        // #define BP_HW_STORAGE_NAND 1
+        #define BP_HW_STORAGE_TFCARD 1
         //#define BP_HW_PULLX 1
         #define BP_HW_IOEXP_NONE 1
         #define BP_HW_FALA_BUFFER 1

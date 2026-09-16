@@ -2,9 +2,6 @@
 #ifndef BP_CONFIG
 #define BP_CONFIG
 
-// enable splash screen at startup, increases firmware size and load time
-#define BP_SPLASH_ENABLED
-
 // uncomment to disable unique com ports for manufacturing testing
 #define BP_MANUFACTURING_TEST_MODE
 
@@ -20,6 +17,7 @@
 #define BP_SPI_START_SPEED 1000 * 1000
 #define BP_SPI_HIGH_SPEED 1000 * 1000 * 16
 #define BP_SPI_SHIFT_SPEED 1000 * 1000 * 16
+#define BP_SYSTEM_TICK_MS -500
 // #define XSTR(x) STR(x)
 // #define STR(x) #x
 // #pragma message "BP_FIRMWARE_HASH value:" XSTR(BP_FIRMWARE_HASH)
@@ -43,23 +41,16 @@
 #define BP_USE_HW2WIRE
 #define BP_USE_HW3WIRE
 #define BP_USE_HWLED
-// #define		BP_USE_LCDSPI
-// #define		BP_USE_LCDI2C
 #define BP_USE_DIO
 #define BP_USE_INFRARED
 // #define 	BP_USE_DUMMY1
 // #define 	BP_USE_DUMMY2
-#define BP_USE_SCOPE
 // #define     BP_USE_BINLOOPBACK
 #define     BP_USE_JTAG
 //#define BP_USE_I2S
 // #define     BP_USE_USBPD
  #define     BP_USE_PS2
  #define     BP_USE_USB
-
-// enable display support
-// #define		DISPLAY_USE_HD44780	// is always enabled
-// #define		DISPLAY_USE_ST7735
 
 #define BIG_BUFFER_SIZE (128 * 1024)
 
@@ -81,8 +72,8 @@
 #include <stdbool.h>
 #include "debug_rtt.h"
 
-void lcd_irq_enable(int16_t repeat_interval);
-void lcd_irq_disable(void);
+void system_tick_enable(int16_t repeat_interval);
+void system_tick_disable(void);
 
 #define spi_busy_wait(ENABLE) spi_busy_wait_internal(ENABLE, __FILE__, __LINE__)
 void spi_busy_wait_internal(bool enable, const char *file, int line);

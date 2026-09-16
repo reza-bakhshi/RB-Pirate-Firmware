@@ -210,7 +210,7 @@ bool pin_watcher_is_active(void) {
 /* ── Step 6: On-Demand Update ────────────────────────────────────────────────
  *
  * Toolbars with Core1 rendering get periodic updates automatically from the
- * LCD tick cycle (~100ms).  But sometimes you want to force an immediate
+ * periodic system tick. But sometimes you want to force an immediate
  * refresh from Core0 — for example, after a command changes pin directions.
  *
  * toolbar_update_blocking() sends an intercore message to Core1, which calls
@@ -356,4 +356,3 @@ static uint32_t pin_watcher_update_core1_cb(toolbar_t* tb, char* buf, size_t buf
 
     return len;
 }
-

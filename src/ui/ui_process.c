@@ -9,7 +9,6 @@
 #include "commands.h"
 #include "bytecode.h"
 #include "modes.h"
-#include "displays.h"
 #include "mode/hiz.h"
 #include "ui/ui_prompt.h"
 #include "ui/ui_parse.h"
@@ -36,7 +35,7 @@ SYNTAX_STATUS ui_process_syntax(void) {
         printf("Syntax compile error\r\n");
         return result;
     }
-    icm_core0_send_message_synchronous(BP_ICM_DISABLE_LCD_UPDATES);
+    icm_core0_send_message_synchronous(BP_ICM_DISABLE_SYSTEM_TICK);
 
     // follow along logic analyzer hook
     fala_start_hook();
@@ -50,7 +49,7 @@ SYNTAX_STATUS ui_process_syntax(void) {
     // follow along logic analyzer hook
     fala_stop_hook();
 
-    icm_core0_send_message_synchronous(BP_ICM_ENABLE_LCD_UPDATES);
+    icm_core0_send_message_synchronous(BP_ICM_ENABLE_SYSTEM_TICK);
 
     if (result != SSTATUS_OK) {
         printf("Syntax execution error\r\n");
@@ -121,8 +120,7 @@ bool ui_process_commands(void) {
         enum COMMAND_TYPE {
             NONE = 0,
             GLOBAL,
-            MODE,
-            DISPLAY
+            MODE
         };
 
         // first search global commands
@@ -189,12 +187,6 @@ bool ui_process_commands(void) {
 
         // if nothing so far, hand off to mode parser
         if (!command_type) {
-            if (displays[system_config.display].display_command) {
-                if (displays[system_config.display].display_command(&result)) {
-                    goto cmd_ok;
-                }
-            }
-
             //nothing in this branch actually uses this
             if (modes[system_config.mode].protocol_command) {
                 if (modes[system_config.mode].protocol_command(&result)) {

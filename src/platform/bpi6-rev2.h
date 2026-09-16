@@ -2,8 +2,6 @@
 
 #include <stdint.h>
 
-#define BP_SPLASH_FILE "display/robot6x16.h"
-
 #define BP_HARDWARE_VERSION "Bus Pirate 6"
 #define BP_HARDWARE_VERSION_MAJOR 6
 #define BP_HARDWARE_VERSION_REVISION 2
@@ -47,24 +45,6 @@
 #define BP_COLOR_GREY_TEXT "94;94;94"
 #define BP_COLOR_256_GREY_TEXT "59"
 
-// LCD size
-#define BP_LCD_WIDTH 240
-#define BP_LCD_HEIGHT 320
-
-// LCD color pallet 5-6-5 RGB
-#define BP_LCD_COLOR_RED    0b1111100000000000
-#define BP_LCD_COLOR_ORANGE 0b1111100000000000
-#define BP_LCD_COLOR_YELLOW 0b1111100000000000
-#define BP_LCD_COLOR_GREEN  0b0000011111100000
-#define BP_LCD_COLOR_BLUE   0b0000000000011111
-#define BP_LCD_COLOR_PURPLE 0b1111100000011111
-#define BP_LCD_COLOR_BROWN  0b1111100000011111
-#define BP_LCD_COLOR_GREY   0b1111111111111111
-#define BP_LCD_COLOR_WHITE  0b1111111111111111
-#define BP_LCD_COLOR_BLACK  0b0000000000000000
-
-#define BP_LCD_REFRESH_RATE_MS -500 //refresh every 500ms, "-"" means reset time at beginning of interrupt
-
 enum bp_pin_func
 {
     BP_PIN_IO,
@@ -77,7 +57,7 @@ enum bp_pin_func
     BP_PIN_DEBUG
 };
 
-// Pin names for terminal and LCD display, in order
+// Pin names for terminal display, in order
 extern const char hw_pin_label_ordered[10][5];
 
 // name text and background color for the terminal
@@ -139,11 +119,6 @@ extern const uint8_t bio2bufdirpin[8];
 // NAND flash is on the BP_SPI_PORT, define Chip Select
 #define FLASH_STORAGE_CS 30 //26 
 
-// LCD is on the BP_SPI_PORT, define CS and DP pins
-#define DISPLAY_CS 29 //25
-#define DISPLAY_DP 28 //24
-#define DISPLAY_BACKLIGHT  33
-#define DISPLAY_RESET      31
 
 //pull-up resistor control
 #define PULLUP_EN           42
@@ -224,7 +199,7 @@ extern uint32_t hw_adc_voltage[];
 extern uint32_t hw_adc_avgsum_voltage[];
 
 // this array references the pin voltages in the order that
-// they appear in terminal and LCD for easy loop writeout
+// they appear in the terminal for easy loop writeout
 static const uint32_t* hw_pin_voltage_ordered[]={
     &hw_adc_voltage[HW_ADC_MUX_VREF_VOUT],
     &hw_adc_voltage[HW_ADC_MUX_BPIO0],

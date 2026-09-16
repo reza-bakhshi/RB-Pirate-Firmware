@@ -63,12 +63,6 @@ enum {
 #ifdef BP_USE_I2S
     I2S,      /**< I2S audio */
 #endif
-#ifdef BP_USE_LCDI2C
-    LCDI2C,   /**< LCD I2C (future) */
-#endif
-#ifdef BP_USE_LCDSPI
-    LCDSPI,   /**< LCD SPI */
-#endif
 #ifdef BP_USE_USBPD
     USBPD,    /**< USB Power Delivery */
 #endif
@@ -117,7 +111,6 @@ typedef struct _mode {
     uint32_t (*protocol_get_speed)(void);                        // get the current speed setting of the protocol
     char protocol_name[10];                                      // friendly name (promptname)
     uint32_t (*protocol_command)(struct command_result* result); // per mode command parser - ignored if 0
-    //void (*protocol_lcd_update)(uint32_t flags);                 // replacement for ui_lcd_update if non-0
     bool (*protocol_preflight_sanity_check)(void); // sanity check before executing syntax
     const struct bp_command_def *setup_def;       // command def for mode setup flags (NULL = none)
 } _mode;

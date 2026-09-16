@@ -208,7 +208,7 @@ void toolbar_update_blocking(void);
 
 /**
  * @brief Begin a Core1 toolbar update cycle.
- * @details Called from the Core1 main loop when lcd_update_request fires.
+ * @details Called from the Core1 main loop when the periodic system tick fires.
  *          Starts the cooperative state machine that renders each toolbar
  *          with a `.update_core1` callback, one per service call.
  * @param update_flags  UI_UPDATE_* bitmask from the monitor subsystem.

@@ -166,7 +166,7 @@ typedef struct _uart_glitch_config {
 
 static struct _uart_glitch_config uart_glitch_config;
 
-// LCD display pin text
+// Terminal pin text
 static const char pin_labels[][5] = { "TRG", "RDY" };
 
 // timer stuffs

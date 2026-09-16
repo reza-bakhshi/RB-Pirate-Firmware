@@ -4,7 +4,6 @@
 #include "system_config.h"
 #include "pirate/amux.h"
 #include "command_struct.h"
-#include "display/scope.h"
 #include "pirate/psu.h"
 
 static char voltages_value[HW_PINS - 1][4];
@@ -117,10 +116,6 @@ bool monitor(void) {
     bool current_sense = psu_status.enabled;
     
     // TODO hw_adc helper functions - do conversion on request, and cache it????
-    if (scope_running) { // scope is using the analog subsystem
-        return 0;
-    }
-
     // The sweep walks the analog mux across every IO pin. On boards where the
     // mux is driven through the 595 shift register each channel change is slow,
     // so an active bus can be loaded for milliseconds at a time.

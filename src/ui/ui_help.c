@@ -6,7 +6,6 @@
 #include "ui/ui_term.h"
 #include "command_struct.h" //remove?
 #include "ui/ui_help.h"
-#include "display/scope.h"
 #include "system_config.h"
 #include "bytecode.h"
 #include "modes.h"
@@ -190,10 +189,6 @@ void ui_help_mode_commands(const struct _mode_command_struct* commands, uint32_t
 
 // true if there is a voltage on out/vref pin
 bool ui_help_check_vout_vref(void) {
-    if (scope_running) { // scope is using the analog subsystem
-        return true;     // can't check, just skip
-    }
-
     amux_sweep();
     if (hw_adc_voltage[HW_ADC_MUX_VREF_VOUT] <
         790) { // 0.8V minimum output allowed to set on internal PSU when reading i could be 0.79

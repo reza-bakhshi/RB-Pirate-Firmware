@@ -50,12 +50,6 @@
 #ifdef BP_USE_INFRARED
 #include "mode/infrared.h"
 #endif
-#ifdef BP_USE_LCDSPI
-#include "LCDSPI.h"
-#endif
-#ifdef BP_USE_LCDI2C
-#include "LCDI2C.h"
-#endif
 #ifdef BP_USE_DUMMY1
 #include "mode/dummy1.h"
 #endif
@@ -636,62 +630,6 @@ struct _mode modes[] = {
         .mode_commands_count = &i2s_commands_count, // mode specific commands count
         .protocol_get_speed = nullfunc7_no_error,      // get the current speed setting of the protocol
         .setup_def = &i2s_setup_def,        // command def for mode setup flags
-    },
-    [LCDI2C] = {
-        .protocol_name = "LCDI2C",                       // friendly name (promptname)
-        .protocol_start = nullfunc1,                     // start
-        .protocol_start_alt = nullfunc1,                 // start with read
-        .protocol_stop = nullfunc1,                      // stop
-        .protocol_stop_alt = nullfunc1,                  // stop with read
-        .protocol_write = LCDI2C_send,                   // send(/read) max 32 bit
-        .protocol_read = LCDI2C_read,                    // read max 32 bit
-        .protocol_clkh = nullfunc1_temp,                 // set clk high
-        .protocol_clkl = nullfunc1_temp,                 // set clk low
-        .protocol_dath = nullfunc1_temp,                 // set dat hi
-        .protocol_datl = nullfunc1_temp,                 // set dat lo
-        .protocol_dats = nullfunc1_temp,                 // toggle dat (remove?)
-        .protocol_tick_clock = nullfunc1_temp,           // tick clk
-        .protocol_bitr = nullfunc1_temp,                 // read dat
-        .protocol_periodic = noperiodic,                 // service to regular poll whether a byte ahs arrived
-        .protocol_macro = LCDI2C_macro,                  // macro
-        .protocol_setup = LCDI2C_setup,                  // setup UI
-        .protocol_setup_exc = LCDI2C_setup_exc,          // real setup
-        .protocol_cleanup = LCDI2C_cleanup,              // cleanup for HiZ
-        //.protocol_pins=LCDI2C_pins,				// display pin config
-        .protocol_settings = LCDI2C_settings,     // display settings
-        .protocol_help = nohelp,                  // display small help about the protocol
-        .mode_commands = NULL,                    // mode specific commands
-        .mode_commands_count = 0,                 // mode specific commands count
-        .protocol_get_speed = nullfunc7_no_error, // get the current speed setting of the protocol
-    },
-#endif
-#ifdef BP_USE_LCDSPI
-    [LCDSPI] = {
-        .protocol_name = "LCDSPI",                       // friendly name (promptname)
-        .protocol_start = nullfunc1,                     // start
-        .protocol_start_alt = nullfunc1,                 // start with read
-        .protocol_stop = nullfunc1,                      // stop
-        .protocol_stop_alt = nullfunc1,                  // stop with read
-        .protocol_write = LCDSPI_send,                   // send(/read) max 32 bit
-        .protocol_read = LCDSPI_read,                    // read max 32 bit
-        .protocol_clkh = nullfunc1_temp,                 // set clk high
-        .protocol_clkl = nullfunc1_temp,                 // set clk low
-        .protocol_dath = nullfunc1_temp,                 // set dat hi
-        .protocol_datl = nullfunc1_temp,                 // set dat lo
-        .protocol_dats = nullfunc1_temp,                 // toggle dat (remove?)
-        .protocol_tick_clock = nullfunc1_temp,           // tick clk
-        .protocol_bitr = nullfunc1_temp,                 // read dat
-        .protocol_periodic = noperiodic,                 // service to regular poll whether a byte ahs arrived
-        .protocol_macro = LCDSPI_macro,                  // macro
-        .protocol_setup = LCDSPI_setup,                  // setup UI
-        .protocol_setup_exc = LCDSPI_setup_exc,          // real setup
-        .protocol_cleanup = LCDSPI_cleanup,              // cleanup for HiZ
-        //.protocol_pins=LCDSPI_pins,				// display pin config
-        .protocol_settings = LCDSPI_settings,     // display settings
-        .protocol_help = nohelp,                  // display small help about the protocol
-        .mode_commands = NULL,                    // mode specific commands
-        .mode_commands_count = NULL,              // mode specific commands count
-        .protocol_get_speed = nullfunc7_no_error, // get the current speed setting of the protocol
     },
 #endif
 #ifdef BP_USE_USBPD

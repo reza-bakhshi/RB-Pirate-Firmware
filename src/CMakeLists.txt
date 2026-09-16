@@ -132,8 +132,6 @@ set(buspirate_common
         pirate/button.c
         pirate/mem.c
         pirate/mem.h
-        pirate/lcd.h
-        pirate/lcd.c 
         pirate/amux.h
         pirate/amux.c
         pirate/rgb.h
@@ -217,8 +215,6 @@ set(buspirate_common
         commands/global/logic.c
         commands/global/bug.c
         commands/global/bug.h
-        commands/global/image.c
-        commands/global/image.h
         commands/global/dump.c
         commands/global/dump.h
         commands/global/ovrclk.c 
@@ -454,8 +450,6 @@ set(buspirate_common
         ui/ui_prompt.c
         ui/ui_mode.c
         ui/ui_mode.h
-        ui/ui_display.c
-        ui/ui_display.h
         ui/ui_info.h
         ui/ui_info.c
         ui/ui_format.c
@@ -594,25 +588,6 @@ set(buspirate_common
         commands/global/cmd_toolbar.c
         commands/global/cmd_toolbar.h
 
-        # displays
-        displays.c
-        displays.h
-        display/default.c
-        display/default.h
-        display/disabled.c
-        display/disabled.h
-        ui/ui_lcd.c
-        ui/ui_lcd.h
-        display/scope.h
-        display/scope.c
-        font/font.h
-        font/hunter-14pt-19h15w.h
-        font/hunter-12pt-16h13w.h
-        font/hunter-20pt-21h21w.h
-        font/hunter-23pt-24h24w.h
-        display/background.h
-        display/background_image_v4.h
-        
         # USB - SPSC queues for inter-core communication
         spsc_queue.h
         usb_tx.c

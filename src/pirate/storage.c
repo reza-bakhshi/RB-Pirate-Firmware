@@ -395,8 +395,6 @@ const mode_config_t system_config_json[] = {
     {"$.terminal_ansi_color",         &system_config.terminal_ansi_color,              MODE_CONFIG_FORMAT_DECIMAL,   },
     {"$.terminal_ansi_statusbar",     &system_config.terminal_ansi_statusbar,          MODE_CONFIG_FORMAT_DECIMAL,   },
     {"$.display_format",              &system_config.display_format,                   MODE_CONFIG_FORMAT_DECIMAL,   },
-    {"$.lcd_screensaver_active",      &system_config.lcd_screensaver_active,           MODE_CONFIG_FORMAT_DECIMAL,   },
-    {"$.lcd_timeout",                 &system_config.lcd_timeout,                      MODE_CONFIG_FORMAT_DECIMAL,   },
     {"$.led_effect",                  &system_config.led_effect_as_uint32,             MODE_CONFIG_FORMAT_DECIMAL,   },
     {"$.led_color",                   &system_config.led_color,                        MODE_CONFIG_FORMAT_HEXSTRING, },
     {"$.led_brightness_divisor",      &system_config.led_brightness_divisor,           MODE_CONFIG_FORMAT_DECIMAL,   },

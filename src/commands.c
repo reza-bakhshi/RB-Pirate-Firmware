@@ -11,7 +11,6 @@
 #include "ui/ui_help.h"
 #include "ui/ui_config.h"
 #include "ui/ui_mode.h"
-#include "ui/ui_display.h"
 #include "commands/global/pwm.h"
 #include "commands/global/freq.h"
 #include "commands/global/a_auxio.h"
@@ -41,7 +40,6 @@
 #include "commands/global/cmd_toolbar.h"
 #include "commands/global/cmd_binmode.h"
 #include "commands/global/bug.h"
-#include "commands/global/image.h"
 #include "commands/global/dump.h"
 #include "commands/global/hex.h"
 #include "commands/global/jep106_lookup.h"
@@ -86,9 +84,8 @@ const struct _global_command_struct commands[] = {
 { .command="g",         .allow_hiz=false, .func=&pwm_configure_disable,              .def=&pwm_disable_def, .category=CMD_CAT_IO },
 { .command="v",         .allow_hiz=true,  .func=&adc_measure_single,                 .def=&adc_single_def, .category=CMD_CAT_IO },
 { .command="V",         .allow_hiz=true,  .func=&adc_measure_cont,                   .def=&adc_cont_def, .category=CMD_CAT_IO },
-// Configure: terminal, display, mode config
+// Configure: terminal and mode config
 { .command="c",         .allow_hiz=true,  .func=&ui_config_main_menu,                .def=&ui_config_def, .category=CMD_CAT_CONFIGURE },
-{ .command="d",         .allow_hiz=true,  .func=&ui_display_enable_args,             .def=&display_select_def, .category=CMD_CAT_CONFIGURE },
 { .command="o",         .allow_hiz=true,  .func=&ui_mode_int_display_format,         .def=&display_format_def, .category=CMD_CAT_CONFIGURE },
 { .command="l",         .allow_hiz=true,  .func=&bitorder_msb_handler,               .def=&bitorder_msb_def, .category=CMD_CAT_CONFIGURE },
 { .command="L",         .allow_hiz=true,  .func=&bitorder_lsb_handler,               .def=&bitorder_lsb_def, .category=CMD_CAT_CONFIGURE },
@@ -109,7 +106,6 @@ const struct _global_command_struct commands[] = {
 { .command="hex",       .allow_hiz=true,  .func=&hex_handler,   .def=&hex_def,     .category=CMD_CAT_FILES },
 { .command="format",    .allow_hiz=true,  .func=&disk_format_handler,.def=&disk_format_def,.category=CMD_CAT_FILES },
 { .command="label",     .allow_hiz=true,  .func=&disk_label_handler,.def=&disk_label_def,.category=CMD_CAT_FILES },
-{ .command="image",     .allow_hiz=true,  .func=&image_handler,     .def=&image_def,     .category=CMD_CAT_FILES },
 { .command="dump",      .allow_hiz=false, .func=&dump_handler,      .def=&dump_def,      .category=CMD_CAT_FILES },
 #if RPI_PLATFORM == RP2350
 { .command="otpdump",   .allow_hiz=true,  .func=&otpdump_handler,   .def=&otpdump_def,   .category=CMD_CAT_FILES },

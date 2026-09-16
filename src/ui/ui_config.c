@@ -134,19 +134,6 @@ uint32_t ui_config_action_led_brightness(uint32_t a, uint32_t b) {
 }
 
 // config menu helper functions
-static const struct prompt_item menu_items_screensaver[] = {
-    { T_CONFIG_DISABLE },
-    { T_CONFIG_SCREENSAVER_5 },
-    { T_CONFIG_SCREENSAVER_10 },
-    { T_CONFIG_SCREENSAVER_15 },
-};
-
-uint32_t ui_config_action_screensaver(uint32_t a, uint32_t b) {
-    if (b < count_of(menu_items_screensaver)) {
-        system_config.lcd_timeout = b;
-    }
-}
-
 static const struct prompt_item menu_items_ansi_color[] = {
     // clang-format off
     { T_CONFIG_DISABLE },
@@ -219,7 +206,6 @@ static const struct ui_prompt sub_prompts[] = {
     {T_CONFIG_LANGUAGE,          menu_items_language,       count_of(menu_items_language),       0,0,0,0, &ui_config_action_language,       &cfg},
     {T_CONFIG_ANSI_COLOR_MODE,   menu_items_ansi_color,     count_of(menu_items_ansi_color),     0,0,0,0, &ui_config_action_ansi_color,     &cfg},
     {T_CONFIG_ANSI_TOOLBAR_MODE, menu_items_disable_enable, count_of(menu_items_disable_enable), 0,0,0,0, &ui_config_action_ansi_toolbar,   &cfg},
-    {T_CONFIG_SCREENSAVER,       menu_items_screensaver,    count_of(menu_items_screensaver),    0,0,0,0, &ui_config_action_screensaver,    &cfg},
     {T_CONFIG_LEDS_EFFECT,       menu_items_led_effect,     count_of(menu_items_led_effect),     0,0,0,0, &ui_config_action_led_effect,     &cfg},
     {T_CONFIG_LEDS_COLOR,        menu_items_led_color,      count_of(menu_items_led_color),      0,0,0,0, &ui_config_action_led_color,      &cfg},
     {T_CONFIG_LEDS_BRIGHTNESS,   menu_items_led_brightness, count_of(menu_items_led_brightness), 0,0,0,0, &ui_config_action_led_brightness, &cfg},

@@ -28,7 +28,6 @@
 #include "ui/ui_const.h"
 #include "system_monitor.h"
 #include "commands/global/w_psu.h"
-#include "display/scope.h"
 #include "lib/bp_args/bp_cmd.h"
 #include "pirate/psu.h"
 #include "pirate/amux.h"
@@ -116,7 +115,7 @@ uint32_t psucmd_enable(float volts, float current, bool current_limit_override, 
 
     system_config.info_bar_changed = true;
     system_pin_update_purpose_and_label(true, BP_VOUT, BP_PIN_VOUT, ui_const_pin_states[1]);
-    monitor_clear_current(); // reset current so the LCD gets all characters
+    monitor_clear_current(); // reset current so the terminal status gets all characters
 
     return psu_result; // should be PSU OK
 }
@@ -127,13 +126,6 @@ void psucmd_enable_handler(struct command_result* res) {
 
     // check help
     if (bp_cmd_help_check(&psucmd_enable_def, res->help_flag)) {
-        return;
-    }
-
-    // todo: add to system config?
-    if (scope_running) { // scope is using the analog subsystem
-        printf("Can't turn the power supply on when the scope is using the analog subsystem - use the 'ss' command to "
-               "stop the scope\r\n");
         return;
     }
 
@@ -273,7 +265,7 @@ void psucmd_disable(void) {
     //this causes a spurious short circuit warning because the ADC reads 0V on VOUT during the disable process
     psu_disable();
     system_pin_update_purpose_and_label(true, BP_VOUT, BP_PIN_VREF, ui_const_pin_states[0]); // change back to vref type pin
-    monitor_clear_current(); // reset current so the LCD gets all characters next time
+    monitor_clear_current(); // reset current so the terminal status gets all characters next time
     system_config.info_bar_changed = true;
 }
 

@@ -57,12 +57,6 @@ typedef struct _system_config {
     uint32_t debug_uart_number;                  /**< UART number for debugging (0 or 1) */
     /**@}*/
 
-    /** @name LCD Settings */
-    /**@{*/
-    uint32_t lcd_screensaver_active;             /**< LCD screensaver currently active */
-    uint32_t lcd_timeout;                        /**< LCD screensaver timeout in seconds */
-    /**@}*/
-
     /** @name LED Settings */
     /**@{*/
     uint32_t led_color;                          /**< RGB color value (0xRRGGBB) */
@@ -95,7 +89,6 @@ typedef struct _system_config {
 
     uint8_t hiz;                  // is hiz pin mode?
     uint8_t mode;                 // which mode we are in?
-    uint8_t display;              // which display mode we are in?
     const char* subprotocol_name; // can be set if there is a sub protocol
 
     uint8_t num_bits;        // number of used bits

@@ -56,8 +56,6 @@
         // E_DEBUG_CAT_MODE_HWLED       = XXu, // (((uint32_t)1u) << XXu), // hwled mode specific
         // E_DEBUG_CAT_MODE_INFRARED    = XXu, // (((uint32_t)1u) << XXu), // infrared mode specific
         // E_DEBUG_CAT_MODE_BINLOOPBACK = XXu, // (((uint32_t)1u) << XXu), // binloopback mode specific
-        // E_DEBUG_CAT_MODE_LCDSPI      = XXu, // (((uint32_t)1u) << XXu), // lcdspi mode specific
-        // E_DEBUG_CAT_MODE_LCDI2C      = XXu, // (((uint32_t)1u) << XXu), // lcdi2c mode specific
         E_DEBUG_CAT_TEMP             = 31u, // (((uint32_t)1u) << 31u), // use for temporary debug messages, also the maximum index
     } _bp_debug_category_enum_t;
     // NOTE: Maximum value for this enum is *** 31u ***.
@@ -114,8 +112,6 @@
 // #define BP_DEBUG_CAT_MODE_HWLED       ((bp_debug_category_t){ E_DEBUG_CAT_MODE_HWLED       }) // hwled mode specific
 // #define BP_DEBUG_CAT_MODE_INFRARED    ((bp_debug_category_t){ E_DEBUG_CAT_MODE_INFRARED    }) // infrared mode specific
 // #define BP_DEBUG_CAT_MODE_BINLOOPBACK ((bp_debug_category_t){ E_DEBUG_CAT_MODE_BINLOOPBACK }) // binloopback mode specific
-// #define BP_DEBUG_CAT_MODE_LCDSPI      ((bp_debug_category_t){ E_DEBUG_CAT_MODE_LCDSPI      }) // lcdspi mode specific
-// #define BP_DEBUG_CAT_MODE_LCDI2C      ((bp_debug_category_t){ E_DEBUG_CAT_MODE_LCDI2C      }) // lcdi2c mode specific
 // ... reserved for future use ...
 #define BP_DEBUG_CAT_TEMP             ((bp_debug_category_t){ E_DEBUG_CAT_TEMP             }) // use for temporary debug messages
 

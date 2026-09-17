@@ -763,9 +763,15 @@ static const bp_command_def_t info_def = {
  * Command helpers
  * ============================================================ */
 
+static bool subghz_radio_init(bool announce);
+
 static bool command_ready(void) {
     if (mode_config.initialized) return true;
-    printf("CC1101 is not initialized; check wiring and use 3.3V power.\r\n");
+    /* Lazy (re)connect: the mode can be entered before the module is
+     * powered (e.g. power it with `w 3.3`), the first radio command
+     * below brings the CC1101 up. */
+    if (subghz_radio_init(false)) return true;
+    printf("CC1101 is not initialized; power the module (e.g. `w 3.3`) and check wiring.\r\n");
     return false;
 }
 
@@ -811,7 +817,7 @@ static void rssi_handler(struct command_result *res) {
 }
 
 static void scan_handler(struct command_result *res) {
-    if (bp_cmd_help_check(&scan_def, res->help_flag) || !command_ready()) return;
+    if (bp_cmd_help_check(&scan_def, res->help_flag)) return;
 
     if (bp_cmd_find_flag(&scan_def, 'l')) {
         printf("Supported SubGHz frequency bands and channels (from SubGhzService):\r\n");
@@ -827,6 +833,8 @@ static void scan_handler(struct command_result *res) {
         }
         return;
     }
+
+    if (!command_ready()) return;
 
     char band_name[32] = { 0 };
     if (bp_cmd_get_string(&scan_def, 'b', band_name, sizeof(band_name))) {
@@ -3292,7 +3300,7 @@ static void protocol_handler(struct command_result *res) {
         printf("Unknown protocol '%s'. Use 'protocol' (no args) to list available protocols.\r\n", name);
         return;
     }
-    if (!command_ready()) return;
+    /* Display-only: no radio needed. */
     printf("Protocol: %s (%s)\r\n", entry->info->name, entry->info->description);
     if (entry->info->bit_min || entry->info->bit_max) {
         printf("Bits: %lu-%lu, default frequency %u.%03u MHz.\r\n",
@@ -3649,6 +3657,8 @@ uint32_t subghz_setup(void) {
         if (mode_config.tx_policy > SUBGHZ_TX_OPEN) {
             mode_config.tx_policy = SUBGHZ_TX_STRICT;
         }
+        printf("\r\n%s%s%s\r\n", ui_term_color_info(), GET_T(T_SUBGHZ_WIRING_1), ui_term_color_reset());
+        printf("%s%s%s\r\n", ui_term_color_info(), GET_T(T_SUBGHZ_WIRING_2), ui_term_color_reset());
         if (bp_cmd_prompt(&frequency_range, &frequency) != BP_CMD_OK) return 0;
         if (bp_cmd_prompt(&gdo_range, &gdo) != BP_CMD_OK) return 0;
         if (bp_cmd_prompt(&preset_choice, &preset_val) != BP_CMD_OK) return 0;
@@ -3677,6 +3687,38 @@ uint32_t subghz_setup(void) {
     return 1;
 }
 
+/* Bring the radio up. Safe to retry after power-on; reports the
+ * detected module only when announce is true (mode entry). */
+static bool subghz_radio_init(bool announce) {
+    mode_config.initialized = cc1101_init(mode_config.frequency_khz);
+    if (!mode_config.initialized) return false;
+    if (!cc1101_set_preset((cc1101_preset_t)mode_config.preset)) {
+        printf("\r\nInvalid preset.\r\n");
+        mode_config.initialized = 0;
+        return false;
+    }
+    apply_tx_power();
+    if (!cc1101_rx()) {
+        printf("\r\nFailed to enter RX state.\r\n");
+        mode_config.initialized = 0;
+        return false;
+    }
+    hop_load();
+    subghz_keystore_init(&keystore);
+    subghz_keeloq_keystore_set(&keystore);
+    keystore_loaded = false;
+    uint8_t part = 0xff, version = 0xff;
+    cc1101_present(&part, &version);
+    if (announce) {
+        const cc1101_preset_info_t *pi = cc1101_preset_info((cc1101_preset_t)mode_config.preset);
+        printf("\r\nCC1101 detected (VERSION=0x%02x), tuned to %u.%03uMHz, %s (%s).\r\n", version,
+               mode_config.frequency_khz / 1000, mode_config.frequency_khz % 1000,
+               pi ? pi->name : "?", pi ? pi->description : "?");
+    }
+    subghz_protocols_init();
+    return true;
+}
+
 uint32_t subghz_setup_exc(void) {
     system_bio_update_purpose_and_label(true, SUBGHZ_GDO0, BP_PIN_MODE, pin_labels[0]);
     system_bio_update_purpose_and_label(true, M_SPI_CDI, BP_PIN_MODE, pin_labels[1]);
@@ -3684,34 +3726,14 @@ uint32_t subghz_setup_exc(void) {
     system_bio_update_purpose_and_label(true, M_SPI_CLK, BP_PIN_MODE, pin_labels[3]);
     system_bio_update_purpose_and_label(true, M_SPI_CDO, BP_PIN_MODE, pin_labels[4]);
     bio_input(SUBGHZ_GDO0);
-    mode_config.initialized = cc1101_init(mode_config.frequency_khz);
-    uint8_t part = 0xff, version = 0xff;
-    if (!mode_config.initialized) {
-        printf("\r\nCC1101 not detected. Check 3.3V and wiring.\r\n");
-        subghz_cleanup();
-        return 0;
+    if (subghz_radio_init(true)) {
+        return 1;
     }
-    if (!cc1101_set_preset((cc1101_preset_t)mode_config.preset)) {
-        printf("\r\nInvalid preset.\r\n");
-        subghz_cleanup();
-        return 0;
-    }
-    apply_tx_power();
-    if (!cc1101_rx()) {
-        printf("\r\nFailed to enter RX state.\r\n");
-        subghz_cleanup();
-        return 0;
-    }
-    hop_load();
-    subghz_keystore_init(&keystore);
-    subghz_keeloq_keystore_set(&keystore);
-    keystore_loaded = false;
-    cc1101_present(&part, &version);
-    const cc1101_preset_info_t *pi = cc1101_preset_info((cc1101_preset_t)mode_config.preset);
-    printf("\r\nCC1101 detected (VERSION=0x%02x), tuned to %u.%03uMHz, %s (%s).\r\n", version,
-           mode_config.frequency_khz / 1000, mode_config.frequency_khz % 1000,
-           pi ? pi->name : "?", pi ? pi->description : "?");
-    subghz_protocols_init();
+    /* No module (yet): enter the mode anyway so the user can power the
+     * board (e.g. `w 3.3`) and wire it up. The first radio command
+     * connects automatically. */
+    printf("\r\nCC1101 not detected. Entering SUBGHZ anyway:\r\n");
+    printf("power the module (e.g. `w 3.3`), check wiring, then run `info` to connect.\r\n");
     return 1;
 }
 
@@ -3755,6 +3777,7 @@ void subghz_help(void) {
     printf("Transmit only on frequencies and duty cycles permitted in your jurisdiction.\r\n\r\n");
     printf("Workflow: setfrequency/scan to find activity, receive/monitor to capture\r\n");
     printf("and decode, replay/load/send to transmit, record/clone/savekey for .sub files.\r\n");
+    printf("No module yet? Enter anyway, power it with `w 3.3`, then `info` connects.\r\n");
     printf("Radio: preset/scanprofile/power/bitrate configure the CC1101, info shows status.\r\n");
     printf("Lab-only transmitters (strict ISM gate applies): jam, bruteforce, burst.\r\n\r\n");
     ui_help_mode_commands(subghz_commands, subghz_commands_count);

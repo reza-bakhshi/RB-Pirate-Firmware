@@ -304,12 +304,16 @@ static const bp_command_def_t scan_def = {
 
 static const bp_command_opt_t receive_opts[] = {
     { "time",    't', BP_ARG_REQUIRED, "ms", 0, NULL, "capture duration in ms (default 5000)" },
-    { "verbose", 'v', BP_ARG_NONE,     NULL, 0, NULL, "display formatted 4-column raw pulse dump" }, { 0 }
+    { "verbose", 'v', BP_ARG_NONE,     NULL, 0, NULL, "display formatted 4-column raw pulse dump" },
+    { "samples", 'n', BP_ARG_REQUIRED, "count", 0, NULL, "stop after N pulses (fixed-count capture)" },
+    { "frame",   'f', BP_ARG_NONE,     NULL, 0, NULL, "split capture into frames on >=2ms silence gap" }, { 0 }
 };
 static const char *const receive_usage[] = {
-    "receive [-t milliseconds] [-v]",
+    "receive [-t milliseconds] [-v] [-n samples] [-f]",
     "Capture GDO0 pulse widths for 5 seconds:%s receive",
     "Capture and display formatted pulses:%s receive -t 2000 -v",
+    "Capture 256 pulses then stop:%s receive -n 256",
+    "Capture and split into frames:%s receive -t 2000 -f",
 };
 static const bp_command_def_t receive_def = {
     .name = "receive", .description = 0,
@@ -368,16 +372,18 @@ static const bp_command_def_t waterfall_def = {
 };
 
 static const bp_command_opt_t replay_opts[] = {
-    { "repeat", 'r', BP_ARG_REQUIRED, "1-20", 0, NULL, "number of retransmissions" }, { 0 }
+    { "repeat", 'r', BP_ARG_REQUIRED, "1-20", 0, NULL, "number of retransmissions" },
+    { "frames", 'f', BP_ARG_NONE,     NULL, 0, NULL, "replay each gap-delimited frame separately (150ms gap)" }, { 0 }
 };
 static const char *const replay_usage[] = {
-    "replay [-r repeats]",
+    "replay [-r repeats] [-f]",
     "Transmit last captured pulses once:%s replay",
     "Transmit last captured pulses 3 times:%s replay -r 3",
+    "Replay each captured frame separately:%s replay -f -r 2",
 };
 static const bp_command_def_t replay_def = {
     .name = "replay", .description = 0,
-    .description_text = "Replay last captured or loaded pulse buffer via CC1101 TX",
+    .description_text = "Replay captured pulse buffer, or each gap-delimited frame, via CC1101 TX",
     .opts = replay_opts,
     .usage = replay_usage, .usage_count = count_of(replay_usage),
 };
@@ -533,20 +539,29 @@ static const bp_command_opt_t send_opts[] = {
     { "protocol", 'P', BP_ARG_REQUIRED, "name", 0, NULL, "protocol name to encode" },
     { "key",      'k', BP_ARG_REQUIRED, "hex",  0, NULL, "hex key data (with -P)" },
     { "proto",    'o', BP_ARG_REQUIRED, "1|2|11", 0, NULL, "sub-protocol (for RcSwitch)" },
+    { "pulse",    'u', BP_ARG_REQUIRED, "us",   0, NULL, "single signed pulse in us (+high/-low)" },
+    { "binraw",   'B', BP_ARG_REQUIRED, "hex",  0, NULL, "hex bitstream bytes, fixed TE per bit (Flipper MSB-first order)" },
+    { "raw",      'w', BP_ARG_REQUIRED, "list", 0, NULL, "signed timings in us, comma/space separated" },
     { "burst",    'R', BP_ARG_NONE,     NULL,   0, NULL, "transmit random RF jitter noise burst" }, { 0 }
 };
 static const char *const send_usage[] = {
     "send <payload> [-b bits] [-t TE_us] [-r repeats]",
     "send -P <protocol> -k <hexkey> [-b bits] [-t TE_us] [-r repeats] [-o subproto]",
     "send -R",
+    "send -u <signed_us> [-r repeats]",
+    "send -B <hexbytes> [-t TE_us] [-r repeats]",
+    "send -w <t1,t2,...> [-r repeats]",
     "Send a 24-bit Princeton frame:%s send 0x123456 -b 24 -t 350 -r 4",
     "Send a GateTX key:%s send -P GateTX -k 0xABCDEF -b 24 -r 10",
     "Send an RcSwitch key (proto 1/2/11):%s send -P RcSwitch -k 0x123456 -b 24 -o 2",
+    "Send a single +500us high pulse:%s send -u 500",
+    "Send BinRAW bitstream at 100us TE:%s send -B A68D01 -t 100 -r 4",
+    "Send signed raw timings:%s send -w 350,-350,700,-700 -r 4",
     "Send a random noise burst:%s send -R",
 };
 static const bp_command_def_t send_def = {
     .name = "send", .description = 0,
-    .description_text = "Transmit protocol frame, raw Princeton payload, or burst",
+    .description_text = "Transmit protocol frame, Princeton payload, pulse, BinRAW, raw timings, or burst",
     .opts = send_opts,
     .positionals = send_positionals, .positional_count = 1,
     .usage = send_usage, .usage_count = count_of(send_usage),
@@ -567,6 +582,46 @@ static const bp_command_def_t burst_def = {
     .description_text = "Transmit pseudo-random RF jitter pulse bursts for testing",
     .opts = burst_opts,
     .usage = burst_usage, .usage_count = count_of(burst_usage),
+};
+
+static const bp_command_opt_t jam_opts[] = {
+    { "frequency", 'f', BP_ARG_REQUIRED, "kHz",   0, NULL, "frequency in kHz (default current)" },
+    { "band",      'b', BP_ARG_REQUIRED, "band",  0, NULL, "band hop: all|300|433|868 (BandJam)" },
+    { "dwell",     'd', BP_ARG_REQUIRED, "ms",    0, NULL, "hold time per frequency in ms (band mode, default 5)" },
+    { "gap",       'g', BP_ARG_REQUIRED, "us",    0, NULL, "gap between bursts in us (band mode, default 1)" },
+    { 0 }
+};
+static const char *const jam_usage[] = {
+    "jam [-f kHz] [-b band] [-d dwell_ms] [-g gap_us]",
+    "Jam current frequency until keypress (lab only):%s jam",
+    "Jam 433.92 MHz until keypress:%s jam -f 433920",
+    "Jam the 433 band, 5ms dwell:%s jam -b 433 -d 5 -g 1",
+};
+static const bp_command_def_t jam_def = {
+    .name = "jam", .description = 0,
+    .description_text = "Transmit jamming RF energy: 30us pulse train or band-hopping bursts (lab use only)",
+    .opts = jam_opts,
+    .usage = jam_usage, .usage_count = count_of(jam_usage),
+};
+
+static const bp_command_opt_t bruteforce_opts[] = {
+    { "protocol", 'P', BP_ARG_REQUIRED, "name", 0, NULL, "Came|Nice|Ansonic|Holtek|Linear|Chamberlain (12-bit)" },
+    { "frequency", 'f', BP_ARG_REQUIRED, "kHz", 0, NULL, "frequency in kHz (default current)" },
+    { "repeat",   'r', BP_ARG_REQUIRED, "1-20", 0, NULL, "repeats per code (default 1)" },
+    { "start",    's', BP_ARG_REQUIRED, "0-4095", 0, NULL, "first code (default 0, resume support)" },
+    { 0 }
+};
+static const char *const bruteforce_usage[] = {
+    "bruteforce -P <protocol> [-f kHz] [-r repeats] [-s start]",
+    "Brute-force all 4096 Came 12-bit codes:%s bruteforce -P Came",
+    "Brute-force Nice codes at 433.92 MHz, twice each:%s bruteforce -P Nice -f 433920 -r 2",
+    "Resume Chamberlain from code 2048:%s bruteforce -P Chamberlain -s 2048",
+};
+static const bp_command_def_t bruteforce_def = {
+    .name = "bruteforce", .description = 0,
+    .description_text = "Transmit all 4096 codes of a 12-bit fixed-code protocol (Bruce tables, lab use only)",
+    .opts = bruteforce_opts,
+    .usage = bruteforce_usage, .usage_count = count_of(bruteforce_usage),
 };
 
 /* --- New commands --- */
@@ -672,6 +727,23 @@ static const bp_command_def_t bitrate_def = {
     .usage = bitrate_usage, .usage_count = count_of(bitrate_usage),
 };
 
+static const bp_command_opt_t scanprofile_opts[] = {
+    { "datarate", 'd', BP_ARG_REQUIRED, "kbps", 0, NULL, "data rate in kbps (e.g. 4.8)" },
+    { "bandwidth", 'b', BP_ARG_REQUIRED, "kHz", 0, NULL, "RX bandwidth in kHz (e.g. 200)" },
+    { "mod",      'm', BP_ARG_REQUIRED, "0|1|2|4", 0, NULL, "modulation: 0=2FSK 1=GFSK 2=OOK/ASK 4=MSK" }, { 0 }
+};
+static const char *const scanprofile_usage[] = {
+    "scanprofile [-d kbps] [-b kHz] [-m mod]",
+    "OOK scan profile (SubGhzService default):%s scanprofile -d 4.8 -b 200 -m 2",
+    "2FSK scan profile:%s scanprofile -d 4.8 -b 200 -m 0",
+};
+static const bp_command_def_t scanprofile_def = {
+    .name = "scanprofile", .description = 0,
+    .description_text = "Apply custom scan profile: datarate, RX bandwidth, modulation",
+    .opts = scanprofile_opts,
+    .usage = scanprofile_usage, .usage_count = count_of(scanprofile_usage),
+};
+
 static const char *const info_usage[] = {
     "info",
     "Show frequency, preset, modulation, power, and RSSI:%s info",
@@ -693,6 +765,7 @@ static bool command_ready(void) {
 }
 
 static void pulse(bool level, uint32_t us);
+static void send_raw_pulse(int32_t duration);
 static void load_file(const char *name, uint32_t repeat);
 static bool transmit_upload(subghz_protocol_encoder_t *enc, uint32_t repeat);
 static bool parse_custom_preset(const char *line, uint8_t *pairs, size_t *pair_count);
@@ -847,6 +920,14 @@ static void scan_handler(struct command_result *res) {
            best_khz / 1000, best_khz % 1000, best);
 }
 
+/* Optional cap for capture_pulses (readRawSymbolsUntil equivalent, 0 = unlimited). */
+static uint32_t capture_max_samples;
+
+static bool capture_limit_reached(void) {
+    return (capture_max_samples && capture_count >= capture_max_samples) ||
+           capture_count >= count_of(capture_buffer);
+}
+
 static bool capture_pulses(uint32_t duration_ms) {
     capture_count = 0;
     if (!cc1101_rx()) {
@@ -857,11 +938,11 @@ static bool capture_pulses(uint32_t duration_ms) {
     subghz_cap_start(SUBGHZ_GDO0);
     bool started = false; /* Flipper RAW data starts with a high duration. */
     absolute_time_t until = make_timeout_time_ms(duration_ms);
-    while (!time_reached(until) && capture_count < count_of(capture_buffer)) {
+    while (!time_reached(until) && !capture_limit_reached()) {
         bool level;
         uint32_t dur;
         while (subghz_cap_poll(&level, &dur) &&
-               capture_count < count_of(capture_buffer)) {
+               !capture_limit_reached()) {
             if (!dur) {
                 continue;
             }
@@ -1158,15 +1239,127 @@ static void run_protocol_decoders(void) {
     subghz_rx_free(&rx);
 }
 
+/* Frame splitter: Frames are delimited by a >=2ms silence gap and need at
+ * least 16 pulses (noise rejection). At most 64 frames are reported. */
+#define SUBGHZ_FRAME_GAP_US 2000u
+#define SUBGHZ_FRAME_MIN_PULSES 16u
+#define SUBGHZ_FRAME_MAX 64u
+
+static uint32_t collect_frames(uint32_t *starts, uint32_t *lens, uint32_t max_frames) {
+    uint32_t nframes = 0, frame_start = 0;
+    for (uint32_t i = 0; i <= capture_count; i++) {
+        bool gap = (i == capture_count);
+        if (!gap) {
+            int32_t v = capture_buffer[i];
+            gap = ((uint32_t)(v < 0 ? -v : v) >= SUBGHZ_FRAME_GAP_US);
+        }
+        if (gap) {
+            uint32_t len = (i > frame_start) ? (i - frame_start) : 0;
+            /* The gap pulse itself stays out of the frame. */
+            if (len >= SUBGHZ_FRAME_MIN_PULSES && nframes < max_frames) {
+                starts[nframes] = frame_start;
+                lens[nframes] = len;
+                nframes++;
+            }
+            frame_start = i + 1;
+        }
+    }
+    return nframes;
+}
+
+static void print_capture_frames(void) {
+    uint32_t starts[SUBGHZ_FRAME_MAX], lens[SUBGHZ_FRAME_MAX];
+    uint32_t nframes = collect_frames(starts, lens, SUBGHZ_FRAME_MAX);
+    for (uint32_t f = 0; f < nframes; f++) {
+        printf("Frame %lu: %lu pulses [%lu..%lu]:\r\n", (unsigned long)(f + 1),
+               (unsigned long)lens[f], (unsigned long)starts[f],
+               (unsigned long)(starts[f] + lens[f] - 1));
+        for (uint32_t j = 0; j < lens[f]; j++) {
+            int32_t v = capture_buffer[starts[f] + j];
+            printf("%c:%lu%s", v > 0 ? 'H' : 'L',
+                   (unsigned long)(v > 0 ? v : -v), ((j + 1) % 8) ? "  " : "\r\n");
+        }
+        printf("\r\n");
+    }
+    if (!nframes) {
+        printf("No gap-delimited frames (>=%u pulses, >=%ums gap).\r\n",
+               SUBGHZ_FRAME_MIN_PULSES, SUBGHZ_FRAME_GAP_US / 1000u);
+    }
+}
+
+/* Multi-frame replay: one TX session, each frame sent separately with a
+ * 150ms inter-frame gap (any key aborts). */
+static void replay_frames(uint32_t repeat) {
+    uint32_t starts[SUBGHZ_FRAME_MAX], lens[SUBGHZ_FRAME_MAX];
+    uint32_t nframes = collect_frames(starts, lens, SUBGHZ_FRAME_MAX);
+    if (!nframes) {
+        printf("No gap-delimited frames in the buffer. Run receive or load first.\r\n");
+        return;
+    }
+    if (!tx_guard()) return;
+    printf("Replaying %lu frame(s) %u time(s), 150ms inter-frame gap (keypress stops).\r\n",
+           (unsigned long)nframes, repeat);
+    if (!cc1101_idle()) { printf("Failed to enter IDLE state.\r\n"); return; }
+    bio_output(SUBGHZ_GDO0);
+    bio_put(SUBGHZ_GDO0, false);
+    apply_tx_power();
+    if (!cc1101_tx()) {
+        printf("CC1101 TX transition failed.\r\n");
+        bio_input(SUBGHZ_GDO0);
+        (void)cc1101_rx();
+        return;
+    }
+    sleep_ms(1);
+    bool stop = false;
+    for (uint32_t r = 0; r < repeat && !stop; r++) {
+        for (uint32_t f = 0; f < nframes && !stop; f++) {
+            for (uint32_t j = 0; j < lens[f] && !stop; j++) {
+                send_raw_pulse(capture_buffer[starts[f] + j]);
+                if ((j & 31u) == 0) {
+                    char c;
+                    if (rx_fifo_try_get(&c)) stop = true;
+                }
+            }
+            if (stop || (r + 1 == repeat && f + 1 == nframes)) break;
+            uint32_t remain = 150;
+            while (remain && !stop) {
+                uint32_t chunk = remain > 10u ? 10u : remain;
+                sleep_ms(chunk);
+                remain -= chunk;
+                char c;
+                if (rx_fifo_try_get(&c)) stop = true;
+            }
+        }
+    }
+    bio_put(SUBGHZ_GDO0, false);
+    bool idle_ok = cc1101_idle();
+    bio_input(SUBGHZ_GDO0);
+    if (!idle_ok || !cc1101_rx()) {
+        printf("Replay failed: CC1101 state transition error.\r\n");
+    } else if (stop) {
+        printf("Replay stopped by user.\r\n");
+    }
+}
+
 static void receive_handler(struct command_result *res) {
     if (bp_cmd_help_check(&receive_def, res->help_flag) || !command_ready()) return;
     uint32_t duration = 5000, value;
     if (bp_cmd_get_uint32(&receive_def, 't', &value)) duration = value;
     if (!duration || duration > 60000) { printf("Capture time must be 1-60000ms.\r\n"); return; }
+    capture_max_samples = 0;
+    if (bp_cmd_get_uint32(&receive_def, 'n', &value)) {
+        if (!value || value > count_of(capture_buffer)) {
+            printf("Samples must be 1-%u.\r\n", (unsigned)count_of(capture_buffer));
+            return;
+        }
+        capture_max_samples = value;
+    }
+    bool show_frames = bp_cmd_find_flag(&receive_def, 'f');
     printf("Raw GDO0 pulse capture at %u.%03uMHz [%s] (H/L:microseconds; press a key to stop)\r\n",
            mode_config.frequency_khz / 1000, mode_config.frequency_khz % 1000,
            cc1101_preset_name((cc1101_preset_t)mode_config.preset));
     capture_pulses(duration);
+    capture_max_samples = 0;
     if (bp_cmd_find_flag(&receive_def, 'v')) {
         printf("[raw %lu symbols | freq=%u.%03u MHz]\r\n", (unsigned long)capture_count,
                mode_config.frequency_khz / 1000, mode_config.frequency_khz % 1000);
@@ -1189,6 +1382,9 @@ static void receive_handler(struct command_result *res) {
         }
     }
     printf("\r\nCaptured %u pulses; ready for replay or record.\r\n", capture_count);
+    if (show_frames) {
+        print_capture_frames();
+    }
     analyze_capture();
     run_protocol_decoders();
 }
@@ -1331,6 +1527,10 @@ static void replay_handler(struct command_result *res) {
     if (bp_cmd_get_uint32(&replay_def, 'r', &value)) repeat = value;
     if (!capture_count) { printf("No capture in RAM. Run receive or record first.\r\n"); return; }
     if (!repeat || repeat > 20) { printf("Repeat must be 1-20.\r\n"); return; }
+    if (bp_cmd_find_flag(&replay_def, 'f')) {
+        replay_frames(repeat);
+        return;
+    }
     printf("Replaying %u pulses %u time(s) at %u.%03uMHz.\r\n", capture_count, repeat,
            mode_config.frequency_khz / 1000, mode_config.frequency_khz % 1000);
     if (!transmit_capture(repeat)) printf("Replay failed: CC1101 state transition error.\r\n");
@@ -2250,6 +2450,88 @@ static void send_raw_pulse(int32_t duration) {
     }
 }
 
+/* sendRawTimings / sendTimingsRawSigned_ equivalent: signed durations, idle LOW. */
+static bool transmit_timings(const int32_t *timings, uint32_t count, uint32_t repeat) {
+    /* Caller (send_handler) enforces tx_guard(); kept out here to avoid double messages. */
+    if (!count || !repeat) return false;
+    if (!cc1101_idle()) return false;
+    bio_output(SUBGHZ_GDO0);
+    bio_put(SUBGHZ_GDO0, false);
+    apply_tx_power();
+    if (!cc1101_tx()) {
+        bio_input(SUBGHZ_GDO0);
+        (void)cc1101_rx();
+        return false;
+    }
+    sleep_ms(1);
+    for (uint32_t r = 0; r < repeat; r++) {
+        for (uint32_t i = 0; i < count; i++) {
+            send_raw_pulse(timings[i]);
+            char c;
+            if (rx_fifo_try_get(&c)) break;
+        }
+    }
+    bio_put(SUBGHZ_GDO0, false);
+    bool idle_ok = cc1101_idle();
+    bio_input(SUBGHZ_GDO0);
+    return idle_ok && cc1101_rx();
+}
+
+/* sendRawPulse equivalent wrapped in a TX session (single signed pulse). */
+static bool transmit_single_pulse(int32_t duration_us, uint32_t repeat) {
+    if (!duration_us || !repeat) return false;
+    int32_t one[1] = { duration_us };
+    return transmit_timings(one, 1, repeat);
+}
+
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Parse "A68D01" / "A6 8D 01" into bytes (sendBinRaw_ CLI input). */
+static bool parse_hex_bytes(const char *s, uint8_t *out, size_t *n_out, size_t max) {
+    size_t n = 0;
+    int hi = -1;
+    for (const char *p = s; *p; p++) {
+        if (*p == ' ' || *p == '\t' || *p == ',' || *p == '-') continue;
+        int v = hex_nibble(*p);
+        if (v < 0) return false;
+        if (hi < 0) {
+            hi = v;
+        } else {
+            if (n >= max) return false;
+            out[n++] = (uint8_t)((hi << 4) | v);
+            hi = -1;
+        }
+    }
+    if (hi >= 0 || !n) return false; /* Odd nibble or empty. */
+    *n_out = n;
+    return true;
+}
+
+/* Parse "350,-350,700,-700" (spaces and/or commas) into signed microsecond timings. */
+static bool parse_signed_timings(const char *s, int32_t *out, uint32_t *n_out, uint32_t max) {
+    uint32_t n = 0;
+    const char *p = s;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+        char *end = NULL;
+        errno = 0;
+        long v = strtol(p, &end, 10);
+        if (errno == ERANGE || end == p || !v || v < -60000000l || v > 60000000l) return false;
+        if (n >= max) return false;
+        out[n++] = (int32_t)v;
+        p = end;
+    }
+    if (!n) return false;
+    *n_out = n;
+    return true;
+}
+
 /* Transmit one encoder upload <repeat> times (Flipper TX worker equivalent). */
 static bool transmit_upload(subghz_protocol_encoder_t *enc, uint32_t repeat) {
     if (!cc1101_idle()) {
@@ -2310,6 +2592,79 @@ static void send_handler(struct command_result *res) {
         bio_input(SUBGHZ_GDO0);
         (void)cc1101_rx();
         printf("Burst sent.\r\n");
+        return;
+    }
+
+    /* SubGhzService direct-TX options: single pulse, BinRAW bitstream, raw timings. */
+    char pulse_text[16] = { 0 };
+    if (bp_cmd_get_string(&send_def, 'u', pulse_text, sizeof(pulse_text))) {
+        char *end = NULL;
+        errno = 0;
+        long us = strtol(pulse_text, &end, 10);
+        if (errno == ERANGE || !end || end == pulse_text || *end != '\0' || !us ||
+            us < -60000000l || us > 60000000l) {
+            printf("Pulse must be a non-zero signed duration in us (+high/-low).\r\n");
+            return;
+        }
+        uint32_t repeat = 1, value;
+        if (bp_cmd_get_uint32(&send_def, 'r', &value)) repeat = value;
+        if (!repeat || repeat > 20) { printf("Limits: repeats 1-20.\r\n"); return; }
+        printf("Transmitting single %ldus %s pulse at %u.%03uMHz x%u.\r\n", labs(us),
+               us > 0 ? "high" : "low", mode_config.frequency_khz / 1000,
+               mode_config.frequency_khz % 1000, repeat);
+        if (!transmit_single_pulse((int32_t)us, repeat)) {
+            printf("Transmit failed: CC1101 state transition error.\r\n");
+        }
+        return;
+    }
+
+    char binraw_text[1024] = { 0 };
+    if (bp_cmd_get_string(&send_def, 'B', binraw_text, sizeof(binraw_text))) {
+        uint8_t bytes[SUBGHZ_BINRAW_MAX_BYTES];
+        size_t nbytes = 0;
+        if (!parse_hex_bytes(binraw_text, bytes, &nbytes, sizeof(bytes))) {
+            printf("BinRAW must be even-count hex bytes, e.g. -B A68D01.\r\n");
+            return;
+        }
+        uint32_t te = 100, value;
+        if (bp_cmd_get_uint32(&send_def, 't', &value)) te = value;
+        if (!te || te < 50u || te > 100000u) { printf("TE must be 50-100000us.\r\n"); return; }
+        uint32_t repeat = 4;
+        if (bp_cmd_get_uint32(&send_def, 'r', &value)) repeat = value;
+        if (!repeat || repeat > 20) { printf("Limits: repeats 1-20.\r\n"); return; }
+        uint32_t bits = (uint32_t)nbytes * 8u;
+        if (bits > SUBGHZ_BINRAW_MAX_BITS) { printf("BinRAW too long (max %u bits).\r\n", SUBGHZ_BINRAW_MAX_BITS); return; }
+        static int32_t tx_timings[1024];
+        uint32_t n = 0;
+        /* Flipper MSB-first run-length expansion (file path uses the same helper). */
+        if (!subghz_binraw_expand(te, bytes, bits, tx_timings, &n, count_of(tx_timings))) {
+            printf("BinRAW does not fit the %u-pulse TX buffer.\r\n", (unsigned)count_of(tx_timings));
+            return;
+        }
+        printf("Transmitting BinRAW %u bits (TE=%uus, %u pulses) at %u.%03uMHz x%u.\r\n",
+               bits, te, n, mode_config.frequency_khz / 1000, mode_config.frequency_khz % 1000, repeat);
+        if (!transmit_timings(tx_timings, n, repeat)) {
+            printf("Transmit failed: CC1101 state transition error.\r\n");
+        }
+        return;
+    }
+
+    char raw_text[2048] = { 0 };
+    if (bp_cmd_get_string(&send_def, 'w', raw_text, sizeof(raw_text))) {
+        static int32_t tx_timings[1024];
+        uint32_t n = 0;
+        if (!parse_signed_timings(raw_text, tx_timings, &n, count_of(tx_timings))) {
+            printf("Raw timings must be non-zero signed us values, e.g. -w 350,-350,700,-700.\r\n");
+            return;
+        }
+        uint32_t repeat = 1, value;
+        if (bp_cmd_get_uint32(&send_def, 'r', &value)) repeat = value;
+        if (!repeat || repeat > 20) { printf("Limits: repeats 1-20.\r\n"); return; }
+        printf("Transmitting %u raw timings at %u.%03uMHz x%u.\r\n", n,
+               mode_config.frequency_khz / 1000, mode_config.frequency_khz % 1000, repeat);
+        if (!transmit_timings(tx_timings, n, repeat)) {
+            printf("Transmit failed: CC1101 state transition error.\r\n");
+        }
         return;
     }
 
@@ -2451,6 +2806,254 @@ static void send_handler(struct command_result *res) {
     (void)cc1101_idle();
     bio_input(SUBGHZ_GDO0);
     if (!cc1101_rx()) printf("Warning: failed to return to RX state.\r\n");
+}
+
+/* 12-bit fixed-code bruteforce tables, adapted from Bruce firmware
+ * (https://github.com/pr3y/Bruce) via ESP32-Bit-Pirate SubGhzProtocols.h.
+ * Signed durations: positive = HIGH, negative = LOW (sendRawPulse convention). */
+typedef struct {
+    const char *name;
+    int32_t pilot[2];
+    uint32_t pilot_n;
+    int32_t zero[2];
+    int32_t one[2];
+    int32_t stop[2];
+    uint32_t stop_n;
+} subghz_bruteforce_proto_t;
+
+static const subghz_bruteforce_proto_t bruteforce_protos[] = {
+    { "Came",       { -11520, 320 }, 2, { -320, 640 }, { -640, 320 }, { 0, 0 }, 0 },
+    { "Nice",       { -25200, 700 }, 2, { -700, 1400 }, { -1400, 700 }, { 0, 0 }, 0 },
+    { "Ansonic",    { -19425, 555 }, 2, { -1111, 555 }, { -555, 1111 }, { 0, 0 }, 0 },
+    { "Holtek",     { -15480, 430 }, 2, { -870, 430 }, { -430, 870 }, { 0, 0 }, 0 },
+    { "Linear",     { 0, 0 }, 0,         { 500, -1500 }, { 1500, -500 }, { 1, -21500 }, 2 },
+    { "Chamberlain", { 0, 0 }, 0,        { -870, 430 }, { -430, 870 }, { -3000, 1000 }, 2 },
+};
+
+static const subghz_bruteforce_proto_t *bruteforce_find(const char *name) {
+    if (!name) return NULL;
+    for (uint i = 0; i < count_of(bruteforce_protos); i++) {
+        if (!strcasecmp(name, bruteforce_protos[i].name)) return &bruteforce_protos[i];
+    }
+    /* Fork/flipper aliases. */
+    if (!strcasecmp(name, "Nice FLO") || !strcasecmp(name, "NiceFlo")) return &bruteforce_protos[1];
+    if (!strcasecmp(name, "Holtek_HT12X") || !strcasecmp(name, "HT12X")) return &bruteforce_protos[3];
+    if (!strcasecmp(name, "Cham_Code") || !strcasecmp(name, "ChamberlainCode")) return &bruteforce_protos[5];
+    return NULL;
+}
+
+/* One bruteforce code on an already-open TX session (pilot + 12 bits MSB-first + stop). */
+static bool bruteforce_send_code(const subghz_bruteforce_proto_t *proto, uint32_t code,
+                                 uint32_t repeat) {
+    for (uint32_t r = 0; r < repeat; r++) {
+        for (uint32_t i = 0; i < proto->pilot_n; i++) send_raw_pulse(proto->pilot[i]);
+        for (int j = 11; j >= 0; j--) {
+            const int32_t *t = ((code >> j) & 1u) ? proto->one : proto->zero;
+            send_raw_pulse(t[0]);
+            send_raw_pulse(t[1]);
+        }
+        for (uint32_t i = 0; i < proto->stop_n; i++) send_raw_pulse(proto->stop[i]);
+        char c;
+        if (rx_fifo_try_get(&c)) return false; /* Aborted. */
+    }
+    return true;
+}
+
+static void bruteforce_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&bruteforce_def, res->help_flag) || !command_ready()) return;
+    char protoname[32] = { 0 };
+    if (!bp_cmd_get_string(&bruteforce_def, 'P', protoname, sizeof(protoname))) {
+        printf("12-bit bruteforce protocols (Bruce tables):\r\n");
+        for (uint i = 0; i < count_of(bruteforce_protos); i++) {
+            printf("  %s\r\n", bruteforce_protos[i].name);
+        }
+        printf("Usage: bruteforce -P <protocol> [-f kHz] [-r repeats] [-s start]\r\n");
+        return;
+    }
+    const subghz_bruteforce_proto_t *proto = bruteforce_find(protoname);
+    if (!proto) {
+        printf("Unknown bruteforce protocol '%s' (see list above).\r\n", protoname);
+        return;
+    }
+    uint32_t freq = mode_config.frequency_khz, value;
+    if (bp_cmd_get_uint32(&bruteforce_def, 'f', &value)) freq = value;
+    if (!valid_frequency(freq)) {
+        printf("Invalid frequency. Supported: 300-348, 387-464, and 779-928 MHz.\r\n");
+        return;
+    }
+    uint32_t repeat = 1;
+    if (bp_cmd_get_uint32(&bruteforce_def, 'r', &value)) repeat = value;
+    if (!repeat || repeat > 20) { printf("Repeats must be 1-20.\r\n"); return; }
+    uint32_t start = 0;
+    if (bp_cmd_get_uint32(&bruteforce_def, 's', &value)) start = value;
+    if (start > 4095u) { printf("Start code must be 0-4095.\r\n"); return; }
+
+    if (freq != mode_config.frequency_khz) {
+        if (!cc1101_set_frequency(freq)) { printf("Failed to set frequency.\r\n"); return; }
+        mode_config.frequency_khz = freq;
+    }
+    if (!tx_guard()) return;
+    /* Bruce/ESP32 transmit in OOK async; force an OOK preset, restore afterwards. */
+    cc1101_preset_t saved_preset = (cc1101_preset_t)mode_config.preset;
+    bool ook = cc1101_preset_is_ook(saved_preset);
+    if (!ook) {
+        if (!cc1101_set_preset(CC1101_PRESET_OOK_270)) {
+            printf("Failed to apply OOK preset.\r\n");
+            return;
+        }
+        mode_config.preset = CC1101_PRESET_OOK_270;
+    }
+    printf("Warning: brute-forcing transmits 4096 codes on %u.%03u MHz (%s). Lab use only;\r\n"
+           "obey local regulations. Press a key to stop.\r\n",
+           freq / 1000, freq % 1000, proto->name);
+    if (!cc1101_idle()) { printf("Failed to enter IDLE state.\r\n"); goto bf_restore; }
+    bio_output(SUBGHZ_GDO0);
+    bio_put(SUBGHZ_GDO0, false);
+    apply_tx_power();
+    if (!cc1101_tx()) {
+        printf("CC1101 TX transition failed.\r\n");
+        bio_input(SUBGHZ_GDO0);
+        (void)cc1101_rx();
+        goto bf_restore;
+    }
+    sleep_ms(1);
+    for (uint32_t code = start; code < 4096u; code++) {
+        if (!bruteforce_send_code(proto, code, repeat)) {
+            printf("\r\nBruteforce stopped by user at code %lu/4095.\r\n", (unsigned long)code);
+            break;
+        }
+        if ((code + 1u) % 100u == 0) {
+            printf(" %s @ %u.%03u MHz: sent %lu codes.\r\n", proto->name,
+                   freq / 1000, freq % 1000, (unsigned long)(code + 1u));
+        }
+        if (code == 4095u) printf("Bruteforce done: all 4096 codes sent.\r\n");
+    }
+    bio_put(SUBGHZ_GDO0, false);
+    (void)cc1101_idle();
+    bio_input(SUBGHZ_GDO0);
+    (void)cc1101_rx();
+bf_restore:
+    if (!ook) {
+        (void)cc1101_set_preset(saved_preset);
+        mode_config.preset = saved_preset;
+        (void)cc1101_rx();
+    }
+}
+
+/* Band-jam helper: hop across channels, random burst + 64x30us toggles per dwell. */
+static void jam_band(const uint32_t *freqs, size_t count, uint32_t dwell_ms, uint32_t gap_us) {
+    uint32_t skipped = 0;
+    bool open = mode_config.tx_policy == SUBGHZ_TX_OPEN;
+    printf("Jamming %u channels, %lums dwell, %luus gap (keypress stops)...\r\n",
+           (unsigned)count, (unsigned long)dwell_ms, (unsigned long)gap_us);
+    if (!cc1101_idle()) { printf("Failed to enter IDLE state.\r\n"); return; }
+    bio_output(SUBGHZ_GDO0);
+    bio_put(SUBGHZ_GDO0, false);
+    apply_tx_power();
+    bool stop = false;
+    while (!stop) {
+        for (size_t i = 0; i < count && !stop; i++) {
+            char c;
+            if (rx_fifo_try_get(&c)) { stop = true; break; }
+            uint32_t khz = freqs[i];
+            if (!open && !tx_ism_allowed(khz)) { skipped++; continue; }
+            if (!cc1101_set_frequency(khz) || !cc1101_tx()) continue;
+            sleep_ms(1);
+            absolute_time_t until = make_timeout_time_ms(dwell_ms);
+            while (!time_reached(until) && !stop) {
+                if (rx_fifo_try_get(&c)) { stop = true; break; }
+                send_random_burst();
+                for (int k = 0; k < 64 && !stop; k++) {
+                    pulse(true, 30);
+                    bio_put(SUBGHZ_GDO0, false);
+                    if ((k & 31) == 0 && rx_fifo_try_get(&c)) stop = true;
+                }
+                uint32_t remain = gap_us;
+                while (remain && !stop) {
+                    uint32_t chunk = remain > 1000u ? 1000u : remain;
+                    sleep_us(chunk);
+                    remain -= chunk;
+                    if (rx_fifo_try_get(&c)) stop = true;
+                }
+            }
+            (void)cc1101_idle();
+        }
+    }
+    bio_put(SUBGHZ_GDO0, false);
+    (void)cc1101_idle();
+    bio_input(SUBGHZ_GDO0);
+    if (!cc1101_set_frequency(mode_config.frequency_khz)) {
+        printf("Warning: failed to restore the configured frequency.\r\n");
+    }
+    (void)cc1101_rx();
+    if (skipped) {
+        printf("Skipped %lu non-ISM channels under the strict TX policy.\r\n", (unsigned long)skipped);
+    }
+    printf("Jam stopped.\r\n");
+}
+
+static void jam_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&jam_def, res->help_flag) || !command_ready()) return;
+    char band_name[32] = { 0 };
+    if (bp_cmd_get_string(&jam_def, 'b', band_name, sizeof(band_name))) {
+        subghz_scan_band_t band = subghz_band_from_name(band_name);
+        size_t count = 0;
+        const uint32_t *freqs = subghz_band_frequencies(band, &count);
+        if (!freqs || !count) {
+            printf("Unknown band '%s'. Use all, 300, 433, or 868.\r\n", band_name);
+            return;
+        }
+        uint32_t dwell = 5, gap = 1, value;
+        if (bp_cmd_get_uint32(&jam_def, 'd', &value)) dwell = value;
+        if (bp_cmd_get_uint32(&jam_def, 'g', &value)) gap = value;
+        if (!dwell || dwell > 10000) { printf("Dwell must be 1-10000ms.\r\n"); return; }
+        if (gap > 500000u) { printf("Gap must be 0-500000us.\r\n"); return; }
+        printf("Warning: band jamming transmits on %u channels (%s). Lab use only;\r\n"
+               "obey local regulations. Press a key to stop.\r\n",
+               (unsigned)count, subghz_scan_band_names[band]);
+        jam_band(freqs, count, dwell, gap);
+        return;
+    }
+    uint32_t freq = mode_config.frequency_khz, value;
+    if (bp_cmd_get_uint32(&jam_def, 'f', &value)) freq = value;
+    if (!valid_frequency(freq)) {
+        printf("Invalid frequency. Supported: 300-348, 387-464, and 779-928 MHz.\r\n");
+        return;
+    }
+    if (freq != mode_config.frequency_khz) {
+        if (!cc1101_set_frequency(freq)) { printf("Failed to set frequency.\r\n"); return; }
+        mode_config.frequency_khz = freq;
+    }
+    if (!tx_guard()) return;
+    printf("Warning: jamming transmits continuously on %u.%03u MHz. Lab use only;\r\n"
+           "keep power minimal and obey local regulations. Press a key to stop.\r\n",
+           freq / 1000, freq % 1000);
+    if (!cc1101_idle()) { printf("Failed to enter IDLE state.\r\n"); return; }
+    bio_output(SUBGHZ_GDO0);
+    bio_put(SUBGHZ_GDO0, false);
+    apply_tx_power();
+    if (!cc1101_tx()) {
+        printf("CC1101 TX transition failed.\r\n");
+        bio_input(SUBGHZ_GDO0);
+        (void)cc1101_rx();
+        return;
+    }
+    sleep_ms(1);
+    uint32_t n = 0;
+    while (true) {
+        /* ESP32 handleJam: 30us HIGH pulses back-to-back. */
+        pulse(true, 30);
+        bio_put(SUBGHZ_GDO0, false);
+        if ((++n & 31u) == 0) {
+            char c;
+            if (rx_fifo_try_get(&c)) break;
+        }
+    }
+    bio_put(SUBGHZ_GDO0, false);
+    (void)cc1101_idle();
+    bio_input(SUBGHZ_GDO0);
+    (void)cc1101_rx();
+    printf("Jam stopped.\r\n");
 }
 
 static void burst_handler(struct command_result *res) {
@@ -2892,6 +3495,56 @@ static void bitrate_handler(struct command_result *res) {
     printf("Bitrate: %lu baud\r\n", (unsigned long)baud);
 }
 
+/* applyScanProfile equivalent: datarate + RX bandwidth + modulation via presets. */
+static void scanprofile_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&scanprofile_def, res->help_flag) || !command_ready()) return;
+    char text[32] = { 0 };
+    float datarate_kbps = 4.8f, bw_khz = 200.0f;
+    uint32_t mod = 2;
+    if (bp_cmd_get_string(&scanprofile_def, 'd', text, sizeof(text))) {
+        char *end = NULL;
+        errno = 0;
+        float v = strtof(text, &end);
+        if (errno == ERANGE || !end || end == text || *end != '\0' || v < 0.6f || v > 500.0f) {
+            printf("Data rate must be 0.6-500 kbps.\r\n");
+            return;
+        }
+        datarate_kbps = v;
+    }
+    if (bp_cmd_get_string(&scanprofile_def, 'b', text, sizeof(text))) {
+        char *end = NULL;
+        errno = 0;
+        float v = strtof(text, &end);
+        if (errno == ERANGE || !end || end == text || *end != '\0' || v <= 0.0f || v > 1000.0f) {
+            printf("Bandwidth must be 1-1000 kHz.\r\n");
+            return;
+        }
+        bw_khz = v;
+    }
+    uint32_t value;
+    if (bp_cmd_get_uint32(&scanprofile_def, 'm', &value)) mod = value;
+    cc1101_preset_t preset;
+    switch (mod) {
+    case 2: preset = (bw_khz >= 400.0f) ? CC1101_PRESET_OOK_650 : CC1101_PRESET_OOK_270; break;
+    case 0: preset = (bw_khz >= 400.0f) ? CC1101_PRESET_2FSK_DEV476 : CC1101_PRESET_2FSK_DEV238; break;
+    case 1: preset = CC1101_PRESET_GFSK_10K; break;
+    case 4: preset = CC1101_PRESET_MSK_100K; break;
+    default: printf("Modulation must be 0=2FSK, 1=GFSK, 2=OOK/ASK, 4=MSK.\r\n"); return;
+    }
+    uint32_t bitrate_baud = (uint32_t)(datarate_kbps * 1000.0f + 0.5f);
+    if (!cc1101_set_preset(preset) || !cc1101_set_bitrate(bitrate_baud) || !cc1101_rx()) {
+        printf("Failed to apply scan profile.\r\n");
+        (void)cc1101_rx();
+        return;
+    }
+    mode_config.preset = preset;
+    mode_config.bitrate_baud = bitrate_baud;
+    mode_config.bandwidth_khz = cc1101_preset_is_ook(preset) ?
+        (preset == CC1101_PRESET_OOK_650 ? 650 : 270) : 0;
+    printf("Scan profile: %.2f kbps, %.1f kHz BW, mod %lu -> %s.\r\n", datarate_kbps, bw_khz,
+           (unsigned long)mod, cc1101_preset_name(preset));
+}
+
 static void info_handler(struct command_result *res) {
     if (bp_cmd_help_check(&info_def, res->help_flag) || !command_ready()) return;
     const cc1101_preset_info_t *pi = cc1101_preset_info((cc1101_preset_t)mode_config.preset);
@@ -2900,6 +3553,7 @@ static void info_handler(struct command_result *res) {
     printf("Modulation: %s\r\n", cc1101_preset_is_ook((cc1101_preset_t)mode_config.preset) ? "OOK" :
            cc1101_preset_is_fsk((cc1101_preset_t)mode_config.preset) ? "FSK/MSK/GFSK" : "Unknown");
     printf("GDO0:     BIO%u\r\n", (unsigned)mode_config.gdo_pin);
+    printf("Capture:  1 us/tick, %u-pulse buffer\r\n", (unsigned)count_of(capture_buffer));
     printf("TX:       %s, policy %s\r\n", tx_allowed_here() ? "allowed" : "blocked",
            mode_config.tx_policy == SUBGHZ_TX_OPEN ? "open" : "strict");
     if (mode_config.bitrate_baud) printf("Bitrate:  %lu baud\r\n", (unsigned long)mode_config.bitrate_baud);
@@ -2940,6 +3594,9 @@ const struct _mode_command_struct subghz_commands[] = {
     { .func = txallow_handler, .def = &txallow_def, .supress_fala_capture = true },
     { .func = power_handler, .def = &power_def, .supress_fala_capture = true },
     { .func = bitrate_handler, .def = &bitrate_def, .supress_fala_capture = true },
+    { .func = scanprofile_handler, .def = &scanprofile_def, .supress_fala_capture = true },
+    { .func = jam_handler, .def = &jam_def, .supress_fala_capture = true },
+    { .func = bruteforce_handler, .def = &bruteforce_def, .supress_fala_capture = true },
     { .func = burst_handler, .def = &burst_def, .supress_fala_capture = true },
 };
 const uint32_t subghz_commands_count = count_of(subghz_commands);
@@ -3091,6 +3748,10 @@ void subghz_help(void) {
            mode_config.gdo_pin);
     printf("Connect CC1101 VCC directly to 3.3V. Attach an antenna suitable for the selected band.\r\n");
     printf("Transmit only on frequencies and duty cycles permitted in your jurisdiction.\r\n\r\n");
+    printf("Workflow: setfrequency/scan to find activity, receive/monitor to capture\r\n");
+    printf("and decode, replay/load/send to transmit, record/clone/savekey for .sub files.\r\n");
+    printf("Radio: preset/scanprofile/power/bitrate configure the CC1101, info shows status.\r\n");
+    printf("Lab-only transmitters (strict ISM gate applies): jam, bruteforce, burst.\r\n\r\n");
     ui_help_mode_commands(subghz_commands, subghz_commands_count);
 }
 

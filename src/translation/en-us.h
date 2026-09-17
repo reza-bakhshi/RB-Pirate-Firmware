@@ -167,6 +167,8 @@ static char const * const en_us[]={
 	[T_SUBGHZ_PRESET_GFSK10K]="GFSK10K - GFSK, 9.99kbps",
 	[T_SUBGHZ_PRESET_MSK100K]="MSK100K - MSK, 99.97kbps",
 	[T_SUBGHZ_PRESET_CUSTOM]="Custom - imported registers (preset import first)",
+	[T_SUBGHZ_WIRING_1]="CC1101 wiring: BIO6=SCK, BIO7=MOSI, BIO4=MISO, BIO5=CS, BIO0-BIO3=GDO0, GND=GND",
+	[T_SUBGHZ_WIRING_2]="Power CC1101 from 3.3V and attach an antenna for the selected band",
     //I2C
 	[T_HWI2C_SPEED_MENU]="I2C speed",
 	[T_HWI2C_SPEED_MENU_1]="1kHz to 1000kHz",

@@ -209,10 +209,14 @@ static void frequency_band_bounds(uint32_t khz, uint32_t *low, uint32_t *high) {
 static const bp_val_constraint_t frequency_range = {
     .type = BP_VAL_UINT32,
     .u = { .min = 300000, .max = 928000, .def = SUBGHZ_DEFAULT_KHZ },
+    .prompt = T_SUBGHZ_FREQUENCY_MENU,
+    .hint = T_SUBGHZ_FREQUENCY_MENU_1,
 };
 static const bp_val_constraint_t gdo_range = {
     .type = BP_VAL_UINT32,
     .u = { .min = BIO0, .max = BIO3, .def = BIO0 },
+    .prompt = T_SUBGHZ_GDO_MENU,
+    .hint = T_SUBGHZ_GDO_MENU_1,
 };
 static const bp_val_constraint_t bandwidth_choice = {
     .type = BP_VAL_CHOICE,
@@ -224,21 +228,22 @@ static const bp_val_constraint_t bandwidth_choice = {
 static const bp_val_constraint_t preset_choice = {
     .type = BP_VAL_CHOICE,
     .choice = { .choices = (const bp_val_choice_t[]){
-        { "Ook270Async",   NULL, 0, CC1101_PRESET_OOK_270 },
-        { "Ook650Async",   NULL, 0, CC1101_PRESET_OOK_650 },
-        { "2FSKDev238",    NULL, 0, CC1101_PRESET_2FSK_DEV238 },
-        { "2FSKDev12K",    NULL, 0, CC1101_PRESET_2FSK_DEV12K },
-        { "2FSKDev476",    NULL, 0, CC1101_PRESET_2FSK_DEV476 },
-        { "GFSK10K",       NULL, 0, CC1101_PRESET_GFSK_10K },
-        { "MSK100K",       NULL, 0, CC1101_PRESET_MSK_100K },
-        { "Custom",        NULL, 0, CC1101_PRESET_CUSTOM },
+        { "Ook270Async",   NULL, T_SUBGHZ_PRESET_OOK270,  CC1101_PRESET_OOK_270 },
+        { "Ook650Async",   NULL, T_SUBGHZ_PRESET_OOK650,  CC1101_PRESET_OOK_650 },
+        { "2FSKDev238",    NULL, T_SUBGHZ_PRESET_2FSK238, CC1101_PRESET_2FSK_DEV238 },
+        { "2FSKDev12K",    NULL, T_SUBGHZ_PRESET_2FSK12K, CC1101_PRESET_2FSK_DEV12K },
+        { "2FSKDev476",    NULL, T_SUBGHZ_PRESET_2FSK476, CC1101_PRESET_2FSK_DEV476 },
+        { "GFSK10K",       NULL, T_SUBGHZ_PRESET_GFSK10K, CC1101_PRESET_GFSK_10K },
+        { "MSK100K",       NULL, T_SUBGHZ_PRESET_MSK100K, CC1101_PRESET_MSK_100K },
+        { "Custom",        NULL, T_SUBGHZ_PRESET_CUSTOM, CC1101_PRESET_CUSTOM },
     }, .count = 8, .def = 0 },
+    .prompt = T_SUBGHZ_PRESET_MENU,
 };
 
 static const bp_command_opt_t setup_opts[] = {
     { "frequency", 'f', BP_ARG_REQUIRED, "kHz", 0, &frequency_range },
     { "gdo", 'g', BP_ARG_REQUIRED, "BIO0-BIO3", 0, &gdo_range },
-    { "preset", 'p', BP_ARG_REQUIRED, "Ook270Async|Ook650Async|...", 0, &preset_choice },
+    { "preset", 'p', BP_ARG_REQUIRED, "Ook270Async|Ook650Async|2FSK*|GFSK10K|MSK100K|Custom", 0, &preset_choice },
     { 0 }
 };
 const bp_command_def_t subghz_setup_def = {
@@ -372,7 +377,7 @@ static const bp_command_def_t waterfall_def = {
 };
 
 static const bp_command_opt_t replay_opts[] = {
-    { "repeat", 'r', BP_ARG_REQUIRED, "1-20", 0, NULL, "number of retransmissions" },
+    { "repeat", 'r', BP_ARG_REQUIRED, "1-20", 0, NULL, "number of retransmissions (default 1)" },
     { "frames", 'f', BP_ARG_NONE,     NULL, 0, NULL, "replay each gap-delimited frame separately (150ms gap)" }, { 0 }
 };
 static const char *const replay_usage[] = {
@@ -392,7 +397,7 @@ static const bp_command_positional_t record_positionals[] = {
     { "file", "output .sub file", 0, true, NULL, "destination .sub file path" }, { 0 }
 };
 static const bp_command_opt_t record_opts[] = {
-    { "time", 't', BP_ARG_REQUIRED, "ms", 0, NULL, "recording duration in ms" }, { 0 }
+    { "time", 't', BP_ARG_REQUIRED, "ms", 0, NULL, "recording duration in ms (default 5000)" }, { 0 }
 };
 static const char *const record_usage[] = {
     "record <file.sub> [-t milliseconds]",
@@ -474,7 +479,7 @@ static const bp_command_def_t savekey_def = {
 };
 
 static const bp_command_opt_t monitor_opts[] = {
-    { "time", 't', BP_ARG_REQUIRED, "ms", 0, NULL, "monitoring duration in ms" }, { 0 }
+    { "time", 't', BP_ARG_REQUIRED, "ms", 0, NULL, "monitoring duration in ms (default 10000)" }, { 0 }
 };
 static const char *const monitor_usage[] = {
     "monitor [-t milliseconds]",
@@ -530,7 +535,7 @@ static const bp_command_def_t keyadd_def = {
 };
 
 static const bp_command_positional_t send_positionals[] = {
-    { "payload", "integer/hex value, or hex key with -P", 0, true, NULL, "payload value or key" }, { 0 }
+    { "payload", "integer/hex value, or hex key with -P", 0, false, NULL, "payload value, key, or omit for -u/-B/-w/-R modes" }, { 0 }
 };
 static const bp_command_opt_t send_opts[] = {
     { "bits",     'b', BP_ARG_REQUIRED, "1-64", 0, NULL, "number of bits to transmit" },
@@ -627,7 +632,7 @@ static const bp_command_def_t bruteforce_def = {
 /* --- New commands --- */
 
 static const bp_command_positional_t preset_positionals[] = {
-    { "name", "preset name, import, or export", 0, true, NULL, "preset name or action" },
+    { "name", "preset name, import, or export", 0, false, NULL, "preset name or action, omit to list all" },
     { "file", "file for import/export", 0, false, NULL, "file path on storage" }, { 0 }
 };
 static const char *const preset_usage[] = {
@@ -645,7 +650,7 @@ static const bp_command_def_t preset_def = {
 };
 
 static const bp_command_positional_t protocol_positionals[] = {
-    { "name", "protocol name (list with bare 'protocol')", 0, true, NULL, "protocol to inspect" }, { 0 }
+    { "name", "protocol name (list with bare 'protocol')", 0, false, NULL, "protocol to inspect, omit to list all" }, { 0 }
 };
 static const char *const protocol_usage[] = {
     "protocol [name]",

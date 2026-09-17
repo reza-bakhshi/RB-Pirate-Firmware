@@ -13,6 +13,7 @@
 #include "mode/subghz_rx.h"
 #include "mode/subghz_keystore.h"
 #include "mode/subghz_file.h"
+#include "mode/subghz_freqs.h"
 
 static int failures;
 
@@ -1112,11 +1113,14 @@ static void test_file_fields(void) {
 int main(void) {
     printf("protocol count: %u (static %u)\n", subghz_protocol_count(),
            subghz_protocol_count_static());
-    CHECK(subghz_protocol_count() == 44, "expected 44 protocols, got %u",
+    CHECK(subghz_protocol_count() == 45, "expected 45 protocols, got %u",
           subghz_protocol_count());
+    CHECK(subghz_protocol_count_static() == 37, "expected 37 static protocols, got %u",
+          subghz_protocol_count_static());
     CHECK(subghz_protocol_find("Nope") == NULL, "unknown protocol NULL");
 
     round_trip("Princeton", 0xABCDEF, 24);
+    round_trip("RcSwitch", 0xABCDEF, 24);
     round_trip("GateTX", 0x123456, 24);
     round_trip("Ansonic", 0xABC, 12);
     round_trip("Dooya", 0xE1DC030533ull, 40);
@@ -1183,6 +1187,73 @@ int main(void) {
     test_keeloq_cipher_keystore();
     test_rx_dedup();
     test_file_fields();
+
+    /* Test RcSwitch Proto 2 and Proto 11 */
+    {
+        const subghz_protocol_entry_t *entry = subghz_protocol_find("RcSwitch");
+        CHECK(entry != NULL, "RcSwitch protocol found");
+        subghz_protocol_encoder_t *enc = subghz_encoder_alloc(entry);
+        subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+        CHECK(enc && dec, "RcSwitch alloc");
+
+        /* Proto 2 */
+        rcswitch_enc_priv_t *ep = enc->priv;
+        ep->proto = 2;
+        ep->te_us = 650;
+        CHECK(subghz_encoder_feed(enc, 0x123456, 24) == SUBGHZ_PROTOCOL_DONE, "RcSwitch P2 encode");
+        bool lv;
+        uint32_t du;
+        subghz_encoder_reset(enc);
+        bool done = false;
+        while (subghz_encoder_yield(enc, &lv, &du)) {
+            if (subghz_decoder_feed(dec, lv, du) == SUBGHZ_PROTOCOL_DONE) {
+                done = true;
+                break;
+            }
+        }
+        CHECK(done, "RcSwitch P2 decode done");
+        CHECK(dec->decoded_data == 0x123456, "RcSwitch P2 key match");
+        CHECK(dec->decoded_bits == 24, "RcSwitch P2 bits match");
+
+        /* Proto 11 */
+        subghz_decoder_reset(dec);
+        ep->proto = 11;
+        ep->te_us = 350;
+        CHECK(subghz_encoder_feed(enc, 0x654321, 24) == SUBGHZ_PROTOCOL_DONE, "RcSwitch P11 encode");
+        subghz_encoder_reset(enc);
+        done = false;
+        while (subghz_encoder_yield(enc, &lv, &du)) {
+            if (subghz_decoder_feed(dec, lv, du) == SUBGHZ_PROTOCOL_DONE) {
+                done = true;
+                break;
+            }
+        }
+        CHECK(done, "RcSwitch P11 decode done");
+        CHECK(dec->decoded_data == 0x654321, "RcSwitch P11 key match");
+        CHECK(dec->decoded_bits == 24, "RcSwitch P11 bits match");
+
+        subghz_encoder_free(enc);
+        subghz_decoder_free(dec);
+        printf("ok rcswitch proto 2 and 11 roundtrips\n");
+    }
+
+    /* Test SubGHz frequency channels and bands */
+    {
+        CHECK(subghz_freq_list_count == 91, "freq list count 91, got %zu", subghz_freq_list_count);
+        size_t s = 0, e = 0;
+        CHECK(subghz_band_range(SUBGHZ_BAND_ALL, &s, &e) && s == 0 && e == 90, "band all range");
+        CHECK(subghz_band_range(SUBGHZ_BAND_300, &s, &e) && s == 0 && e == 25, "band 300 range");
+        CHECK(subghz_band_range(SUBGHZ_BAND_433, &s, &e) && s == 26 && e == 59, "band 433 range");
+        CHECK(subghz_band_range(SUBGHZ_BAND_868, &s, &e) && s == 60 && e == 90, "band 868 range");
+        CHECK(subghz_band_from_name("433") == SUBGHZ_BAND_433, "band from name 433");
+        CHECK(subghz_band_from_name("315") == SUBGHZ_BAND_300, "band from name 315");
+        CHECK(subghz_band_from_name("868") == SUBGHZ_BAND_868, "band from name 868");
+        CHECK(subghz_band_from_name("all") == SUBGHZ_BAND_ALL, "band from name all");
+        size_t cnt = 0;
+        const uint32_t *f = subghz_band_frequencies(SUBGHZ_BAND_433, &cnt);
+        CHECK(f && cnt == 34 && f[0] == 387000, "band 433 frequencies");
+        printf("ok subghz freqs and bands\n");
+    }
 
     if (failures) {
         printf("RESULT: %d FAILURES\n", failures);

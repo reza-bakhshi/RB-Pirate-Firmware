@@ -261,8 +261,22 @@ const char *cc1101_preset_name(cc1101_preset_t preset) {
 }
 
 cc1101_preset_t cc1101_preset_from_name(const char *name) {
+    if (!name) return CC1101_PRESET_COUNT;
     for (uint i = 0; i < CC1101_PRESET_COUNT; i++) {
         if (strcmp(preset_info_table[i].name, name) == 0) return (cc1101_preset_t)i;
+    }
+    /* Flipper / SubGhzService canonical preset names */
+    if (strcmp(name, "FuriHalSubGhzPresetOok270Async") == 0 || strcasecmp(name, "AM270") == 0) return CC1101_PRESET_OOK_270;
+    if (strcmp(name, "FuriHalSubGhzPresetOok650Async") == 0 || strcasecmp(name, "AM650") == 0) return CC1101_PRESET_OOK_650;
+    if (strcmp(name, "FuriHalSubGhzPreset2FSKDev238Async") == 0 || strcasecmp(name, "FM238") == 0) return CC1101_PRESET_2FSK_DEV238;
+    if (strcmp(name, "FuriHalSubGhzPreset2FSKDev12KAsync") == 0 || strcasecmp(name, "FM12K") == 0) return CC1101_PRESET_2FSK_DEV12K;
+    if (strcmp(name, "FuriHalSubGhzPreset2FSKDev476Async") == 0 || strcasecmp(name, "FM476") == 0) return CC1101_PRESET_2FSK_DEV476;
+    if (strcmp(name, "FuriHalSubGhzPresetGFSK9_99KbAsync") == 0) return CC1101_PRESET_GFSK_10K;
+    if (strcmp(name, "FuriHalSubGhzPresetMSK99_97KbAsync") == 0) return CC1101_PRESET_MSK_100K;
+    /* SubGhzService profile aliases */
+    if (strcasecmp(name, "Sniff") == 0 || strcasecmp(name, "RawSend") == 0 ||
+        strcasecmp(name, "Scan") == 0) {
+        return CC1101_PRESET_OOK_270;
     }
     return CC1101_PRESET_COUNT;
 }

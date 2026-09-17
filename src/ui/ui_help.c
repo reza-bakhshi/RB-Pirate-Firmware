@@ -170,8 +170,12 @@ void ui_help_mode_commands_exec(const struct _mode_command_struct* commands, uin
     for (uint32_t i = 0; i < count; i++) {
         pager_check();
         const char *desc = "Description not set. Try -h for command help";
-        if (commands[i].def && commands[i].def->description) {
-            desc = GET_T(commands[i].def->description);
+        if (commands[i].def) {
+            if (commands[i].def->description_text) {
+                desc = commands[i].def->description_text;
+            } else if (commands[i].def->description) {
+                desc = GET_T(commands[i].def->description);
+            }
         }
         printf("%s%s%s\t%s%s\r\n",
                ui_term_color_prompt(),

@@ -24,6 +24,7 @@
 #include "mode/subghz_keystore.h"
 #include "mode/subghz_file.h"
 #include "mode/subghz_cap.h"
+#include "mode/subghz_freqs.h"
 
 #define SUBGHZ_DEFAULT_KHZ 433920u
 #define SUBGHZ_MAX_HOP 8
@@ -241,107 +242,186 @@ static const bp_command_opt_t setup_opts[] = {
     { 0 }
 };
 const bp_command_def_t subghz_setup_def = {
-    .name = "subghz", .description = 0, .opts = setup_opts,
+    .name = "subghz", .description = 0,
+    .description_text = "Configure and enter CC1101 Sub-GHz mode",
+    .opts = setup_opts,
 };
 
 static const bp_command_positional_t frequency_positionals[] = {
-    { "kHz", "300000-928000 (supported CC1101 bands)", 0, true }, { 0 }
+    { "kHz", "300000-928000 (supported CC1101 bands)", 0, true, NULL, "tuning frequency in kHz" }, { 0 }
 };
 static const char *const frequency_usage[] = {
-    "setfrequency <kHz>", "Tune to 433.92 MHz:%s setfrequency 433920"
+    "setfrequency <kHz>",
+    "Tune to 433.92 MHz:%s setfrequency 433920",
+    "Tune to 315.00 MHz:%s setfrequency 315000",
+    "Tune to 868.35 MHz:%s setfrequency 868350",
 };
 static const bp_command_def_t frequency_def = {
     .name = "setfrequency", .description = 0,
+    .description_text = "Tune CC1101 radio to frequency (in kHz)",
     .positionals = frequency_positionals, .positional_count = 1,
     .usage = frequency_usage, .usage_count = count_of(frequency_usage),
 };
 
-static const bp_command_def_t rssi_def = { .name = "rssi", .description = 0 };
+static const bp_command_opt_t rssi_opts[] = {
+    { "dwell", 'd', BP_ARG_REQUIRED, "ms", 0, NULL, "hold time in ms for peak RSSI measurement" }, { 0 }
+};
+static const char *const rssi_usage[] = {
+    "rssi [-d dwell_ms]",
+    "Instantaneous RSSI:%s rssi",
+    "Peak RSSI over 100ms:%s rssi -d 100",
+};
+static const bp_command_def_t rssi_def = {
+    .name = "rssi", .description = 0,
+    .description_text = "Read signal strength (instantaneous or peak held)",
+    .opts = rssi_opts,
+    .usage = rssi_usage, .usage_count = count_of(rssi_usage),
+};
 
 static const bp_command_opt_t scan_opts[] = {
-    { "start", 'a', BP_ARG_REQUIRED, "kHz", 0 },
-    { "stop",  'z', BP_ARG_REQUIRED, "kHz", 0 },
-    { "step",  's', BP_ARG_REQUIRED, "kHz", 0 },
-    { "dwell", 'd', BP_ARG_REQUIRED, "ms", 0 }, { 0 }
+    { "start", 'a', BP_ARG_REQUIRED, "kHz", 0, NULL, "start frequency in kHz" },
+    { "stop",  'z', BP_ARG_REQUIRED, "kHz", 0, NULL, "stop frequency in kHz" },
+    { "step",  's', BP_ARG_REQUIRED, "kHz", 0, NULL, "step size in kHz" },
+    { "dwell", 'd', BP_ARG_REQUIRED, "ms", 0, NULL, "dwell time in ms per step" },
+    { "band",  'b', BP_ARG_REQUIRED, "all|300|433|868", 0, NULL, "standard band channels" },
+    { "list",  'l', BP_ARG_NONE,     NULL, 0, NULL, "list channel frequencies" }, { 0 }
 };
 static const char *const scan_usage[] = {
     "scan [-a start_kHz] [-z stop_kHz] [-s step_kHz] [-d dwell_ms]",
-    "Scan around the current frequency:%s scan",
-    "Scan the 433 MHz ISM band:%s scan -a 433050 -z 434790 -s 25 -d 10"
+    "scan -b [all|300|433|868] [-d dwell_ms]",
+    "scan -l",
+    "Scan around current frequency:%s scan",
+    "Scan 433 MHz ISM band channels:%s scan -b 433 -d 10",
+    "Scan custom range:%s scan -a 433050 -z 434790 -s 25 -d 10",
+    "List all channels by band:%s scan -l",
 };
 static const bp_command_def_t scan_def = {
-    .name = "scan", .description = 0, .opts = scan_opts,
+    .name = "scan", .description = 0,
+    .description_text = "Scan frequency range or discrete channels for activity",
+    .opts = scan_opts,
     .usage = scan_usage, .usage_count = count_of(scan_usage),
 };
 
 static const bp_command_opt_t receive_opts[] = {
-    { "time", 't', BP_ARG_REQUIRED, "ms", 0 }, { 0 }
+    { "time",    't', BP_ARG_REQUIRED, "ms", 0, NULL, "capture duration in ms (default 5000)" },
+    { "verbose", 'v', BP_ARG_NONE,     NULL, 0, NULL, "display formatted 4-column raw pulse dump" }, { 0 }
 };
 static const char *const receive_usage[] = {
-    "receive [-t milliseconds]", "Capture GDO0 pulse widths for 5 seconds:%s receive"
+    "receive [-t milliseconds] [-v]",
+    "Capture GDO0 pulse widths for 5 seconds:%s receive",
+    "Capture and display formatted pulses:%s receive -t 2000 -v",
 };
 static const bp_command_def_t receive_def = {
-    .name = "receive", .description = 0, .opts = receive_opts,
+    .name = "receive", .description = 0,
+    .description_text = "Capture raw GDO0 pulse train and run protocol decoders",
+    .opts = receive_opts,
     .usage = receive_usage, .usage_count = count_of(receive_usage),
 };
 
 static const bp_command_opt_t sweep_opts[] = {
-    { "start", 'a', BP_ARG_REQUIRED, "kHz", 0 },
-    { "stop",  'z', BP_ARG_REQUIRED, "kHz", 0 },
-    { "step",  's', BP_ARG_REQUIRED, "kHz", 0 },
-    { "samples", 'n', BP_ARG_REQUIRED, "2-100", 0 },
-    { "threshold", 'r', BP_ARG_REQUIRED, "positive dBm magnitude", 0 }, { 0 }
+    { "start",     'a', BP_ARG_REQUIRED, "kHz", 0, NULL, "start frequency in kHz" },
+    { "stop",      'z', BP_ARG_REQUIRED, "kHz", 0, NULL, "stop frequency in kHz" },
+    { "step",      's', BP_ARG_REQUIRED, "kHz", 0, NULL, "step size in kHz" },
+    { "samples",   'n', BP_ARG_REQUIRED, "2-100", 0, NULL, "samples per frequency" },
+    { "threshold", 'r', BP_ARG_REQUIRED, "dBm", 0, NULL, "positive dBm threshold magnitude" }, { 0 }
 };
-static const bp_command_def_t sweep_def = { .name = "sweep", .description = 0, .opts = sweep_opts };
+static const char *const sweep_usage[] = {
+    "sweep [-a start_kHz] [-z stop_kHz] [-s step_kHz] [-n samples] [-r threshold]",
+    "Sweep 433MHz with 20 samples per step:%s sweep -a 433050 -z 434790 -s 25 -n 20 -r 85",
+};
+static const bp_command_def_t sweep_def = {
+    .name = "sweep", .description = 0,
+    .description_text = "Multi-sample signal detection across frequency range",
+    .opts = sweep_opts,
+    .usage = sweep_usage, .usage_count = count_of(sweep_usage),
+};
 
 static const bp_command_opt_t trace_opts[] = {
-    { "time", 't', BP_ARG_REQUIRED, "100-10000 milliseconds", 0 }, { 0 }
+    { "time", 't', BP_ARG_REQUIRED, "ms", 0, NULL, "duration in ms (100-10000)" }, { 0 }
 };
-static const bp_command_def_t trace_def = { .name = "trace", .description = 0, .opts = trace_opts };
+static const char *const trace_usage[] = {
+    "trace [-t milliseconds]",
+    "Sample GDO0 logic levels for 2 seconds:%s trace -t 2000",
+};
+static const bp_command_def_t trace_def = {
+    .name = "trace", .description = 0,
+    .description_text = "Terminal logic-analyzer trace of GDO0 pulse levels",
+    .opts = trace_opts,
+    .usage = trace_usage, .usage_count = count_of(trace_usage),
+};
 
 static const bp_command_opt_t waterfall_opts[] = {
-    { "start", 'a', BP_ARG_REQUIRED, "kHz", 0 },
-    { "stop",  'z', BP_ARG_REQUIRED, "kHz", 0 },
-    { "step",  's', BP_ARG_REQUIRED, "kHz", 0 },
-    { "rows", 'n', BP_ARG_REQUIRED, "1-100", 0 }, { 0 }
+    { "start", 'a', BP_ARG_REQUIRED, "kHz", 0, NULL, "start frequency in kHz" },
+    { "stop",  'z', BP_ARG_REQUIRED, "kHz", 0, NULL, "stop frequency in kHz" },
+    { "step",  's', BP_ARG_REQUIRED, "kHz", 0, NULL, "step size in kHz" },
+    { "rows",  'n', BP_ARG_REQUIRED, "1-100", 0, NULL, "number of rows" }, { 0 }
 };
-static const bp_command_def_t waterfall_def = { .name = "waterfall", .description = 0, .opts = waterfall_opts };
+static const char *const waterfall_usage[] = {
+    "waterfall [-a start_kHz] [-z stop_kHz] [-s step_kHz] [-n rows]",
+    "Display 20 rows across 433 MHz band:%s waterfall -a 433050 -z 434790 -s 25 -n 20",
+};
+static const bp_command_def_t waterfall_def = {
+    .name = "waterfall", .description = 0,
+    .description_text = "ASCII waterfall display of signal strength over time",
+    .opts = waterfall_opts,
+    .usage = waterfall_usage, .usage_count = count_of(waterfall_usage),
+};
 
 static const bp_command_opt_t replay_opts[] = {
-    { "repeat", 'r', BP_ARG_REQUIRED, "1-20", 0 }, { 0 }
+    { "repeat", 'r', BP_ARG_REQUIRED, "1-20", 0, NULL, "number of retransmissions" }, { 0 }
 };
-static const bp_command_def_t replay_def = { .name = "replay", .description = 0, .opts = replay_opts };
+static const char *const replay_usage[] = {
+    "replay [-r repeats]",
+    "Transmit last captured pulses once:%s replay",
+    "Transmit last captured pulses 3 times:%s replay -r 3",
+};
+static const bp_command_def_t replay_def = {
+    .name = "replay", .description = 0,
+    .description_text = "Replay last captured or loaded pulse buffer via CC1101 TX",
+    .opts = replay_opts,
+    .usage = replay_usage, .usage_count = count_of(replay_usage),
+};
 
 static const bp_command_positional_t record_positionals[] = {
-    { "file", "output .sub file", 0, true }, { 0 }
+    { "file", "output .sub file", 0, true, NULL, "destination .sub file path" }, { 0 }
 };
 static const bp_command_opt_t record_opts[] = {
-    { "time", 't', BP_ARG_REQUIRED, "milliseconds", 0 }, { 0 }
+    { "time", 't', BP_ARG_REQUIRED, "ms", 0, NULL, "recording duration in ms" }, { 0 }
+};
+static const char *const record_usage[] = {
+    "record <file.sub> [-t milliseconds]",
+    "Record raw pulses for 5 seconds to file:%s record capture.sub -t 5000",
 };
 static const bp_command_def_t record_def = {
-    .name = "record", .description = 0, .opts = record_opts,
+    .name = "record", .description = 0,
+    .description_text = "Record raw pulse stream directly to Flipper .sub file",
+    .opts = record_opts,
     .positionals = record_positionals, .positional_count = 1,
+    .usage = record_usage, .usage_count = count_of(record_usage),
 };
 
 static const bp_command_positional_t load_positionals[] = {
-    { "file", "Flipper RAW .sub file", 0, false }, { 0 }
+    { "file", "Flipper RAW .sub file", 0, false, NULL, "path to .sub file" }, { 0 }
 };
 static const bp_command_opt_t load_opts[] = {
-    { "repeat", 'r', BP_ARG_REQUIRED, "0-20 (0 loads only)", 0 }, { 0 }
+    { "repeat", 'r', BP_ARG_REQUIRED, "0-20", 0, NULL, "retransmit count (0 = load only)" }, { 0 }
 };
 static const char *const load_usage[] = {
     "load <file.sub> [-r repeats]",
     "Load without transmitting:%s load capture.sub",
-    "Load and replay twice:%s load capture.sub -r 2"
+    "Load and replay twice:%s load capture.sub -r 2",
+    "Replay loaded buffer 5 times:%s load -r 5",
 };
 static const bp_command_def_t load_def = {
-    .name = "load", .description = 0, .opts = load_opts,
+    .name = "load", .description = 0,
+    .description_text = "Load and parse Flipper RAW or protocol key file (.sub)",
+    .opts = load_opts,
     .positionals = load_positionals, .positional_count = 1,
     .usage = load_usage, .usage_count = count_of(load_usage),
 };
 
 static const bp_command_positional_t decode_positionals[] = {
-    { "file", ".sub file to inspect (no TX)", 0, false }, { 0 }
+    { "file", ".sub file to inspect (no TX)", 0, false, NULL, "file path to inspect" }, { 0 }
 };
 static const char *const decode_usage[] = {
     "decode <file.sub>",
@@ -349,28 +429,32 @@ static const char *const decode_usage[] = {
 };
 static const bp_command_def_t decode_def = {
     .name = "decode", .description = 0,
+    .description_text = "Inspect and decode a .sub file without transmitting",
     .positionals = decode_positionals, .positional_count = 1,
     .usage = decode_usage, .usage_count = count_of(decode_usage),
 };
 
 static const bp_command_positional_t clone_positionals[] = {
-    { "file", "output .sub file (auto-named if omitted)", 0, false }, { 0 }
+    { "file", "output .sub file (auto-named if omitted)", 0, false, NULL, "destination .sub file" }, { 0 }
 };
 static const bp_command_opt_t clone_opts[] = {
-    { "time", 't', BP_ARG_REQUIRED, "ms", 0 }, { 0 }
+    { "time", 't', BP_ARG_REQUIRED, "ms", 0, NULL, "capture duration in ms (default 5000)" }, { 0 }
 };
 static const char *const clone_usage[] = {
     "clone [file.sub] [-t milliseconds]",
     "Capture, decode, and save in one step:%s clone",
+    "Capture and save with specific filename:%s clone myremote.sub -t 8000",
 };
 static const bp_command_def_t clone_def = {
-    .name = "clone", .description = 0, .opts = clone_opts,
+    .name = "clone", .description = 0,
+    .description_text = "Guided capture, decode, and save key file in one step",
+    .opts = clone_opts,
     .positionals = clone_positionals, .positional_count = 1,
     .usage = clone_usage, .usage_count = count_of(clone_usage),
 };
 
 static const bp_command_positional_t savekey_positionals[] = {
-    { "file", "output key .sub file", 0, true }, { 0 }
+    { "file", "output key .sub file", 0, true, NULL, "destination .sub file path" }, { 0 }
 };
 static const char *const savekey_usage[] = {
     "savekey <file.sub>",
@@ -378,141 +462,225 @@ static const char *const savekey_usage[] = {
 };
 static const bp_command_def_t savekey_def = {
     .name = "savekey", .description = 0,
+    .description_text = "Save last decoded frame as a Flipper protocol key file",
     .positionals = savekey_positionals, .positional_count = 1,
     .usage = savekey_usage, .usage_count = count_of(savekey_usage),
 };
 
 static const bp_command_opt_t monitor_opts[] = {
-    { "time", 't', BP_ARG_REQUIRED, "ms", 0 }, { 0 }
+    { "time", 't', BP_ARG_REQUIRED, "ms", 0, NULL, "monitoring duration in ms" }, { 0 }
 };
 static const char *const monitor_usage[] = {
     "monitor [-t milliseconds]",
+    "Live-decode continuously until keypress:%s monitor",
     "Live-decode for 10 seconds:%s monitor -t 10000",
 };
 static const bp_command_def_t monitor_def = {
-    .name = "monitor", .description = 0, .opts = monitor_opts,
+    .name = "monitor", .description = 0,
+    .description_text = "Continuous live protocol decoding with deduplication",
+    .opts = monitor_opts,
     .usage = monitor_usage, .usage_count = count_of(monitor_usage),
 };
 
 static const bp_command_positional_t keyload_positionals[] = {
-    { "file", "key file (default keeloq_mfcodes)", 0, false }, { 0 }
+    { "file", "key file (default keeloq_mfcodes)", 0, false, NULL, "manufacturer keys file" }, { 0 }
+};
+static const char *const keyload_usage[] = {
+    "keyload [file]",
+    "Load default keeloq_mfcodes file:%s keyload",
+    "Load specific keys file:%s keyload custom_keys.txt",
 };
 static const bp_command_def_t keyload_def = {
     .name = "keyload", .description = 0,
+    .description_text = "Load KeeLoq manufacturer keys file (keeloq_mfcodes)",
     .positionals = keyload_positionals, .positional_count = 1,
+    .usage = keyload_usage, .usage_count = count_of(keyload_usage),
 };
 
-static const bp_command_def_t keys_def = { .name = "keys", .description = 0 };
+static const char *const keys_usage[] = {
+    "keys",
+    "Display all loaded manufacturer keys and types:%s keys",
+};
+static const bp_command_def_t keys_def = {
+    .name = "keys", .description = 0,
+    .description_text = "List loaded KeeLoq manufacturer decryption keys",
+    .usage = keys_usage, .usage_count = count_of(keys_usage),
+};
 
 static const bp_command_positional_t keyadd_positionals[] = {
-    { "name", "manufacturer name", 0, true },
-    { "key", "64-bit hex manufacture key", 0, true },
-    { "type", "0=unknown 1=simple 2=normal 3=secure 4-7=magic (default 1)", 0, false }, { 0 }
+    { "name", "manufacturer name", 0, true, NULL, "manufacturer identifier" },
+    { "key",  "64-bit hex key",    0, true, NULL, "64-bit hex manufacturer key" },
+    { "type", "learning type",     0, false, NULL, "0=unk 1=simple 2=normal 3=secure 4-7=magic" }, { 0 }
+};
+static const char *const keyadd_usage[] = {
+    "keyadd <name> <hexkey> [type]",
+    "Add normal-learning key:%s keyadd MyBrand 0102030405060708 2",
 };
 static const bp_command_def_t keyadd_def = {
     .name = "keyadd", .description = 0,
+    .description_text = "Add custom KeeLoq manufacturer key to live keystore",
     .positionals = keyadd_positionals, .positional_count = 3,
+    .usage = keyadd_usage, .usage_count = count_of(keyadd_usage),
 };
 
 static const bp_command_positional_t send_positionals[] = {
-    { "payload", "integer/hex value, or hex key with -P", 0, true }, { 0 }
+    { "payload", "integer/hex value, or hex key with -P", 0, true, NULL, "payload value or key" }, { 0 }
 };
 static const bp_command_opt_t send_opts[] = {
-    { "bits", 'b', BP_ARG_REQUIRED, "1-64", 0 },
-    { "te", 't', BP_ARG_REQUIRED, "microseconds", 0 },
-    { "repeat", 'r', BP_ARG_REQUIRED, "1-20", 0 },
-    { "protocol", 'P', BP_ARG_REQUIRED, "protocol name", 0 },
-    { "key", 'k', BP_ARG_REQUIRED, "hex key (with -P)", 0 }, { 0 }
+    { "bits",     'b', BP_ARG_REQUIRED, "1-64", 0, NULL, "number of bits to transmit" },
+    { "te",       't', BP_ARG_REQUIRED, "us",   0, NULL, "elementary pulse time TE in us" },
+    { "repeat",   'r', BP_ARG_REQUIRED, "1-20", 0, NULL, "retransmission count" },
+    { "protocol", 'P', BP_ARG_REQUIRED, "name", 0, NULL, "protocol name to encode" },
+    { "key",      'k', BP_ARG_REQUIRED, "hex",  0, NULL, "hex key data (with -P)" },
+    { "proto",    'o', BP_ARG_REQUIRED, "1|2|11", 0, NULL, "sub-protocol (for RcSwitch)" },
+    { "burst",    'R', BP_ARG_NONE,     NULL,   0, NULL, "transmit random RF jitter noise burst" }, { 0 }
 };
 static const char *const send_usage[] = {
     "send <payload> [-b bits] [-t TE_us] [-r repeats]",
-    "send -P <protocol> -k <hexkey> [-b bits] [-r repeats]",
+    "send -P <protocol> -k <hexkey> [-b bits] [-t TE_us] [-r repeats] [-o subproto]",
+    "send -R",
     "Send a 24-bit Princeton frame:%s send 0x123456 -b 24 -t 350 -r 4",
     "Send a GateTX key:%s send -P GateTX -k 0xABCDEF -b 24 -r 10",
+    "Send an RcSwitch key (proto 1/2/11):%s send -P RcSwitch -k 0x123456 -b 24 -o 2",
+    "Send a random noise burst:%s send -R",
 };
 static const bp_command_def_t send_def = {
-    .name = "send", .description = 0, .opts = send_opts,
+    .name = "send", .description = 0,
+    .description_text = "Transmit protocol frame, raw Princeton payload, or burst",
+    .opts = send_opts,
     .positionals = send_positionals, .positional_count = 1,
     .usage = send_usage, .usage_count = count_of(send_usage),
+};
+
+static const bp_command_opt_t burst_opts[] = {
+    { "count",     'c', BP_ARG_REQUIRED, "1-100", 0, NULL, "number of bursts (default 1)" },
+    { "frequency", 'f', BP_ARG_REQUIRED, "kHz",   0, NULL, "frequency in kHz (default current)" },
+    { 0 }
+};
+static const char *const burst_usage[] = {
+    "burst [-c count] [-f kHz]",
+    "Send a random RF jitter burst:%s burst",
+    "Send 5 bursts at 433.92 MHz:%s burst -c 5 -f 433920",
+};
+static const bp_command_def_t burst_def = {
+    .name = "burst", .description = 0,
+    .description_text = "Transmit pseudo-random RF jitter pulse bursts for testing",
+    .opts = burst_opts,
+    .usage = burst_usage, .usage_count = count_of(burst_usage),
 };
 
 /* --- New commands --- */
 
 static const bp_command_positional_t preset_positionals[] = {
-    { "name", "preset name, import, or export", 0, true },
-    { "file", "file for import/export", 0, false }, { 0 }
+    { "name", "preset name, import, or export", 0, true, NULL, "preset name or action" },
+    { "file", "file for import/export", 0, false, NULL, "file path on storage" }, { 0 }
 };
 static const char *const preset_usage[] = {
     "preset [name] [file]",
+    "List all available presets:%s preset",
     "Switch to OOK 650kHz:%s preset Ook650Async",
     "Import custom registers:%s preset import custom.sub",
     "Export current registers:%s preset export my.sub",
 };
 static const bp_command_def_t preset_def = {
     .name = "preset", .description = 0,
+    .description_text = "Select, import, or export CC1101 modulation presets",
     .positionals = preset_positionals, .positional_count = 2,
     .usage = preset_usage, .usage_count = count_of(preset_usage),
 };
 
 static const bp_command_positional_t protocol_positionals[] = {
-    { "name", "protocol name (list with bare 'protocol')", 0, true }, { 0 }
+    { "name", "protocol name (list with bare 'protocol')", 0, true, NULL, "protocol to inspect" }, { 0 }
 };
 static const char *const protocol_usage[] = {
-    "protocol <name>",
+    "protocol [name]",
     "List all protocols:%s protocol",
     "Decode Princeton:%s protocol Princeton",
+    "Decode GateTX:%s protocol GateTX",
 };
 static const bp_command_def_t protocol_def = {
     .name = "protocol", .description = 0,
+    .description_text = "List supported protocols or display protocol details",
     .positionals = protocol_positionals, .positional_count = 1,
     .usage = protocol_usage, .usage_count = count_of(protocol_usage),
 };
 
 static const bp_command_opt_t hop_opts[] = {
-    { "frequencies", 'f', BP_ARG_REQUIRED, "kHz1,kHz2,...", 0 },
-    { "dwell", 'd', BP_ARG_REQUIRED, "ms per frequency", 0 },
-    { "save", 's', BP_ARG_NONE, "save hop list", 0 },
+    { "frequencies", 'f', BP_ARG_REQUIRED, "kHz1,kHz2,...", 0, NULL, "comma-separated frequencies" },
+    { "dwell",       'd', BP_ARG_REQUIRED, "ms",            0, NULL, "dwell time in ms per frequency" },
+    { "save",        's', BP_ARG_NONE,     NULL,            0, NULL, "save hop list to subghz_hop.txt" },
     { 0 }
 };
 static const char *const hop_usage[] = {
     "hop -f freq1,freq2,... [-d dwell_ms] [-s]",
     "Hop between 433.92 and 315.00 MHz:%s hop -f 433920,315000 -d 500",
+    "Hop and persist list:%s hop -f 433920,868350,315000 -d 250 -s",
 };
 static const bp_command_def_t hop_def = {
-    .name = "hop", .description = 0, .opts = hop_opts,
+    .name = "hop", .description = 0,
+    .description_text = "Hop across multiple frequencies monitoring for activity",
+    .opts = hop_opts,
     .usage = hop_usage, .usage_count = count_of(hop_usage),
 };
 
 static const bp_command_opt_t power_opts[] = {
-    { "level", 'l', BP_ARG_REQUIRED, "0-255 raw PATABLE (legacy)", 0 },
-    { "dbm", 'd', BP_ARG_REQUIRED, "-30..12 dBm", 0 }, { 0 }
+    { "dbm",   'd', BP_ARG_REQUIRED, "-30..12", 0, NULL, "output power in dBm" },
+    { "level", 'l', BP_ARG_REQUIRED, "0-255",   0, NULL, "raw PATABLE byte (legacy)" },
+    { 0 }
 };
 static const char *const power_usage[] = {
     "power [-d dBm] [-l raw]",
     "Set 0 dBm output:%s power -d 0",
-    "Maximum (check local limits):%s power -d 12",
+    "Set +10 dBm output:%s power -d 10",
+    "Maximum +12 dBm (check local limits):%s power -d 12",
 };
 static const bp_command_def_t power_def = {
-    .name = "power", .description = 0, .opts = power_opts,
+    .name = "power", .description = 0,
+    .description_text = "Set CC1101 transmit output power (in dBm or raw)",
+    .opts = power_opts,
     .usage = power_usage, .usage_count = count_of(power_usage),
 };
 
 static const bp_command_positional_t txallow_positionals[] = {
-    { "policy", "strict|open", 0, false }, { 0 }
+    { "policy", "strict|open", 0, false, NULL, "strict (ISM only) or open (all frequencies)" }, { 0 }
+};
+static const char *const txallow_usage[] = {
+    "txallow [strict|open]",
+    "Display current transmit policy:%s txallow",
+    "Enforce strict ISM-band rules (default):%s txallow strict",
+    "Allow transmission on all tunable frequencies:%s txallow open",
 };
 static const bp_command_def_t txallow_def = {
     .name = "txallow", .description = 0,
+    .description_text = "Configure transmit policy (strict ISM bands or open)",
     .positionals = txallow_positionals, .positional_count = 1,
+    .usage = txallow_usage, .usage_count = count_of(txallow_usage),
 };
 
 static const bp_command_opt_t bitrate_opts[] = {
-    { "baud", 'b', BP_ARG_REQUIRED, "600-500000", 0 }, { 0 }
+    { "baud", 'b', BP_ARG_REQUIRED, "600-500000", 0, NULL, "data rate in baud" }, { 0 }
+};
+static const char *const bitrate_usage[] = {
+    "bitrate [-b baud]",
+    "Set 4800 baud data rate:%s bitrate -b 4800",
+    "Set 38400 baud data rate:%s bitrate -b 38400",
 };
 static const bp_command_def_t bitrate_def = {
-    .name = "bitrate", .description = 0, .opts = bitrate_opts,
+    .name = "bitrate", .description = 0,
+    .description_text = "Configure CC1101 data rate (600-500000 baud)",
+    .opts = bitrate_opts,
+    .usage = bitrate_usage, .usage_count = count_of(bitrate_usage),
 };
 
-static const bp_command_def_t info_def = { .name = "info", .description = 0 };
+static const char *const info_usage[] = {
+    "info",
+    "Show frequency, preset, modulation, power, and RSSI:%s info",
+};
+static const bp_command_def_t info_def = {
+    .name = "info", .description = 0,
+    .description_text = "Display CC1101 radio configuration and status",
+    .usage = info_usage, .usage_count = count_of(info_usage),
+};
 
 /* ============================================================
  * Command helpers
@@ -547,11 +715,90 @@ static void setfrequency_handler(struct command_result *res) {
 
 static void rssi_handler(struct command_result *res) {
     if (bp_cmd_help_check(&rssi_def, res->help_flag) || !command_ready()) return;
-    printf("RSSI: %d dBm\r\n", cc1101_rssi());
+    uint32_t dwell = 0;
+    if (bp_cmd_get_uint32(&rssi_def, 'd', &dwell) && dwell > 0) {
+        if (dwell > 10000) dwell = 10000;
+        int16_t current = cc1101_rssi();
+        int16_t peak = -127;
+        absolute_time_t until = make_timeout_time_ms(dwell);
+        while (!time_reached(until)) {
+            int16_t sample = cc1101_rssi();
+            if (sample > peak) peak = sample;
+            sleep_ms(1);
+        }
+        printf("RSSI: %d dBm (Peak over %lu ms: %d dBm)\r\n", current, (unsigned long)dwell, peak);
+    } else {
+        printf("RSSI: %d dBm\r\n", cc1101_rssi());
+    }
 }
 
 static void scan_handler(struct command_result *res) {
     if (bp_cmd_help_check(&scan_def, res->help_flag) || !command_ready()) return;
+
+    if (bp_cmd_find_flag(&scan_def, 'l')) {
+        printf("Supported SubGHz frequency bands and channels (from SubGhzService):\r\n");
+        for (int b = 1; b < SUBGHZ_BAND_COUNT; b++) {
+            size_t count = 0;
+            const uint32_t *freqs = subghz_band_frequencies((subghz_scan_band_t)b, &count);
+            printf("  Band %s (%zu channels):\r\n   ", subghz_scan_band_names[b], count);
+            for (size_t i = 0; i < count; i++) {
+                printf(" %u.%03u", freqs[i] / 1000, freqs[i] % 1000);
+                if ((i + 1) % 6 == 0 && i + 1 < count) printf("\r\n   ");
+            }
+            printf("\r\n\r\n");
+        }
+        return;
+    }
+
+    char band_name[32] = { 0 };
+    if (bp_cmd_get_string(&scan_def, 'b', band_name, sizeof(band_name))) {
+        subghz_scan_band_t band = subghz_band_from_name(band_name);
+        size_t count = 0;
+        const uint32_t *freqs = subghz_band_frequencies(band, &count);
+        if (!freqs || count == 0) {
+            printf("Unknown band '%s'. Use all, 300, 433, or 868.\r\n", band_name);
+            return;
+        }
+        uint32_t dwell = 10;
+        if (bp_cmd_get_uint32(&scan_def, 'd', &dwell)) {
+            if (!dwell || dwell > 1000) dwell = 10;
+        }
+        printf("Scanning %s (%zu channels, %lums dwell per channel)...\r\n",
+               subghz_scan_band_names[band], count, (unsigned long)dwell);
+        printf("Frequency (MHz)  Peak RSSI (dBm)\r\n");
+        int16_t best = -127;
+        uint32_t best_khz = freqs[0];
+        for (size_t i = 0; i < count; i++) {
+            uint32_t khz = freqs[i];
+            if (!cc1101_set_frequency(khz) || !cc1101_rx()) continue;
+            sleep_ms(2);
+            int16_t peak = -127;
+            absolute_time_t until = make_timeout_time_ms(dwell);
+            while (!time_reached(until)) {
+                int16_t s = cc1101_rssi();
+                if (s > peak) peak = s;
+                sleep_ms(1);
+            }
+            printf("%u.%03u          %d\r\n", khz / 1000, khz % 1000, peak);
+            if (peak > best) {
+                best = peak;
+                best_khz = khz;
+            }
+            char c;
+            if (rx_fifo_try_get(&c)) break;
+        }
+        if (best > -127) {
+            if (cc1101_set_frequency(best_khz) && cc1101_rx()) {
+                mode_config.frequency_khz = best_khz;
+                printf("Selected strongest: %u.%03u MHz, %d dBm\r\n",
+                       best_khz / 1000, best_khz % 1000, best);
+            }
+        } else {
+            (void)cc1101_set_frequency(mode_config.frequency_khz);
+            (void)cc1101_rx();
+        }
+        return;
+    }
     uint32_t band_low, band_high;
     frequency_band_bounds(mode_config.frequency_khz, &band_low, &band_high);
     uint32_t start = mode_config.frequency_khz > band_low + 2000 ? mode_config.frequency_khz - 2000 : band_low;
@@ -821,6 +1068,10 @@ static void analyze_capture(void) {
 
 /* Latch a decoded frame for savekey / protocol replay. */
 static void latch_decode(const subghz_protocol_entry_t *entry, subghz_protocol_decoder_t *dec) {
+    if (last_decode.valid && !strcmp(last_decode.protocol, "Princeton") &&
+        !strcmp(entry->info->name, "RcSwitch")) {
+        return;
+    }
     last_decode.valid = true;
     strncpy(last_decode.protocol, entry->info->name, sizeof(last_decode.protocol) - 1);
     last_decode.protocol[sizeof(last_decode.protocol) - 1] = '\0';
@@ -841,6 +1092,10 @@ static void rx_print_callback(const subghz_protocol_entry_t *entry,
                               subghz_protocol_decoder_t *decoder, uint32_t repeats, void *ctx) {
     (void)ctx;
     (void)repeats;
+    if (!strcmp(entry->info->name, "RcSwitch") && last_decode.valid &&
+        !strcmp(last_decode.protocol, "Princeton") && last_decode.key == decoder->decoded_data) {
+        return;
+    }
     char detail[192];
     const char *text = subghz_decoder_get_string(decoder, detail, sizeof(detail));
     if (!text) {
@@ -880,9 +1135,16 @@ static void run_protocol_decoders(void) {
                     text = subghz_decoder_get_data(rx.slots[s].decoder, detail, sizeof(detail));
                 }
                 if (text) {
-                    printf("  [%s] %s\r\n", rx.slots[s].entry->info->name, text);
-                    latch_decode(rx.slots[s].entry, rx.slots[s].decoder);
-                    matched[s] = true;
+                    if (!strcmp(rx.slots[s].entry->info->name, "RcSwitch") &&
+                        last_decode.valid && !strcmp(last_decode.protocol, "Princeton") &&
+                        last_decode.key == rx.slots[s].decoder->decoded_data) {
+                        /* Suppress duplicate RcSwitch P1 print when canonical Princeton already matched */
+                        matched[s] = true;
+                    } else {
+                        printf("  [%s] %s\r\n", rx.slots[s].entry->info->name, text);
+                        latch_decode(rx.slots[s].entry, rx.slots[s].decoder);
+                        matched[s] = true;
+                    }
                 }
                 subghz_decoder_reset(rx.slots[s].decoder);
             }
@@ -905,11 +1167,26 @@ static void receive_handler(struct command_result *res) {
            mode_config.frequency_khz / 1000, mode_config.frequency_khz % 1000,
            cc1101_preset_name((cc1101_preset_t)mode_config.preset));
     capture_pulses(duration);
-    for (uint32_t i = 0; i < capture_count; i++) {
-        int32_t duration_us = capture_buffer[i];
-        printf("%c:%lu%s", duration_us > 0 ? 'H' : 'L',
-               (unsigned long)(duration_us > 0 ? duration_us : -duration_us),
-               ((i + 1) % 8) ? "  " : "\r\n");
+    if (bp_cmd_find_flag(&receive_def, 'v')) {
+        printf("[raw %lu symbols | freq=%u.%03u MHz]\r\n", (unsigned long)capture_count,
+               mode_config.frequency_khz / 1000, mode_config.frequency_khz % 1000);
+        int col = 0;
+        for (uint32_t i = 0; i < capture_count; i++) {
+            int32_t duration_us = capture_buffer[i];
+            bool lvl = duration_us > 0;
+            uint32_t dur = (uint32_t)(lvl ? duration_us : -duration_us);
+            printf("%c:%-5lu ", lvl ? 'H' : 'L', (unsigned long)dur);
+            if (++col % 4 == 0) printf("\r\n");
+            else printf("| ");
+        }
+        if (col % 4 != 0) printf("\r\n");
+    } else {
+        for (uint32_t i = 0; i < capture_count; i++) {
+            int32_t duration_us = capture_buffer[i];
+            printf("%c:%lu%s", duration_us > 0 ? 'H' : 'L',
+                   (unsigned long)(duration_us > 0 ? duration_us : -duration_us),
+                   ((i + 1) % 8) ? "  " : "\r\n");
+        }
     }
     printf("\r\nCaptured %u pulses; ready for replay or record.\r\n", capture_count);
     analyze_capture();
@@ -1942,6 +2219,37 @@ static void pulse(bool level, uint32_t us) {
     else sleep_us(us);
 }
 
+static uint32_t subghz_rand(void) {
+    static uint32_t state = 0x853c49e6;
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    return state;
+}
+
+static void send_random_burst(void) {
+    /* Mean 200us, +/-30% jitter -> 140us to 260us (from SubGhzService::sendRandomBurst) */
+    int level = (int)(subghz_rand() & 1u);
+    for (int i = 0; i < 256; i++) {
+        uint32_t dur0 = 140u + (subghz_rand() % 121u);
+        pulse(level, dur0);
+        level ^= 1;
+        uint32_t dur1 = 140u + (subghz_rand() % 121u);
+        pulse(level, dur1);
+        level ^= 1;
+    }
+    bio_put(SUBGHZ_GDO0, false);
+}
+
+static void send_raw_pulse(int32_t duration) {
+    if (duration == 0) return;
+    if (duration < 0) {
+        pulse(false, (uint32_t)(-duration));
+    } else {
+        pulse(true, (uint32_t)duration);
+    }
+}
+
 /* Transmit one encoder upload <repeat> times (Flipper TX worker equivalent). */
 static bool transmit_upload(subghz_protocol_encoder_t *enc, uint32_t repeat) {
     if (!cc1101_idle()) {
@@ -1979,6 +2287,32 @@ static bool transmit_upload(subghz_protocol_encoder_t *enc, uint32_t repeat) {
 static void send_handler(struct command_result *res) {
     if (bp_cmd_help_check(&send_def, res->help_flag) || !command_ready()) return;
     if (!tx_guard()) return;
+
+    if (bp_cmd_find_flag(&send_def, 'R')) {
+        printf("Transmitting random noise burst at %u.%03u MHz...\r\n",
+               mode_config.frequency_khz / 1000, mode_config.frequency_khz % 1000);
+        if (!cc1101_idle()) {
+            printf("CC1101 state transition failed.\r\n");
+            return;
+        }
+        bio_output(SUBGHZ_GDO0);
+        bio_put(SUBGHZ_GDO0, false);
+        apply_tx_power();
+        if (!cc1101_tx()) {
+            bio_input(SUBGHZ_GDO0);
+            (void)cc1101_rx();
+            printf("CC1101 TX transition failed.\r\n");
+            return;
+        }
+        send_random_burst();
+        bio_put(SUBGHZ_GDO0, false);
+        cc1101_idle();
+        bio_input(SUBGHZ_GDO0);
+        (void)cc1101_rx();
+        printf("Burst sent.\r\n");
+        return;
+    }
+
     char protoname[32] = { 0 };
     char keytext[32] = { 0 };
     bool have_proto = bp_cmd_get_string(&send_def, 'P', protoname, sizeof(protoname));
@@ -2035,6 +2369,14 @@ static void send_handler(struct command_result *res) {
         }
         if (te >= 50u && te <= 2000u) {
             enc->te_us = te; /* TE hint for TE-flexible encoders. */
+        }
+        if (strcmp(protoname, "RcSwitch") == 0) {
+            uint32_t proto_num = 1;
+            if (bp_cmd_get_uint32(&send_def, 'o', &proto_num)) {
+                if (proto_num == 1 || proto_num == 2 || proto_num == 11) {
+                    subghz_rcswitch_set_proto(enc, (uint8_t)proto_num);
+                }
+            }
         }
         if (subghz_encoder_feed(enc, key, bits) != SUBGHZ_PROTOCOL_DONE) {
             printf("Encoder rejected key/bits for '%s'.\r\n", protoname);
@@ -2109,6 +2451,58 @@ static void send_handler(struct command_result *res) {
     (void)cc1101_idle();
     bio_input(SUBGHZ_GDO0);
     if (!cc1101_rx()) printf("Warning: failed to return to RX state.\r\n");
+}
+
+static void burst_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&burst_def, res->help_flag) || !command_ready()) return;
+    if (!tx_guard()) return;
+    uint32_t count = 1;
+    if (bp_cmd_get_uint32(&burst_def, 'c', &count)) {
+        if (count == 0 || count > 100) count = 1;
+    }
+    uint32_t freq = mode_config.frequency_khz;
+    if (bp_cmd_get_uint32(&burst_def, 'f', &freq)) {
+        if (!valid_frequency(freq)) {
+            printf("Invalid frequency %lu kHz.\r\n", (unsigned long)freq);
+            return;
+        }
+    }
+    printf("Transmitting %lu RF jitter burst(s) at %u.%03u MHz...\r\n",
+           (unsigned long)count, freq / 1000, freq % 1000);
+    uint32_t old_freq = mode_config.frequency_khz;
+    if (freq != old_freq) {
+        if (!cc1101_set_frequency(freq)) {
+            printf("Failed to set frequency.\r\n");
+            return;
+        }
+    }
+    if (!cc1101_idle()) {
+        printf("CC1101 state transition failed.\r\n");
+        if (freq != old_freq) (void)cc1101_set_frequency(old_freq);
+        return;
+    }
+    bio_output(SUBGHZ_GDO0);
+    bio_put(SUBGHZ_GDO0, false);
+    apply_tx_power();
+    if (!cc1101_tx()) {
+        bio_input(SUBGHZ_GDO0);
+        (void)cc1101_rx();
+        printf("CC1101 TX transition failed.\r\n");
+        if (freq != old_freq) (void)cc1101_set_frequency(old_freq);
+        return;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        send_random_burst();
+        if (i + 1 < count) sleep_ms(5);
+    }
+    bio_put(SUBGHZ_GDO0, false);
+    cc1101_idle();
+    bio_input(SUBGHZ_GDO0);
+    if (freq != old_freq) {
+        (void)cc1101_set_frequency(old_freq);
+    }
+    (void)cc1101_rx();
+    printf("Burst transmission complete.\r\n");
 }
 
 /* ============================================================
@@ -2546,6 +2940,7 @@ const struct _mode_command_struct subghz_commands[] = {
     { .func = txallow_handler, .def = &txallow_def, .supress_fala_capture = true },
     { .func = power_handler, .def = &power_def, .supress_fala_capture = true },
     { .func = bitrate_handler, .def = &bitrate_def, .supress_fala_capture = true },
+    { .func = burst_handler, .def = &burst_def, .supress_fala_capture = true },
 };
 const uint32_t subghz_commands_count = count_of(subghz_commands);
 

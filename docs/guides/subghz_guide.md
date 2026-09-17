@@ -51,6 +51,7 @@ Static (decode + transmit, `*` in `protocol` list):
 ```text
 Princeton  Nice FLO  CAME  Holtek HT12x  Linear
 Intertechno V3  GateTX  Ansonic  Dooya  SMC5326
+RcSwitch (P1, P2, P11)
 ```
 
 Dynamic (decode/display only, TX refused as a rolling-code safety rule):
@@ -65,9 +66,9 @@ lengths, default frequency, and TX capability.
 ## Commands
 
 ```text
-rssi
+rssi [-d dwell_ms]
 setfrequency 315000
-preset Ook650Async
+preset Ook650Async (aliases: AM270, AM650, FM238, FM476, sniff, rawsend, scan)
 preset import custom.sub
 preset export my.sub
 protocol
@@ -75,11 +76,14 @@ protocol GateTX
 info
 scan
 scan -a 433050 -z 434790 -s 25 -d 10
+scan -b 433 -d 10
+scan -l
 sweep -a 433050 -z 434790 -s 25 -n 20 -r 85
 trace -t 2000
 waterfall -a 433050 -z 434790 -s 25 -n 20
 hop -f 433920,315000 -d 500 [-s]
-receive -t 5000
+receive -t 5000 [-v]
+burst [-c count] [-f kHz]
 monitor -t 10000
 clone [file.sub] [-t 5000]
 replay -r 2
@@ -92,6 +96,8 @@ decode capture.sub
 savekey remote.sub
 send 0x123456 -b 24 -t 350 -r 4
 send -P GateTX -k 0xABCDEF -b 24 -r 10
+send -P RcSwitch -k 0x123456 -b 24 -o 2
+send -R
 power -d 0
 power -l 96
 txallow [strict|open]
@@ -101,15 +107,23 @@ keys
 keyadd MyMfg 0102030405060708 [1]
 ```
 
+`rssi` reads instantaneous RSSI, or peak RSSI held over `-d <ms>` dwell time.
+
 `scan` defaults to a 4MHz window centered on the configured frequency. `-s`
-sets the step in kHz and `-d` the RSSI dwell time in milliseconds. Press any
+sets the step in kHz and `-d` the RSSI dwell time in milliseconds. Alternatively,
+`-b [all|300|433|868]` scans discrete standard channel frequencies (91 discrete
+channels from SubGhzService), and `-l` lists all channels by band. Press any
 key to stop a scan early. The strongest measured frequency remains selected.
 
 `receive` captures up to 1024 GDO0 level transitions (edges are timestamped
 by a GPIO interrupt, so short pulses are not missed while printing), then runs
-timing analysis plus every protocol decoder. `monitor` instead decodes live:
+timing analysis plus every protocol decoder. Adding `-v` displays the formatted
+4-column raw symbol dump (`H:dur | L:dur`). `monitor` instead decodes live:
 each new frame prints once with serial/button detail, duplicates suppressed.
 Press any key to stop early.
+
+`burst` transmits pseudo-random RF jitter pulse trains for receiver and RF link
+testing. You can also trigger a burst using `send -R`.
 
 `clone [file.sub]` is the guided workflow: it captures, analyzes, decodes,
 and saves the matched frame as a key file (auto-named `Protocol_Key.sub`

@@ -236,6 +236,187 @@ static const subghz_encoder_ops_t princeton_encoder_ops = {
 };
 
 /* ============================================================
+ * RcSwitch protocol (Protocols 1, 2, and 11)
+ * ============================================================ */
+
+typedef struct {
+    uint32_t high_te;
+    uint32_t te_us;
+    uint8_t proto;
+    bool have_high;
+    bool decoding;
+} rcswitch_priv_t;
+
+static subghz_protocol_status_t rcswitch_feed(
+    subghz_protocol_decoder_t *d, bool level, uint32_t dur) {
+    rcswitch_priv_t *p = d->priv;
+    if (level) {
+        p->high_te = dur;
+        p->have_high = true;
+        return SUBGHZ_PROTOCOL_SYNC;
+    }
+    if (!p->have_high) {
+        return SUBGHZ_PROTOCOL_SYNC;
+    }
+    p->have_high = false;
+    if (!p->decoding) {
+        /* Sync: high is ~1 TE (100-1500us), low is sync_lo:
+         * Proto 1:  sync_lo = 31 TE (ratio 26..36)
+         * Proto 11: sync_lo = 23 TE (ratio 19..25)
+         * Proto 2:  sync_lo = 10 TE (ratio 8..14) */
+        if (p->high_te >= 100u && p->high_te <= 1500u) {
+            uint32_t ratio = dur / p->high_te;
+            if (ratio >= 26u && ratio <= 36u) {
+                p->proto = 1;
+                p->decoding = true;
+            } else if (ratio >= 19u && ratio <= 25u) {
+                p->proto = 11;
+                p->decoding = true;
+            } else if (ratio >= 8u && ratio <= 14u) {
+                p->proto = 2;
+                p->decoding = true;
+            }
+            if (p->decoding) {
+                p->te_us = p->high_te;
+                d->decoded_data = 0;
+                d->decoded_bits = 0;
+                d->te_us = p->te_us;
+            }
+        }
+        return SUBGHZ_PROTOCOL_SYNC;
+    }
+
+    if (!p->te_us) return SUBGHZ_PROTOCOL_SYNC;
+    uint32_t h = subghz_te_count(p->high_te, p->te_us);
+    uint32_t l = subghz_te_count(dur, p->te_us);
+
+    /* Check for trailing frame sync / inter-frame gap */
+    uint32_t min_gap_ratio = (p->proto == 2) ? 7u : 15u;
+    if (h <= 2u && l >= min_gap_ratio) {
+        if (d->decoded_bits >= 12u) {
+            p->decoding = false;
+            decoder_finish(d);
+            return SUBGHZ_PROTOCOL_DONE;
+        }
+        d->decoded_data = 0;
+        d->decoded_bits = 0;
+        p->te_us = p->high_te;
+        d->te_us = p->te_us;
+        return SUBGHZ_PROTOCOL_SYNC;
+    }
+
+    if (p->proto == 1) {
+        /* Proto 1: 0 = 1h:3l, 1 = 3h:1l */
+        if (h >= 2u && h <= 4u && l == 1u) {
+            decoder_add_bit(d, 1);
+        } else if (h == 1u && l >= 2u && l <= 4u) {
+            decoder_add_bit(d, 0);
+        } else {
+            p->decoding = false;
+            d->decoded_data = 0;
+            d->decoded_bits = 0;
+        }
+    } else {
+        /* Proto 2 or 11: 0 = 1h:2l, 1 = 2h:1l */
+        if (h >= 2u && h <= 3u && l == 1u) {
+            decoder_add_bit(d, 1);
+        } else if (h == 1u && l >= 2u && l <= 3u) {
+            decoder_add_bit(d, 0);
+        } else {
+            p->decoding = false;
+            d->decoded_data = 0;
+            d->decoded_bits = 0;
+        }
+    }
+    return SUBGHZ_PROTOCOL_SYNC;
+}
+
+static void rcswitch_reset(subghz_protocol_decoder_t *d) {
+    memset(d->priv, 0, sizeof(rcswitch_priv_t));
+    d->decoded_data = 0;
+    d->decoded_bits = 0;
+    d->te_us = 0;
+}
+
+static const char *rcswitch_get_data(subghz_protocol_decoder_t *d, char *b, size_t s) {
+    if (d->decoded_bits < 12u) return NULL;
+    rcswitch_priv_t *p = d->priv;
+    snprintf(b, s, "RcSwitch P%u %ubit: 0x%llx", (unsigned)(p->proto ? p->proto : 1),
+             (unsigned)d->decoded_bits, (unsigned long long)d->decoded_data);
+    return b;
+}
+
+static const char *rcswitch_get_string(subghz_protocol_decoder_t *d, char *b, size_t s) {
+    if (d->decoded_bits < 12u) return NULL;
+    rcswitch_priv_t *p = d->priv;
+    snprintf(b, s, "RcSwitch P%u %ubit\r\nKey:0x%llX\r\nTE:%luus",
+             (unsigned)(p->proto ? p->proto : 1), (unsigned)d->decoded_bits,
+             (unsigned long long)d->decoded_data, (unsigned long)d->te_us);
+    return b;
+}
+
+static const subghz_decoder_ops_t rcswitch_decoder_ops = {
+    .feed = rcswitch_feed, .reset = rcswitch_reset, .get_data = rcswitch_get_data,
+    .get_string = rcswitch_get_string,
+};
+
+static subghz_protocol_status_t rcswitch_encode(
+    subghz_protocol_encoder_t *e, uint64_t data, uint32_t bits) {
+    rcswitch_enc_priv_t *p = e->priv;
+    uint8_t proto = (p && p->proto) ? p->proto : 1;
+    uint32_t te = (p && p->te_us) ? p->te_us : (e->te_us ? e->te_us : (proto == 2 ? 650u : 350u));
+    if (!bits || bits > 64u) return SUBGHZ_PROTOCOL_ERROR;
+
+    uint32_t sync_hi, sync_lo, zero_hi, zero_lo, one_hi, one_lo;
+    if (proto == 2) {
+        sync_hi = te; sync_lo = te * 10u;
+        zero_hi = te; zero_lo = te * 2u;
+        one_hi = te * 2u; one_lo = te;
+    } else if (proto == 11) {
+        sync_hi = te; sync_lo = te * 23u;
+        zero_hi = te; zero_lo = te * 2u;
+        one_hi = te * 2u; one_lo = te;
+    } else {
+        proto = 1;
+        sync_hi = te; sync_lo = te * 31u;
+        zero_hi = te; zero_lo = te * 3u;
+        one_hi = te * 3u; one_lo = te;
+    }
+
+    subghz_upload_reset(&e->upload);
+    e->te_us = te;
+    subghz_upload_add(&e->upload, true, sync_hi);
+    subghz_upload_add(&e->upload, false, sync_lo);
+    for (int i = (int)bits - 1; i >= 0; i--) {
+        if ((data >> i) & 1ull) {
+            subghz_upload_add(&e->upload, true, one_hi);
+            subghz_upload_add(&e->upload, false, one_lo);
+        } else {
+            subghz_upload_add(&e->upload, true, zero_hi);
+            subghz_upload_add(&e->upload, false, zero_lo);
+        }
+    }
+    subghz_upload_add(&e->upload, true, sync_hi);
+    subghz_upload_add(&e->upload, false, sync_lo);
+    return SUBGHZ_PROTOCOL_DONE;
+}
+
+static const subghz_encoder_ops_t rcswitch_encoder_ops = {
+    .feed = rcswitch_encode, .yield = encoder_yield_generic, .reset = encoder_reset_generic,
+};
+
+bool subghz_rcswitch_set_proto(subghz_protocol_encoder_t *encoder, uint8_t proto) {
+    if (!encoder || !encoder->priv) return false;
+    if (proto != 1 && proto != 2 && proto != 11) return false;
+    rcswitch_enc_priv_t *p = encoder->priv;
+    p->proto = proto;
+    if (!p->te_us) {
+        p->te_us = (proto == 2) ? 650u : 350u;
+    }
+    return true;
+}
+
+/* ============================================================
  * Shared state machine for header + H/L-pair PWM protocols:
  * GateTX, Dooya, Ansonic, Nice FLO, CAME, Holtek, Linear.
  * Bit shape per protocol configured in the const table.
@@ -5213,6 +5394,12 @@ static const subghz_protocol_info_t kia_info = {
     .bit_min = 61, .bit_max = 61, .rolling = true,
 };
 
+static const subghz_protocol_info_t rcswitch_info = {
+    .name = "RcSwitch", .description = "RcSwitch OOK (proto 1/2/11)",
+    .frequency_default_khz = 433920, .te_min_us = 100, .te_max_us = 1000,
+    .bit_min = 12, .bit_max = 64, .rolling = false,
+};
+
 static const subghz_protocol_entry_t protocol_registry[] = {
     { .info = &princeton_info, .decoder_ops = &princeton_decoder_ops,
       .encoder_ops = &princeton_encoder_ops, .decoder_size = sizeof(princeton_priv_t),
@@ -5338,6 +5525,9 @@ static const subghz_protocol_entry_t protocol_registry[] = {
     { .info = &magellan_info, .decoder_ops = &magellan_decoder_ops,
       .encoder_ops = &magellan_encoder_ops, .decoder_size = sizeof(magellan_priv_t),
       .encoder_size = sizeof(ook_enc_priv_t) },
+    { .info = &rcswitch_info, .decoder_ops = &rcswitch_decoder_ops,
+      .encoder_ops = &rcswitch_encoder_ops, .decoder_size = sizeof(rcswitch_priv_t),
+      .encoder_size = sizeof(rcswitch_enc_priv_t) },
 };
 
 #define PROTOCOL_COUNT (sizeof(protocol_registry) / sizeof(protocol_registry[0]))

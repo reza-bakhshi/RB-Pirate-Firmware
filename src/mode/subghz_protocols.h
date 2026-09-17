@@ -88,6 +88,14 @@ struct subghz_protocol_encoder {
     void *priv;
 };
 
+/* RcSwitch encoder private config (proto 1, 2, or 11). */
+typedef struct {
+    uint32_t te_us;
+    uint8_t proto;
+} rcswitch_enc_priv_t;
+
+bool subghz_rcswitch_set_proto(subghz_protocol_encoder_t *encoder, uint8_t proto);
+
 /* Protocol registry. */
 typedef struct {
     const subghz_protocol_info_t *info;

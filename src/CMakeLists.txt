@@ -426,6 +426,8 @@ set(buspirate_common
         mode/subghz_file.h
         mode/subghz_cap.c
         mode/subghz_cap.h
+        mode/subghz_freqs.c
+        mode/subghz_freqs.h
         pirate/cc1101.c
         pirate/cc1101.h
 

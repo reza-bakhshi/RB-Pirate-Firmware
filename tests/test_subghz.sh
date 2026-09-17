@@ -2,7 +2,7 @@
 # Host unit test for the SubGHz protocol library (no Pico SDK needed).
 set -e
 cd "$(dirname "$0")/.."
-SRCS="tests/test_subghz.c src/mode/subghz_blocks.c src/mode/subghz_protocols.c src/mode/subghz_rx.c src/mode/subghz_keystore.c src/mode/subghz_file.c"
+SRCS="tests/test_subghz.c src/mode/subghz_blocks.c src/mode/subghz_protocols.c src/mode/subghz_rx.c src/mode/subghz_keystore.c src/mode/subghz_file.c src/mode/subghz_freqs.c"
 gcc -O2 -Wall -Wextra -std=c11 -Isrc -o /tmp/test_subghz $SRCS
 /tmp/test_subghz
 echo "--- AddressSanitizer + UBSan ---"

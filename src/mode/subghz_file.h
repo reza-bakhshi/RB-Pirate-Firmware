@@ -33,8 +33,30 @@ bool subghz_parse_te_field(const char *line, uint32_t *te_us);
 bool subghz_parse_custom_preset(const char *line, uint8_t *pairs, size_t *pair_count,
                                 size_t max_pairs);
 
+/* Flipper-exact custom preset: register pairs, then "00 00" terminator,
+ * then exactly 8 PA-table bytes. Legacy pairs-only lines (no terminator)
+ * are still accepted with *have_pa == false. */
+#define SUBGHZ_CUSTOM_PA_SIZE 8u
+bool subghz_parse_custom_preset_full(const char *line, uint8_t *pairs, size_t *pair_count,
+                                     size_t max_pairs, uint8_t *pa_table, bool *have_pa);
+
 /* "Manufacture: Foo" free text (truncated to out_size - 1). */
 bool subghz_parse_manufacture(const char *line, char *out, size_t out_size);
+
+/* BinRAW fields (Flipper .sub BinRAW files). */
+#define SUBGHZ_BINRAW_MAX_BITS 4096u
+#define SUBGHZ_BINRAW_MAX_BYTES (SUBGHZ_BINRAW_MAX_BITS / 8u)
+/* "Bit_RAW: 260" (1..4096). Total-file "Bit:" uses subghz_parse_bit_field. */
+bool subghz_parse_bit_raw_field(const char *line, uint32_t *bits);
+/* "Data_RAW: 00 0F ..." hex bytes MSB-first (1..512 bytes). */
+bool subghz_parse_data_raw_field(const char *line, uint8_t *bytes, size_t *byte_count,
+                                 size_t max_bytes);
+/* Expand one Bit_RAW/Data_RAW block: each bit is one TE interval,
+ * 1 = carrier (high), 0 = no carrier (low), MSB-first. Run-length encodes
+ * into Flipper pulse form (positive = high, negative = low). Appends to
+ * pulses[*pulse_count] (capacity total). Returns false on bad input. */
+bool subghz_binraw_expand(uint32_t te_us, const uint8_t *bytes, uint32_t bit_len,
+                          int32_t *pulses, uint32_t *pulse_count, uint32_t capacity);
 
 #ifdef __cplusplus
 }

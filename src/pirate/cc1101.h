@@ -40,9 +40,14 @@ int8_t cc1101_tx_power_dbm_default(uint32_t khz);
 
 /* Custom preset: RAM-held register list applied like a preset. */
 #define CC1101_CUSTOM_MAX_PAIRS 48u
+#define CC1101_CUSTOM_PA_SIZE 8u
 bool cc1101_custom_preset_set(const uint8_t *pairs, size_t pair_count);
+bool cc1101_custom_preset_set_full(const uint8_t *pairs, size_t pair_count,
+                                   const uint8_t *pa_table);
 size_t cc1101_custom_preset_get(uint8_t *pairs, size_t max_pairs);
+bool cc1101_custom_preset_get_pa(uint8_t *pa_table);
 bool cc1101_read_config(uint8_t start_addr, uint8_t *values, size_t count);
+bool cc1101_read_patable(uint8_t *pa_table);
 bool cc1101_set_bitrate(uint32_t bitrate_baud);
 bool cc1101_rx(void);
 bool cc1101_tx(void);

@@ -20,7 +20,7 @@
 extern "C" {
 #endif
 
-#define SUBGHZ_RX_MAX_DECODERS 32u
+#define SUBGHZ_RX_MAX_DECODERS 64u
 
 typedef void (*subghz_rx_callback_t)(const subghz_protocol_entry_t *entry,
                                      subghz_protocol_decoder_t *decoder, uint32_t repeats,

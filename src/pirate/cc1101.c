@@ -156,17 +156,27 @@ static const cc_pa_entry_t cc_pa_table[] = {
     { -20, 0x17, 0x0e }, { -30, 0x03, 0x12 },
 };
 
-/* Custom preset storage (Flipper Custom_preset_data equivalent). */
+/* Custom preset storage (Flipper Custom_preset_data equivalent:
+ * register pairs + optional 8-byte PA table after the 00 00 terminator). */
 static uint8_t custom_pairs[CC1101_CUSTOM_MAX_PAIRS * 2];
 static size_t custom_pair_count;
+static uint8_t custom_pa[CC1101_CUSTOM_PA_SIZE];
+static bool custom_have_pa;
 static bool custom_is_ook = true;
 
-bool cc1101_custom_preset_set(const uint8_t *pairs, size_t pair_count) {
+bool cc1101_custom_preset_set_full(const uint8_t *pairs, size_t pair_count,
+                                   const uint8_t *pa_table) {
     if (!pairs || !pair_count || pair_count > CC1101_CUSTOM_MAX_PAIRS) {
         return false;
     }
     memcpy(custom_pairs, pairs, pair_count * 2u);
     custom_pair_count = pair_count;
+    if (pa_table) {
+        memcpy(custom_pa, pa_table, CC1101_CUSTOM_PA_SIZE);
+        custom_have_pa = true;
+    } else {
+        custom_have_pa = false;
+    }
     /* Sniff MDMCFG2 (0x12) modulation format: 000 = ASK/OOK. */
     custom_is_ook = true;
     for (size_t i = 0; i < pair_count; i++) {
@@ -174,6 +184,18 @@ bool cc1101_custom_preset_set(const uint8_t *pairs, size_t pair_count) {
             custom_is_ook = ((pairs[i * 2u + 1u] >> 4) & 7u) == 0u;
         }
     }
+    return true;
+}
+
+bool cc1101_custom_preset_set(const uint8_t *pairs, size_t pair_count) {
+    return cc1101_custom_preset_set_full(pairs, pair_count, NULL);
+}
+
+bool cc1101_custom_preset_get_pa(uint8_t *pa_table) {
+    if (!pa_table || !custom_have_pa) {
+        return false;
+    }
+    memcpy(pa_table, custom_pa, CC1101_CUSTOM_PA_SIZE);
     return true;
 }
 
@@ -190,11 +212,30 @@ bool cc1101_read_config(uint8_t start_addr, uint8_t *values, size_t count) {
     if (!values) {
         return false;
     }
+    if (start_addr == CC_PATABLE) {
+        /* PATABLE is a FIFO-style burst region; single reads do not step it. */
+        return false;
+    }
     for (size_t i = 0; i < count; i++) {
         if (!cc_read((uint8_t)(start_addr + i), false, &values[i])) {
             return false;
         }
     }
+    return true;
+}
+
+bool cc1101_read_patable(uint8_t *pa_table) {
+    if (!pa_table) {
+        return false;
+    }
+    if (!cc_select_ready()) {
+        return false;
+    }
+    cc_transfer(CC_PATABLE | CC_READ_BURST);
+    for (uint i = 0; i < CC1101_CUSTOM_PA_SIZE; i++) {
+        pa_table[i] = cc_transfer(0xff);
+    }
+    hwspi_deselect();
     return true;
 }
 
@@ -409,6 +450,11 @@ bool cc1101_set_preset(cc1101_preset_t preset) {
         }
         for (size_t i = 0; i < custom_pair_count; i++) {
             if (!cc_write(custom_pairs[i * 2u], custom_pairs[i * 2u + 1u])) {
+                return false;
+            }
+        }
+        if (custom_have_pa) {
+            if (!cc_write_burst(CC_PATABLE, custom_pa, CC1101_CUSTOM_PA_SIZE)) {
                 return false;
             }
         }

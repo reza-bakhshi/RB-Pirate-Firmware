@@ -26,8 +26,35 @@ static int failures;
         }                                                  \
     } while (0)
 
-/* Feed an encoder upload into a decoder; expect DONE with matching data. */
-static bool round_trip(const char *proto, uint64_t key, uint32_t bits) {
+/* Collect an encoder upload with same-level runs merged, as seen on air
+ * (GPIO TX of back-to-back same-level pulses is one continuous pulse). */
+static size_t collect_merged(subghz_protocol_encoder_t *enc, bool *levels, uint32_t *durs,
+                             size_t capacity) {
+    size_t n = 0;
+    bool lv;
+    uint32_t du;
+    subghz_encoder_reset(enc);
+    while (subghz_encoder_yield(enc, &lv, &du)) {
+        if (n && levels[n - 1u] == lv) {
+            durs[n - 1u] += du;
+        } else {
+            if (n >= capacity) {
+                break;
+            }
+            levels[n] = lv;
+            durs[n] = du;
+            n++;
+        }
+    }
+    return n;
+}
+
+/* Feed an encoder upload into a decoder; expect DONE with matching data.
+ * Uploads are consumed verbatim (pre-batch-2 behavior for the PWM family).
+ * round_trip_air() merges same-level runs first (GPIO TX physics); required
+ * for Manchester uploads whose decoders classify merged Long/Short
+ * durations. */
+static bool round_trip_feed(const char *proto, uint64_t key, uint32_t bits, bool air_merge) {
     const subghz_protocol_entry_t *entry = subghz_protocol_find(proto);
     if (!entry || !entry->encoder_ops) {
         printf("SKIP %s: no encoder\n", proto);
@@ -46,12 +73,43 @@ static bool round_trip(const char *proto, uint64_t key, uint32_t bits) {
         goto out;
     }
     bool done = false;
+    bool levels[512];
+    uint32_t durs[512];
+    size_t raw_n = 0;
+    bool raw_levels[512];
+    uint32_t raw_durs[512];
+    subghz_encoder_reset(enc);
+    bool lv;
+    uint32_t du;
+    while (subghz_encoder_yield(enc, &lv, &du) && raw_n < 512) {
+        raw_levels[raw_n] = lv;
+        raw_durs[raw_n] = du;
+        raw_n++;
+    }
+    if (!raw_n) {
+        printf("FAIL %s: empty upload\n", proto);
+        failures++;
+        goto out;
+    }
+    size_t n = 0;
+    if (air_merge) {
+        for (size_t i = 0; i < raw_n; i++) {
+            if (n && levels[n - 1u] == raw_levels[i]) {
+                durs[n - 1u] += raw_durs[i];
+            } else {
+                levels[n] = raw_levels[i];
+                durs[n] = raw_durs[i];
+                n++;
+            }
+        }
+    } else {
+        memcpy(levels, raw_levels, sizeof(raw_levels));
+        memcpy(durs, raw_durs, sizeof(raw_durs));
+        n = raw_n;
+    }
     for (int pass = 0; pass < 3 && !done; pass++) {
-        subghz_encoder_reset(enc);
-        bool level;
-        uint32_t dur;
-        while (subghz_encoder_yield(enc, &level, &dur)) {
-            if (subghz_decoder_feed(dec, level, dur) == SUBGHZ_PROTOCOL_DONE) {
+        for (size_t i = 0; i < n; i++) {
+            if (subghz_decoder_feed(dec, levels[i], durs[i]) == SUBGHZ_PROTOCOL_DONE) {
                 done = true;
                 break;
             }
@@ -89,6 +147,14 @@ out:
     subghz_encoder_free(enc);
     subghz_decoder_free(dec);
     return failures == 0;
+}
+
+static bool round_trip(const char *proto, uint64_t key, uint32_t bits) {
+    return round_trip_feed(proto, key, bits, false);
+}
+
+static bool round_trip_air(const char *proto, uint64_t key, uint32_t bits) {
+    return round_trip_feed(proto, key, bits, true);
 }
 
 /* Feed raw pulses for protocols whose encoder omits the inter-frame gap. */
@@ -234,6 +300,660 @@ static void test_keeloq_cipher_keystore(void) {
     }
 }
 
+/* Independent textbook G.E. Thomas check of the Manchester encoders:
+ * split durations into TE halves (peeling a merged finish off the trailing
+ * gap), pair halves into cells from stream start, and map cells without any
+ * shared state machine. Proves the TX uploads are protocol-correct for real
+ * (edge-based) receivers. */
+static bool textbook_manchester(const char *proto, uint64_t key, uint32_t bits,
+                                uint32_t te_us, bool invert, uint32_t gap_us) {
+    const subghz_protocol_entry_t *entry = subghz_protocol_find(proto);
+    if (!entry || !entry->encoder_ops) {
+        printf("SKIP %s: no encoder\n", proto);
+        return true;
+    }
+    subghz_protocol_encoder_t *enc = subghz_encoder_alloc(entry);
+    if (!enc) {
+        printf("FAIL %s: alloc\n", proto);
+        failures++;
+        return false;
+    }
+    if (subghz_encoder_feed(enc, key, bits) != SUBGHZ_PROTOCOL_DONE) {
+        printf("FAIL %s: encode rejected\n", proto);
+        failures++;
+        subghz_encoder_free(enc);
+        return false;
+    }
+    int halves[8192];
+    int nhalves = 0;
+    bool level;
+    uint32_t dur;
+    subghz_encoder_reset(enc);
+    while (subghz_encoder_yield(enc, &level, &dur) && nhalves < 8192) {
+        if (dur % te_us) {
+            /* Trailing gap with a merged finish half: peel the finish. */
+            if (dur > gap_us && ((dur - gap_us) % te_us) == 0) {
+                for (uint32_t k = 0; k < (dur - gap_us) / te_us && nhalves < 8192;
+                     k++) {
+                    halves[nhalves++] = level;
+                }
+            }
+            break;
+        }
+        for (uint32_t k = 0; k < dur / te_us && nhalves < 8192; k++) {
+            halves[nhalves++] = level;
+        }
+    }
+    uint64_t got = 0;
+    int got_bits = 0;
+    bool cell_ok = true;
+    for (int i = 0; i + 1 < nhalves && got_bits < 64; i += 2) {
+        int bit;
+        if (!halves[i] && halves[i + 1]) {
+            bit = 1;
+        } else if (halves[i] && !halves[i + 1]) {
+            bit = 0;
+        } else {
+            cell_ok = false;
+            break;
+        }
+        if (invert) {
+            bit = !bit;
+        }
+        got = (got << 1) | (uint64_t)bit;
+        got_bits++;
+    }
+    bool pass = cell_ok && got_bits == (int)bits && got == key;
+    if (!pass) {
+        printf("FAIL %s: textbook got=0x%llx (%d bits, cells %s) want=0x%llx\n", proto,
+               (unsigned long long)got, got_bits, cell_ok ? "ok" : "bad",
+               (unsigned long long)key);
+        failures++;
+    } else {
+        printf("ok %-14s textbook %ubit key=0x%08llx\n", proto, bits,
+               (unsigned long long)(key & 0xffffffffull));
+    }
+    subghz_encoder_free(enc);
+    return pass;
+}
+
+/* Deterministic decoder spot checks on transition-free waveforms (no phase
+ * luck involved): sync/framing, TRUE/FALSE cell yields, and exact prefix
+ * accumulation. Full-frame loopback for these two stays phase-sensitive by
+ * Flipper's event-based design (see decoder notes), so it is not asserted. */
+static void test_manchester_decode_spots(void) {
+    {
+        const subghz_protocol_entry_t *entry = subghz_protocol_find("Power Smart");
+        subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+        /* Gap aligns phase, then six 0-cells (H/L): six FALSE=!TRUE bits. */
+        subghz_decoder_feed(dec, false, 499950);
+        for (int i = 0; i < 6; i++) {
+            subghz_decoder_feed(dec, true, 225);
+            subghz_decoder_feed(dec, false, 225);
+        }
+        CHECK(dec->decoded_bits == 6 && dec->decoded_data == 0, "ps zero cells");
+        subghz_decoder_free(dec);
+    }
+    {
+        const subghz_protocol_entry_t *entry = subghz_protocol_find("Power Smart");
+        subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+        /* LongHigh from Mid1 reaches Mid0 and yields FALSE -> decoded 1. */
+        subghz_decoder_feed(dec, false, 499950);
+        subghz_decoder_feed(dec, true, 450);
+        CHECK(dec->decoded_bits == 1 && dec->decoded_data == 1, "ps long-high cell");
+        subghz_decoder_free(dec);
+    }
+    {
+        const subghz_protocol_entry_t *entry = subghz_protocol_find("Revers_RB2");
+        subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+        /* Remote-style sync: gap low + four alternating halves seeds 0xF. */
+        subghz_decoder_feed(dec, false, 600);
+        subghz_decoder_feed(dec, true, 250);
+        subghz_decoder_feed(dec, false, 250);
+        subghz_decoder_feed(dec, true, 250);
+        subghz_decoder_feed(dec, false, 250);
+        CHECK(dec->decoded_bits == 4 && dec->decoded_data == 0xf, "rb2 sync seed");
+        /* Five 1-cells (L/H): first L aligns, then four TRUEs. */
+        for (int i = 0; i < 5; i++) {
+            subghz_decoder_feed(dec, false, 250);
+            subghz_decoder_feed(dec, true, 250);
+        }
+        CHECK(dec->decoded_bits == 8 && dec->decoded_data == 0xff, "rb2 ones prefix");
+        subghz_decoder_free(dec);
+    }
+    printf("ok manchester decode spots\n");
+}
+
+/* Somfy RTS waveform synthesis: HW sync + SW sync + 1/2-TE lead-in low,
+ * textbook G.E. Thomas halves (1 = L,H) air-merged, trailing gap. */
+static size_t somfy_build(const char *proto, uint64_t frame, uint32_t frame_bits,
+                          uint32_t pdc, uint32_t pdc_bits, bool *levels, uint32_t *durs,
+                          size_t cap) {
+    (void)proto;
+    size_t n = 0;
+#define SOMFY_PUSH(lv, du)                                        \
+    do {                                                          \
+        if (n && levels[n - 1u] == (lv)) {                        \
+            durs[n - 1u] += (du);                                 \
+        } else {                                                  \
+            if (n >= cap) return 0;                               \
+            levels[n] = (lv);                                     \
+            durs[n] = (du);                                       \
+            n++;                                                  \
+        }                                                         \
+    } while (0)
+    SOMFY_PUSH(true, 2560);
+    SOMFY_PUSH(false, 2560);
+    SOMFY_PUSH(true, 2560);
+    SOMFY_PUSH(false, 2560);
+    SOMFY_PUSH(true, 4480);
+    SOMFY_PUSH(false, 604);
+    for (uint32_t i = 0; i < frame_bits; i++) {
+        bool bit = ((frame >> (frame_bits - 1u - i)) & 1ull) != 0;
+        if (bit) {
+            SOMFY_PUSH(false, 640);
+            SOMFY_PUSH(true, 640);
+        } else {
+            SOMFY_PUSH(true, 640);
+            SOMFY_PUSH(false, 640);
+        }
+    }
+    for (uint32_t i = 0; i < pdc_bits; i++) {
+        bool bit = pdc_bits ? ((pdc >> (pdc_bits - 1u - i)) & 1u) != 0 : false;
+        if (bit) {
+            SOMFY_PUSH(false, 640);
+            SOMFY_PUSH(true, 640);
+        } else {
+            SOMFY_PUSH(true, 640);
+            SOMFY_PUSH(false, 640);
+        }
+    }
+    SOMFY_PUSH(false, 9000);
+    return n;
+#undef SOMFY_PUSH
+}
+
+static uint8_t somfy_test_crc(uint64_t data) {
+    uint8_t crc = 0;
+    data &= 0xfff0ffffffffffull;
+    for (uint8_t i = 0; i < 56u; i += 8u) {
+        crc = (uint8_t)(crc ^ (data >> i) ^ (data >> (i + 4u)));
+    }
+    return (uint8_t)(crc & 0xfu);
+}
+
+/* Somfy Telis: checksum-solved frame must decode exactly. The CRC gate
+ * makes this self-proving (a DONE implies a valid frame and decoder). */
+static void test_somfy_telis(void) {
+    uint64_t base = 0xA7800042121300ull; /* seed A7, Up, cnt 0x42, serial */
+    uint64_t frame = 0;
+    for (int k = 0; k < 16; k++) {
+        uint64_t cand = base | ((uint64_t)k << 40);
+        uint64_t dt = cand ^ (cand >> 8);
+        if (((dt >> 40) & 0xfu) == somfy_test_crc(dt)) {
+            frame = cand;
+            break;
+        }
+    }
+    CHECK(frame != 0, "somfy vector solves");
+    const subghz_protocol_entry_t *entry = subghz_protocol_find("Somfy Telis");
+    CHECK(entry != NULL && entry->info->rolling && entry->encoder_ops == NULL,
+          "telis rolling decode-only");
+    subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+    bool levels[512];
+    uint32_t durs[512];
+    size_t n = somfy_build("t", frame, 56, 0, 0, levels, durs, 512);
+    CHECK(n > 0, "somfy waveform builds");
+    bool done = false;
+    for (size_t i = 0; i < n; i++) {
+        if (subghz_decoder_feed(dec, levels[i], durs[i]) == SUBGHZ_PROTOCOL_DONE) {
+            done = true;
+            break;
+        }
+    }
+    CHECK(done, "telis decodes");
+    CHECK(dec->decoded_bits == 56 && dec->decoded_data == frame, "telis exact 0x%llx",
+          (unsigned long long)frame);
+    {
+        char buf[256];
+        const char *s = subghz_decoder_get_string(dec, buf, sizeof(buf));
+        CHECK(s != NULL, "telis detail string");
+        if (s) {
+            printf("ok %-14s 56bit key=0x%08llx -> %s\n", "Somfy Telis",
+                   (unsigned long long)(frame & 0xffffffffull), buf);
+            CHECK(strstr(buf, "Btn:Up") != NULL, "telis button Up");
+        }
+    }
+    subghz_decoder_free(dec);
+}
+
+/* Somfy Keytis: Flipper's real capture (data + press-duration counter). */
+static void test_somfy_keytis(void) {
+    const subghz_protocol_entry_t *entry = subghz_protocol_find("Somfy Keytis");
+    CHECK(entry != NULL && entry->info->rolling && entry->encoder_ops == NULL,
+          "keytis rolling decode-only");
+    subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+    bool levels[512];
+    uint32_t durs[512];
+    size_t n = somfy_build("k", 0xA453537C4B9855ull, 56, 0xC40019, 24, levels, durs,
+                           512);
+    CHECK(n > 0, "keytis waveform builds");
+    bool done = false;
+    for (size_t i = 0; i < n; i++) {
+        if (subghz_decoder_feed(dec, levels[i], durs[i]) == SUBGHZ_PROTOCOL_DONE) {
+            done = true;
+            break;
+        }
+    }
+    CHECK(done, "keytis decodes");
+    CHECK(dec->decoded_bits == 56 && dec->decoded_data == 0xA453537C4B9855ull,
+          "keytis exact");
+    {
+        char buf[256];
+        const char *s = subghz_decoder_get_string(dec, buf, sizeof(buf));
+        CHECK(s != NULL, "keytis detail string");
+        if (s) {
+            printf("ok %-14s 80bit key=0x%08llx -> %s\n", "Somfy Keytis",
+                   (unsigned long long)(dec->decoded_data & 0xffffffffull), buf);
+            CHECK(strstr(buf, "Sn:0x37D3CD") != NULL, "keytis serial");
+            CHECK(strstr(buf, "Cnt:0x002F") != NULL, "keytis counter");
+            CHECK(strstr(buf, "Btn:Down") != NULL, "keytis button");
+        }
+    }
+    subghz_decoder_free(dec);
+}
+
+/* Hay21: Flipper's real sample 0x14A84A (btn A5, serial 0x42, cnt 5). */
+static void test_hay21(void) {
+    const subghz_protocol_entry_t *entry = subghz_protocol_find("Hay21");
+    CHECK(entry != NULL && entry->info->rolling && entry->encoder_ops == NULL,
+          "hay21 rolling decode-only");
+    subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+    uint64_t key = 0x14A84Aull;
+    /* Gap header, 21 high-first bits (1 = H700/L300), trailing gap. */
+    int levels[128];
+    uint32_t durs[128];
+    size_t n = 0;
+    levels[n] = false;
+    durs[n++] = 4200;
+    for (int i = 20; i >= 0; i--) {
+        if ((key >> i) & 1ull) {
+            levels[n] = true;
+            durs[n++] = 700;
+            levels[n] = false;
+            durs[n++] = 300;
+        } else {
+            levels[n] = true;
+            durs[n++] = 300;
+            levels[n] = false;
+            durs[n++] = 700;
+        }
+    }
+    levels[n] = false;
+    durs[n++] = 4200;
+    bool done = false;
+    for (size_t i = 0; i < n; i++) {
+        if (subghz_decoder_feed(dec, levels[i], durs[i]) == SUBGHZ_PROTOCOL_DONE) {
+            done = true;
+            break;
+        }
+    }
+    CHECK(done, "hay21 decodes");
+    CHECK(dec->decoded_bits == 21 && dec->decoded_data == key, "hay21 exact");
+    {
+        char buf[256];
+        const char *s = subghz_decoder_get_string(dec, buf, sizeof(buf));
+        CHECK(s != NULL, "hay21 detail string");
+        if (s) {
+            printf("ok %-14s 21bit key=0x%08llx -> %s\n", "Hay21",
+                   (unsigned long long)key, buf);
+            CHECK(strstr(buf, "Serial: 0x42") != NULL, "hay21 serial");
+            CHECK(strstr(buf, "Cnt: 0x5") != NULL, "hay21 counter");
+        }
+    }
+    subghz_decoder_free(dec);
+}
+
+/* Magellan: CRC-solved frame must round-trip exactly. */
+static uint8_t magellan_test_crc(uint32_t data24) {
+    uint8_t bytes[3] = {
+        (uint8_t)(data24 >> 16), (uint8_t)(data24 >> 8), (uint8_t)data24,
+    };
+    uint8_t crc = 0x00;
+    for (size_t i = 0; i < sizeof(bytes); i++) {
+        crc ^= bytes[i];
+        for (size_t j = 0; j < 8; j++) {
+            if (crc & 0x80u) {
+                crc = (uint8_t)((crc << 1) ^ 0x31u);
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    return crc;
+}
+
+static void test_magellan(void) {
+    uint64_t key = ((uint64_t)0x37AE48 << 8) | magellan_test_crc(0x37AE48);
+    round_trip("Magellan", key, 32);
+}
+
+/* CAME TWEE: Flipper's documented parcel must replay exactly, with the
+ * magic-XOR DIP decrypt matching their worked example. */
+static void test_twee(void) {
+    const subghz_protocol_entry_t *entry = subghz_protocol_find("CAME TWEE");
+    CHECK(entry != NULL && !entry->info->rolling && entry->encoder_ops != NULL,
+          "twee static with encoder");
+    if (!round_trip("CAME TWEE", 0x003FFF721DB79211ull, 54)) {
+        return;
+    }
+    /* Detail check on a fresh decode (Btn:C, DIP:0101010000 per comment). */
+    subghz_protocol_encoder_t *enc = subghz_encoder_alloc(entry);
+    subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+    subghz_encoder_feed(enc, 0x003FFF721DB79211ull, 54);
+    bool done = false;
+    for (int pass = 0; pass < 2 && !done; pass++) {
+        subghz_encoder_reset(enc);
+        bool level;
+        uint32_t dur;
+        while (subghz_encoder_yield(enc, &level, &dur)) {
+            if (subghz_decoder_feed(dec, level, dur) == SUBGHZ_PROTOCOL_DONE) {
+                done = true;
+                break;
+            }
+        }
+    }
+    CHECK(done, "twee parcel decodes");
+    {
+        char buf[256];
+        const char *s = subghz_decoder_get_string(dec, buf, sizeof(buf));
+        CHECK(s != NULL, "twee detail string");
+        if (s) {
+            printf("ok %-14s 54bit -> %s\n", "CAME TWEE", buf);
+            CHECK(strstr(buf, "Btn:C") != NULL, "twee button");
+            CHECK(strstr(buf, "DIP:0101010000") != NULL, "twee dips");
+        }
+    }
+    subghz_encoder_free(enc);
+    subghz_decoder_free(dec);
+}
+
+/* FAAC SLH: preamble + 64 high-first bits + re-preamble terminator. */
+static void test_faac(void) {
+    const subghz_protocol_entry_t *entry = subghz_protocol_find("Faac SLH");
+    CHECK(entry != NULL && entry->info->rolling && entry->encoder_ops == NULL,
+          "faac rolling decode-only");
+    subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+    uint64_t key = 0x123456789ABCDEF0ull;
+    int levels[512];
+    uint32_t durs[512];
+    size_t n = 0;
+    levels[n] = true;
+    durs[n++] = 1190;
+    levels[n] = false;
+    durs[n++] = 1190;
+    for (int i = 63; i >= 0; i--) {
+        if ((key >> i) & 1ull) {
+            levels[n] = true;
+            durs[n++] = 595;
+            levels[n] = false;
+            durs[n++] = 255;
+        } else {
+            levels[n] = true;
+            durs[n++] = 255;
+            levels[n] = false;
+            durs[n++] = 595;
+        }
+    }
+    levels[n] = true;
+    durs[n++] = 1190;
+    bool done = false;
+    for (size_t i = 0; i < n; i++) {
+        if (subghz_decoder_feed(dec, levels[i], durs[i]) == SUBGHZ_PROTOCOL_DONE) {
+            done = true;
+            break;
+        }
+    }
+    CHECK(done, "faac decodes");
+    CHECK(dec->decoded_bits == 64 && dec->decoded_data == key, "faac exact");
+    {
+        char buf[256];
+        const char *s = subghz_decoder_get_string(dec, buf, sizeof(buf));
+        CHECK(s != NULL, "faac detail string");
+        if (s) {
+            printf("ok %-14s 64bit key=0x%08llx -> %s\n", "Faac SLH",
+                   (unsigned long long)(key & 0xffffffffull), buf);
+        }
+    }
+    subghz_decoder_free(dec);
+}
+
+/* Scher-Khan 51-bit MAGIC CODE Dynamic: preamble + start + 50 pairs. */
+static void test_scher(void) {
+    const subghz_protocol_entry_t *entry = subghz_protocol_find("Scher-Khan");
+    CHECK(entry != NULL && entry->info->rolling && entry->encoder_ops == NULL,
+          "scher rolling decode-only");
+    subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+    uint64_t key = 0x0E8C1619E830Cull; /* 51-count value, top bit clear */
+    int levels[512];
+    uint32_t durs[512];
+    size_t n = 0;
+    for (int i = 0; i < 3; i++) {
+        levels[n] = true;
+        durs[n++] = 1500;
+        levels[n] = false;
+        durs[n++] = 1500;
+    }
+    levels[n] = true;
+    durs[n++] = 750;
+    levels[n] = false;
+    durs[n++] = 750;
+    for (int i = 49; i >= 0; i--) {
+        if ((key >> i) & 1ull) {
+            levels[n] = true;
+            durs[n++] = 1100;
+            levels[n] = false;
+            durs[n++] = 1100;
+        } else {
+            levels[n] = true;
+            durs[n++] = 750;
+            levels[n] = false;
+            durs[n++] = 750;
+        }
+    }
+    levels[n] = true;
+    durs[n++] = 1500;
+    bool done = false;
+    for (size_t i = 0; i < n; i++) {
+        if (subghz_decoder_feed(dec, levels[i], durs[i]) == SUBGHZ_PROTOCOL_DONE) {
+            done = true;
+            break;
+        }
+    }
+    CHECK(done, "scher decodes");
+    CHECK(dec->decoded_bits == 51 && dec->decoded_data == key, "scher exact");
+    {
+        char buf[256];
+        const char *s = subghz_decoder_get_string(dec, buf, sizeof(buf));
+        CHECK(s != NULL, "scher detail string");
+        if (s) {
+            printf("ok %-14s 51bit key=0x%08llx -> %s\n", "Scher-Khan",
+                   (unsigned long long)(key & 0xffffffffull), buf);
+            CHECK(strstr(buf, "Dynamic") != NULL, "scher variant");
+        }
+    }
+    subghz_decoder_free(dec);
+}
+
+/* iDo 48-bit fix/hop remote. */
+static void test_ido(void) {
+    const subghz_protocol_entry_t *entry = subghz_protocol_find("iDo 117/111");
+    CHECK(entry != NULL && entry->info->rolling && entry->encoder_ops == NULL,
+          "ido rolling decode-only");
+    subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+    uint64_t key = 0xABCDEF123456ull;
+    int levels[512];
+    uint32_t durs[512];
+    size_t n = 0;
+    levels[n] = true;
+    durs[n++] = 4500;
+    levels[n] = false;
+    durs[n++] = 4500;
+    for (int i = 47; i >= 0; i--) {
+        if ((key >> i) & 1ull) {
+            levels[n] = true;
+            durs[n++] = 450;
+            levels[n] = false;
+            durs[n++] = 450;
+        } else {
+            levels[n] = true;
+            durs[n++] = 450;
+            levels[n] = false;
+            durs[n++] = 1450;
+        }
+    }
+    levels[n] = true;
+    durs[n++] = 2400;
+    bool done = false;
+    for (size_t i = 0; i < n; i++) {
+        if (subghz_decoder_feed(dec, levels[i], durs[i]) == SUBGHZ_PROTOCOL_DONE) {
+            done = true;
+            break;
+        }
+    }
+    CHECK(done, "ido decodes");
+    CHECK(dec->decoded_bits == 48 && dec->decoded_data == key, "ido exact");
+    {
+        char buf[256];
+        const char *s = subghz_decoder_get_string(dec, buf, sizeof(buf));
+        CHECK(s != NULL, "ido detail string");
+        if (s) {
+            printf("ok %-14s 48bit key=0x%08llx -> %s\n", "iDo 117/111",
+                   (unsigned long long)(key & 0xffffffffull), buf);
+        }
+    }
+    subghz_decoder_free(dec);
+}
+
+/* KIA Seed 61-bit: preamble + start-seeded 1 + 59 pairs. */
+static void test_kia(void) {
+    const subghz_protocol_entry_t *entry = subghz_protocol_find("KIA Seed");
+    CHECK(entry != NULL && entry->info->rolling && entry->encoder_ops == NULL,
+          "kia rolling decode-only");
+    subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+    uint64_t key = 0x0F011243B04EC17Dull; /* bit60 clear, seed bit59 set */
+    int levels[512];
+    uint32_t durs[512];
+    size_t n = 0;
+    for (int i = 0; i < 17; i++) {
+        levels[n] = true;
+        durs[n++] = 250;
+        levels[n] = false;
+        durs[n++] = 250;
+    }
+    levels[n] = true;
+    durs[n++] = 500;
+    levels[n] = false;
+    durs[n++] = 500;
+    for (int i = 58; i >= 0; i--) {
+        if ((key >> i) & 1ull) {
+            levels[n] = true;
+            durs[n++] = 500;
+            levels[n] = false;
+            durs[n++] = 500;
+        } else {
+            levels[n] = true;
+            durs[n++] = 250;
+            levels[n] = false;
+            durs[n++] = 250;
+        }
+    }
+    levels[n] = true;
+    durs[n++] = 800;
+    bool done = false;
+    for (size_t i = 0; i < n; i++) {
+        if (subghz_decoder_feed(dec, levels[i], durs[i]) == SUBGHZ_PROTOCOL_DONE) {
+            done = true;
+            break;
+        }
+    }
+    CHECK(done, "kia decodes");
+    CHECK(dec->decoded_bits == 61 && dec->decoded_data == key, "kia exact");
+    {
+        char buf[256];
+        const char *s = subghz_decoder_get_string(dec, buf, sizeof(buf));
+        CHECK(s != NULL, "kia detail string");
+        if (s) {
+            printf("ok %-14s 61bit key=0x%08llx -> %s\n", "KIA Seed",
+                   (unsigned long long)(key & 0xffffffffull), buf);
+            CHECK(strstr(buf, "Sn:43B04EC") != NULL, "kia serial");
+            CHECK(strstr(buf, "Btn:1") != NULL, "kia button");
+            CHECK(strstr(buf, "Cnt:0112") != NULL, "kia counter");
+        }
+    }
+    subghz_decoder_free(dec);
+}
+
+/* Corrupt frames must not decode: broken RB2 stop code, broken Power Smart
+ * check fields, and Chamberlain garbage. Feeds use air-merged pulses. */
+static void test_batch2_rejects(void) {
+    struct {
+        const char *proto;
+        uint64_t key;
+        uint32_t bits;
+    } cases[] = {
+        /* Valid structure (seed 0xF, preamble 0xFF) but stop 0x201. */
+        { "Revers_RB2", 0xFFFF48D159E26A01ull, 64 },
+        { "Power Smart", 0xFD2137ACAADEC853ull, 64 },
+    };
+    for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
+        const subghz_protocol_entry_t *entry = subghz_protocol_find(cases[c].proto);
+        CHECK(entry != NULL, "%s registered", cases[c].proto);
+        subghz_protocol_encoder_t *enc = subghz_encoder_alloc(entry);
+        subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+        CHECK(enc && dec, "%s alloc", cases[c].proto);
+        CHECK(subghz_encoder_feed(enc, cases[c].key, cases[c].bits) ==
+                  SUBGHZ_PROTOCOL_DONE,
+              "%s corrupt encodes", cases[c].proto);
+        bool levels[512];
+        uint32_t durs[512];
+        size_t n = collect_merged(enc, levels, durs, 512);
+        bool done = false;
+        for (int pass = 0; pass < 2 && !done; pass++) {
+            for (size_t i = 0; i < n; i++) {
+                if (subghz_decoder_feed(dec, levels[i], durs[i]) ==
+                    SUBGHZ_PROTOCOL_DONE) {
+                    done = true;
+                    break;
+                }
+            }
+        }
+        CHECK(!done, "%s corrupt frame rejected", cases[c].proto);
+        subghz_encoder_free(enc);
+        subghz_decoder_free(dec);
+    }
+    /* Chamberlain garbage must not decode. */
+    {
+        const subghz_protocol_entry_t *entry = subghz_protocol_find("Cham_Code");
+        subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
+        bool done = false;
+        uint32_t seq[] = { 39000, 1000, 2000, 2000, 1000, 3000, 2000, 2000,
+                           3000, 1000, 1000, 1000, 9000 };
+        for (int r = 0; r < 4 && !done; r++) {
+            for (size_t i = 0; i < sizeof(seq) / sizeof(seq[0]); i++) {
+                if (subghz_decoder_feed(dec, (r + i) & 1, seq[i]) ==
+                    SUBGHZ_PROTOCOL_DONE) {
+                    done = true;
+                    break;
+                }
+            }
+        }
+        CHECK(!done, "chamberlain decoded garbage");
+        subghz_decoder_free(dec);
+    }
+    printf("ok batch2 rejects\n");
+}
+
 static void test_rx_dedup(void) {
     subghz_rx_t rx;
     CHECK(subghz_rx_init(&rx), "rx init");
@@ -313,6 +1033,77 @@ static void test_file_fields(void) {
     CHECK(!subghz_parse_custom_preset("Custom_preset_data:", pairs, &npairs, 48),
           "custom empty reject");
 
+    /* Flipper-exact form: register pairs + 00 00 terminator + 8-byte PA table
+     * (example from the official SubGhz file-format doc). */
+    {
+        uint8_t pa[SUBGHZ_CUSTOM_PA_SIZE];
+        bool have_pa = false;
+        size_t nfull = 0;
+        CHECK(subghz_parse_custom_preset_full(
+                  "Custom_preset_data: 02 0D 03 07 08 32 0B 06 14 00 13 00 12 30 "
+                  "11 32 10 17 18 18 19 18 1D 91 1C 00 1B 07 20 FB 22 11 21 B6 "
+                  "00 00 00 C0 00 00 00 00 00 00",
+                  pairs, &nfull, 48, pa, &have_pa) &&
+                  nfull == 17 && have_pa && pa[1] == 0xC0 && pa[0] == 0x00,
+              "custom flipper PA parse");
+        /* Legacy wrapper strips the PA table but keeps the register pairs. */
+        size_t nleg = 0;
+        CHECK(subghz_parse_custom_preset(
+                  "Custom_preset_data: 02 0D 03 07 08 32 0B 06 14 00 13 00 12 30 "
+                  "11 32 10 17 18 18 19 18 1D 91 1C 00 1B 07 20 FB 22 11 21 B6 "
+                  "00 00 00 C0 00 00 00 00 00 00",
+                  pairs, &nleg, 48) &&
+                  nleg == 17,
+              "custom flipper legacy wrapper");
+        /* Truncated PA table (7 bytes after terminator) is rejected. */
+        CHECK(!subghz_parse_custom_preset_full(
+                  "Custom_preset_data: 02 0D 00 00 00 C0 00 00 00 00 00", pairs,
+                  &nfull, 48, pa, &have_pa),
+              "custom truncated PA reject");
+        /* Trailing garbage after the PA table is rejected. */
+        CHECK(!subghz_parse_custom_preset_full(
+                  "Custom_preset_data: 02 0D 00 00 00 C0 00 00 00 00 00 00 FF", pairs,
+                  &nfull, 48, pa, &have_pa),
+              "custom trailing reject");
+        /* Invalid register address is rejected. */
+        CHECK(!subghz_parse_custom_preset_full("Custom_preset_data: 3F 00 00 00 00 C0 "
+                                               "00 00 00 00 00 00",
+                                               pairs, &nfull, 48, pa, &have_pa),
+              "custom bad address reject");
+    }
+
+    /* BinRAW fields (Flipper BinRAW file section). */
+    {
+        uint32_t braw = 0;
+        CHECK(subghz_parse_bit_raw_field("Bit_RAW: 260", &braw) && braw == 260,
+              "bit_raw parse");
+        CHECK(!subghz_parse_bit_raw_field("Bit_RAW: 0", &braw), "bit_raw zero reject");
+        CHECK(!subghz_parse_bit_raw_field("Bit_RAW: 4097", &braw),
+              "bit_raw huge reject");
+        uint8_t bbytes[SUBGHZ_BINRAW_MAX_BYTES];
+        size_t nbytes = 0;
+        CHECK(subghz_parse_data_raw_field("Data_RAW: 00 0F 4A", bbytes, &nbytes, 512) &&
+                  nbytes == 3 && bbytes[1] == 0x0F,
+              "data_raw parse");
+        CHECK(!subghz_parse_data_raw_field("Data_RAW:", bbytes, &nbytes, 512),
+              "data_raw empty reject");
+        CHECK(!subghz_parse_data_raw_field("Data_RAW: 0", bbytes, &nbytes, 512),
+              "data_raw odd reject");
+        /* Spec example: TE=100, Bit_RAW=8, Data=0x37 (0b00110111)
+         * transmits -200 200 -100 300. */
+        uint8_t ex[] = { 0x37 };
+        int32_t pulses[8];
+        uint32_t np = 0;
+        CHECK(subghz_binraw_expand(100, ex, 8, pulses, &np, 8) && np == 4 &&
+                  pulses[0] == -200 && pulses[1] == 200 && pulses[2] == -100 &&
+                  pulses[3] == 300,
+              "binraw expand spec example");
+        CHECK(!subghz_binraw_expand(0, ex, 8, pulses, &np, 8),
+              "binraw bad TE reject");
+        CHECK(!subghz_binraw_expand(100, ex, 5000, pulses, &np, 8),
+              "binraw huge bits reject");
+    }
+
     CHECK(subghz_field_value_equals("Protocol: RAW", 9, "RAW"), "field equals");
     CHECK(!subghz_field_value_equals("Protocol: RAW ", 9, "RAWX"), "field mismatch");
     printf("ok file fields\n");
@@ -321,7 +1112,7 @@ static void test_file_fields(void) {
 int main(void) {
     printf("protocol count: %u (static %u)\n", subghz_protocol_count(),
            subghz_protocol_count_static());
-    CHECK(subghz_protocol_count() == 29, "expected 29 protocols, got %u",
+    CHECK(subghz_protocol_count() == 44, "expected 44 protocols, got %u",
           subghz_protocol_count());
     CHECK(subghz_protocol_find("Nope") == NULL, "unknown protocol NULL");
 
@@ -334,7 +1125,7 @@ int main(void) {
     round_trip("Nice FLO", 0xABCDEF, 24);
     round_trip("CAME", 0xABC, 12);
     round_trip("CAME", 0xABCDEF, 24);
-    round_trip("Holtek HT12x", 0xA51, 12);
+    round_trip("Holtek_HT12X", 0xA51, 12);
     round_trip("Linear", 0xABCDEF, 24);
     round_trip("BETT", 0x12345, 18);
     round_trip("Clemsa", 0x12345, 18);
@@ -348,6 +1139,15 @@ int main(void) {
     round_trip("Phoenix V2", 0xABCDEF1234567ull, 52);
     round_trip("Hormann", 0xABCDEF12345ull, 44);
     round_trip("Gangqi", 0x2ABCDEF12ull, 34);
+    round_trip("Dickert_MAHS", 0xABCDEF123ull, 36);
+    round_trip("LinearDelta3", 0xA5, 8);
+    /* Batch 2: Manchester static + Chamberlain (Flipper-verified vectors).
+     * Marantec and Chamberlain round-trip end to end. Revers_RB2 and
+     * Power Smart use dedicated tests below (textbook + spot checks). */
+    round_trip_air("Marantec", 0x1307EDF6486C5ull, 49);
+    round_trip("Cham_Code", 0x55, 7);
+    round_trip("Cham_Code", 0xA1, 8); /* bit 2 is unused on 8-dip remotes */
+    round_trip("Cham_Code", 0x1AA, 9);
     round_trip("Nero Radio", 0x01020304050607ull, 56);
     round_trip("Nero Sketch", 0x0102030405ull, 40);
     round_trip("MegaCode", 0xFFFFFF, 24);
@@ -365,6 +1165,20 @@ int main(void) {
     }
 
     test_princeton_noise_reject();
+    test_batch2_rejects();
+    test_somfy_telis();
+    test_somfy_keytis();
+    test_hay21();
+    test_magellan();
+    test_twee();
+    test_faac();
+    test_scher();
+    test_ido();
+    test_kia();
+    textbook_manchester("Power Smart", 0xFD2137ACAADEC852ull, 64, 225, true,
+                        450u * 1111u);
+    textbook_manchester("Revers_RB2", 0xFFFF48D159E26A00ull, 64, 250, false, 320);
+    test_manchester_decode_spots();
     test_keeloq_frame();
     test_keeloq_cipher_keystore();
     test_rx_dedup();

@@ -528,6 +528,9 @@ static void pulse(bool level, uint32_t us);
 static void load_file(const char *name, uint32_t repeat);
 static bool transmit_upload(subghz_protocol_encoder_t *enc, uint32_t repeat);
 static bool parse_custom_preset(const char *line, uint8_t *pairs, size_t *pair_count);
+static bool parse_custom_preset_full(const char *line, uint8_t *pairs, size_t *pair_count,
+                                     uint8_t *pa_table, bool *have_pa);
+static const char *preset_to_flipper_name(cc1101_preset_t preset);
 
 static void setfrequency_handler(struct command_result *res) {
     if (bp_cmd_help_check(&frequency_def, res->help_flag)) return;
@@ -1077,13 +1080,46 @@ static void record_handler(struct command_result *res) {
     if (!duration || duration > 60000) { printf("Capture time must be 1-60000ms.\r\n"); return; }
 
     const cc1101_preset_info_t *pi = cc1101_preset_info((cc1101_preset_t)mode_config.preset);
-    const char *preset_name = pi ? pi->name : "Ook270Async";
+    (void)pi;
+    const char *preset_name = preset_to_flipper_name((cc1101_preset_t)mode_config.preset);
 
     FIL file;
     FRESULT fr = f_open(&file, name, FA_CREATE_ALWAYS | FA_WRITE);
     if (fr != FR_OK) { printf("Unable to create %s (FatFs error %u).\r\n", name, fr); return; }
-    bool write_ok = f_printf(&file, "Filetype: Flipper SubGhz RAW File\nVersion: 1\nFrequency: %lu000\nPreset: %s\nProtocol: RAW\n",
+    bool write_ok = f_printf(&file, "Filetype: Flipper SubGhz RAW File\nVersion: 1\nFrequency: %lu000\nPreset: %s\n",
                              (unsigned long)mode_config.frequency_khz, preset_name) >= 0;
+    if (write_ok && mode_config.preset == CC1101_PRESET_CUSTOM) {
+        uint8_t pairs[CC1101_CUSTOM_MAX_PAIRS * 2];
+        size_t npairs = cc1101_custom_preset_get(pairs, CC1101_CUSTOM_MAX_PAIRS);
+        uint8_t pa[CC1101_CUSTOM_PA_SIZE];
+        bool have_pa = cc1101_custom_preset_get_pa(pa);
+        if (!npairs) {
+            write_ok = false;
+        } else {
+            write_ok = f_printf(&file, "Custom_preset_module: CC1101\nCustom_preset_data:") >= 0;
+            for (size_t i = 0; i < npairs && write_ok; i++) {
+                if (f_printf(&file, " %02X %02X", pairs[i * 2u], pairs[i * 2u + 1u]) < 0) {
+                    write_ok = false;
+                }
+            }
+            if (write_ok && have_pa) {
+                if (f_printf(&file, " 00 00") < 0) {
+                    write_ok = false;
+                }
+                for (size_t i = 0; i < sizeof(pa) && write_ok; i++) {
+                    if (f_printf(&file, " %02X", pa[i]) < 0) {
+                        write_ok = false;
+                    }
+                }
+            }
+            if (write_ok && f_printf(&file, "\n") < 0) {
+                write_ok = false;
+            }
+        }
+    }
+    if (write_ok && f_printf(&file, "Protocol: RAW\n") < 0) {
+        write_ok = false;
+    }
 
     printf("Streaming capture to %s... press a key to stop.\r\n", name);
     if (!cc1101_rx()) {
@@ -1170,17 +1206,26 @@ static void load_file(const char *name, uint32_t repeat) {
     char line[256];
     uint32_t file_frequency_khz = 0;
     bool valid_filetype = false, valid_version = false;
-    bool raw_continuation = false, raw_protocol = false;
-    bool preset_found = false, truncated = false;
+    bool raw_continuation = false, raw_protocol = false, binraw_protocol = false;
+    bool preset_found = false, truncated = false, raw_valid = true, raw_have_pulse = false;
+    int raw_last_sign = 0;
     cc1101_preset_t file_preset = CC1101_PRESET_OOK_270;
     char proto_name[SUBGHZ_PROTOCOL_NAME_MAX] = { 0 };
     uint64_t proto_key = 0;
     uint32_t proto_bits = 0, proto_te = 0;
     bool have_proto = false, have_key = false, have_bits = false, have_te = false;
+    bool have_duration_counter = false;
+    uint32_t duration_counter = 0;
     bool have_custom = false;
     char file_manufacture[32] = { 0 };
     uint8_t custom_file_pairs[CC1101_CUSTOM_MAX_PAIRS * 2];
     size_t custom_file_nPairs = 0;
+    uint8_t custom_file_pa[CC1101_CUSTOM_PA_SIZE];
+    bool custom_file_have_pa = false;
+    /* BinRAW accumulation (Flipper: Bit/TE + repeated Bit_RAW/Data_RAW). */
+    uint32_t binraw_total_bits = 0, binraw_sum_bits = 0, binraw_te = 0, binraw_blocks = 0;
+    uint32_t binraw_pending_bits = 0;
+    bool binraw_have_total = false, binraw_have_te = false, binraw_have_pending = false;
     capture_count = 0;
     while (f_gets(line, sizeof(line), &file)) {
         bool complete_line = strchr(line, '\n') != NULL;
@@ -1196,7 +1241,8 @@ static void load_file(const char *name, uint32_t repeat) {
             preset_found = preset_from_flipper_name(line, 7, &file_preset);
         } else if (!strncmp(line, "Protocol:", 9)) {
             raw_protocol = field_value_equals(line, 9, "RAW");
-            if (!raw_protocol) {
+            binraw_protocol = field_value_equals(line, 9, "BinRAW");
+            if (!raw_protocol && !binraw_protocol) {
                 const char *v = line + 9;
                 while (*v == ' ' || *v == '\t') v++;
                 size_t n = strcspn(v, "\r\n");
@@ -1207,12 +1253,94 @@ static void load_file(const char *name, uint32_t repeat) {
                 }
             }
         } else if (!strncmp(line, "Bit:", 4)) {
-            have_bits = parse_bit_field(line, &proto_bits);
+            if (binraw_protocol) {
+                /* BinRAW total payload length: up to 4096 bits. */
+                const char *colon = strchr(line, ':');
+                char *end = NULL;
+                errno = 0;
+                unsigned long v = colon ? strtoul(colon + 1, &end, 10) : 0;
+                if (!colon || errno == ERANGE || end == colon + 1 || !v ||
+                    v > SUBGHZ_BINRAW_MAX_BITS) {
+                    binraw_have_total = false;
+                } else {
+                    while (*end == ' ' || *end == '\t') end++;
+                    if (*end == '\r' || *end == '\n' || *end == '\0') {
+                        binraw_total_bits = (uint32_t)v;
+                        binraw_have_total = true;
+                    } else {
+                        binraw_have_total = false;
+                    }
+                }
+            } else {
+                have_bits = parse_bit_field(line, &proto_bits);
+            }
+        } else if (!strncmp(line, "Bit_RAW:", 8)) {
+            binraw_have_pending =
+                subghz_parse_bit_raw_field(line, &binraw_pending_bits);
+            if (!binraw_have_pending || !binraw_protocol) {
+                binraw_have_pending = false;
+                raw_valid = false;
+            }
+        } else if (!strncmp(line, "Data_RAW:", 9)) {
+            if (!binraw_protocol || !binraw_have_pending) {
+                raw_valid = false;
+            } else {
+                uint8_t bytes[SUBGHZ_BINRAW_MAX_BYTES];
+                size_t nbytes = 0;
+                uint32_t want = binraw_pending_bits;
+                uint32_t te = binraw_have_te ? binraw_te : proto_te;
+                if (!subghz_parse_data_raw_field(line, bytes, &nbytes, sizeof(bytes)) ||
+                    nbytes * 8u < want) {
+                    raw_valid = false;
+                } else if ((!binraw_have_te && !have_te) || !te) {
+                    /* Flipper order is TE before the blocks; out-of-order
+                     * files are rejected rather than mis-expanded. */
+                    raw_valid = false;
+                } else {
+                    uint32_t before = capture_count;
+                    uint32_t next = capture_count;
+                    /* Expand into a scratch tail so a full buffer truncates
+                     * instead of leaving a half-written run. */
+                    if (!subghz_binraw_expand(te, bytes, want, capture_buffer, &next,
+                                              count_of(capture_buffer))) {
+                        truncated = true;
+                    }
+                    if (next > before) {
+                        capture_count = next;
+                        raw_have_pulse = true;
+                        raw_last_sign =
+                            capture_buffer[capture_count - 1] > 0 ? 1 : -1;
+                        binraw_sum_bits += want;
+                        binraw_blocks++;
+                    } else {
+                        truncated = true;
+                    }
+                    binraw_have_pending = false;
+                }
+            }
         } else if (!strncmp(line, "Key:", 4)) {
             uint32_t keybits = 0;
             have_key = parse_key_field(line, &proto_key, &keybits);
+        } else if (!strncmp(line, "Duration_Counter:", 17)) {
+            const char *colon = strchr(line, ':');
+            char *end = NULL;
+            errno = 0;
+            unsigned long v = colon ? strtoul(colon + 1, &end, 10) : 0;
+            if (colon && !errno && end != colon + 1 && v <= 0xfffffffful) {
+                while (*end == ' ' || *end == '\t') {
+                    end++;
+                }
+                if (*end == '\r' || *end == '\n' || *end == '\0') {
+                    duration_counter = (uint32_t)v;
+                    have_duration_counter = true;
+                }
+            }
         } else if (!strncmp(line, "TE:", 3)) {
             have_te = parse_te_field(line, &proto_te);
+            if (have_te) {
+                binraw_te = proto_te;
+                binraw_have_te = true;
+            }
         } else if (!strncmp(line, "Manufacture:", 12)) {
             const char *v = line + 12;
             while (*v == ' ' || *v == '\t') v++;
@@ -1222,8 +1350,21 @@ static void load_file(const char *name, uint32_t repeat) {
                 file_manufacture[n] = '\0';
             }
         } else if (!strncmp(line, "Custom_preset_data:", 19)) {
-            if (parse_custom_preset(line, custom_file_pairs, &custom_file_nPairs)) {
+            uint8_t pa[CC1101_CUSTOM_PA_SIZE];
+            bool have_pa = false;
+            if (parse_custom_preset_full(line, custom_file_pairs, &custom_file_nPairs,
+                                         pa, &have_pa)) {
                 have_custom = true;
+                custom_file_have_pa = have_pa;
+                if (have_pa) {
+                    memcpy(custom_file_pa, pa, sizeof(custom_file_pa));
+                }
+            } else {
+                have_custom = false;
+                printf("Invalid Custom_preset_data in %s.\r\n", name);
+                f_close(&file);
+                capture_count = 0;
+                return;
             }
         } else if (!strncmp(line, "RAW_Data:", 9)) {
             data = line + 9;
@@ -1234,36 +1375,129 @@ static void load_file(const char *name, uint32_t repeat) {
         }
 
         if (data) {
-            char *cursor = data;
-            while (*cursor) {
-                while (*cursor && *cursor != '-' && (*cursor < '0' || *cursor > '9')) cursor++;
-                if (!*cursor) break;
-                char *end = cursor;
-                long duration = strtol(cursor, &end, 10);
-                if (end == cursor) { cursor++; continue; }
-                if (duration && duration >= -60000000l && duration <= 60000000l) {
-                    if (capture_count < count_of(capture_buffer)) capture_buffer[capture_count++] = (int32_t)duration;
-                    else truncated = true;
+            if (binraw_protocol) {
+                /* BinRAW files must not interleave RAW_Data lines. */
+                raw_valid = false;
+            } else {
+                char *cursor = data;
+                while (*cursor) {
+                    while (*cursor && *cursor != '-' && (*cursor < '0' || *cursor > '9')) {
+                        cursor++;
+                    }
+                    if (!*cursor) {
+                        break;
+                    }
+                    char *end = cursor;
+                    long duration = strtol(cursor, &end, 10);
+                    if (end == cursor) {
+                        cursor++;
+                        continue;
+                    }
+                    if (!duration || duration < -60000000l || duration > 60000000l) {
+                        raw_valid = false;
+                    } else {
+                        int sign = duration > 0 ? 1 : -1;
+                        if (!raw_have_pulse) {
+                            /* Flipper: RAW streams start with a positive pulse
+                             * and strictly alternate sign. */
+                            if (sign < 0) {
+                                raw_valid = false;
+                            } else {
+                                raw_have_pulse = true;
+                                raw_last_sign = sign;
+                            }
+                        } else if (sign == raw_last_sign) {
+                            raw_valid = false;
+                        } else {
+                            raw_last_sign = sign;
+                        }
+                        if (raw_valid) {
+                            if (capture_count < count_of(capture_buffer)) {
+                                capture_buffer[capture_count++] = (int32_t)duration;
+                            } else {
+                                truncated = true;
+                            }
+                        }
+                    }
+                    cursor = end;
                 }
-                cursor = end;
             }
         }
     }
     fr = f_close(&file);
     if (fr != FR_OK) { capture_count = 0; printf("Error closing %s.\r\n", name); return; }
     if (have_custom) {
-        if (!cc1101_custom_preset_set(custom_file_pairs, custom_file_nPairs)) {
+        const uint8_t *pa = custom_file_have_pa ? custom_file_pa : NULL;
+        if (!cc1101_custom_preset_set_full(custom_file_pairs, custom_file_nPairs, pa)) {
             printf("Invalid Custom_preset_data in %s.\r\n", name);
+            capture_count = 0;
             return;
         }
         file_preset = CC1101_PRESET_CUSTOM;
         preset_found = true;
-        printf("Custom preset loaded (%u registers).\r\n", (unsigned)custom_file_nPairs);
+        printf("Custom preset loaded (%u registers%s).\r\n", (unsigned)custom_file_nPairs,
+               custom_file_have_pa ? ", PA table" : "");
     }
     if (!valid_filetype || !valid_version || !valid_frequency(file_frequency_khz) ||
         !preset_found) {
         capture_count = 0;
         printf("Unsupported .sub file (need Filetype/Version/Frequency/Preset).\r\n");
+        return;
+    }
+    if (binraw_have_pending) {
+        capture_count = 0;
+        printf("Unsupported .sub file (Bit_RAW without Data_RAW).\r\n");
+        return;
+    }
+
+    /* BinRAW file path: TE + Bit_RAW/Data_RAW blocks expanded above. */
+    if (binraw_protocol) {
+        if (!binraw_blocks || !capture_count || !raw_valid ||
+            (!binraw_have_te && !have_te)) {
+            capture_count = 0;
+            printf("Unsupported .sub file (BinRAW needs TE and Bit_RAW/Data_RAW).\r\n");
+            return;
+        }
+        if (binraw_have_total && binraw_sum_bits != binraw_total_bits) {
+            capture_count = 0;
+            printf("Unsupported .sub file (BinRAW bit count mismatch).\r\n");
+            return;
+        }
+        uint32_t previous_frequency_khz = mode_config.frequency_khz;
+        uint32_t previous_preset = mode_config.preset;
+        if (!cc1101_set_preset(file_preset) || !cc1101_set_frequency(file_frequency_khz)) {
+            (void)cc1101_set_preset((cc1101_preset_t)previous_preset);
+            (void)cc1101_set_frequency(previous_frequency_khz);
+            (void)cc1101_rx();
+            capture_count = 0;
+            printf("Failed to apply the .sub radio preset.\r\n");
+            return;
+        }
+        mode_config.frequency_khz = file_frequency_khz;
+        mode_config.preset = file_preset;
+        if (!cc1101_rx()) {
+            mode_config.frequency_khz = previous_frequency_khz;
+            mode_config.preset = previous_preset;
+            (void)cc1101_set_preset((cc1101_preset_t)previous_preset);
+            (void)cc1101_set_frequency(previous_frequency_khz);
+            (void)cc1101_rx();
+            capture_count = 0;
+            printf("Failed to enter RX state.\r\n");
+            return;
+        }
+        printf("Loaded BinRAW %lu bits (%u pulses) from %s at %u.%03uMHz, preset=%s%s.\r\n",
+               (unsigned long)binraw_sum_bits, capture_count, name,
+               mode_config.frequency_khz / 1000, mode_config.frequency_khz % 1000,
+               cc1101_preset_name((cc1101_preset_t)mode_config.preset),
+               truncated ? " (truncated to buffer capacity)" : "");
+        analyze_capture();
+        run_protocol_decoders();
+        if (repeat) {
+            printf("Replaying loaded capture %u time(s).\r\n", repeat);
+            if (!transmit_capture(repeat)) {
+                printf("Replay failed: CC1101 state transition error.\r\n");
+            }
+        }
         return;
     }
 
@@ -1274,9 +1508,24 @@ static void load_file(const char *name, uint32_t repeat) {
             printf("Protocol '%s' is not supported by this firmware.\r\n", proto_name);
             return;
         }
-        if (!have_key || !have_bits || !proto_bits || proto_bits > 64u) {
+        bool is_keytis80 =
+            !strcmp(entry->info->name, "Somfy Keytis") && have_bits && proto_bits == 80u;
+        if (!have_key || !have_bits || !proto_bits ||
+            (proto_bits > 64u && !is_keytis80)) {
             printf("Protocol file is missing a valid Bit/Key pair.\r\n");
             return;
+        }
+        /* Somfy Keytis 80-bit files: 8-byte Key (top byte zero, low 56 are
+         * the data core) plus Duration_Counter (press counter, low 24). */
+        uint32_t keytis_pdc = 0;
+        if (is_keytis80) {
+            if ((proto_key >> 56) != 0 || !have_duration_counter) {
+                printf("Protocol file is missing a valid Bit/Key pair.\r\n");
+                return;
+            }
+            keytis_pdc = duration_counter & 0xffffffu;
+            proto_key &= 0x00ffffffffffffffull;
+            proto_bits = 56u;
         }
         if (!cc1101_preset_is_ook(file_preset)) {
             printf("Protocol files require an OOK preset for async TX.\r\n");
@@ -1307,6 +1556,9 @@ static void load_file(const char *name, uint32_t repeat) {
                file_frequency_khz / 1000, file_frequency_khz % 1000);
         if (file_manufacture[0]) {
             printf("Manufacture: %s\r\n", file_manufacture);
+        }
+        if (is_keytis80) {
+            printf("Duration_Counter: 0x%06lX\r\n", (unsigned long)keytis_pdc);
         }
         char detail[192];
         subghz_protocol_decoder_t *dec = subghz_decoder_alloc(entry);
@@ -1363,7 +1615,7 @@ static void load_file(const char *name, uint32_t repeat) {
         return;
     }
 
-    if (!raw_protocol || !capture_count) {
+    if (!raw_protocol || !capture_count || !raw_valid) {
         capture_count = 0;
         printf("Unsupported .sub file. A valid RAW file with a supported frequency is required.\r\n");
         return;
@@ -1423,7 +1675,8 @@ static bool savekey_file(const char *name) {
         return false;
     }
     const cc1101_preset_info_t *pi = cc1101_preset_info((cc1101_preset_t)last_decode.preset);
-    const char *preset_name = pi ? pi->name : "Ook270Async";
+    (void)pi;
+    const char *preset_name = preset_to_flipper_name((cc1101_preset_t)last_decode.preset);
     FIL file;
     FRESULT fr = f_open(&file, name, FA_CREATE_ALWAYS | FA_WRITE);
     if (fr != FR_OK) {
@@ -1442,9 +1695,41 @@ static bool savekey_file(const char *name) {
     }
     bool ok = f_printf(&file,
                        "Filetype: Flipper SubGhz Key File\nVersion: 1\nFrequency: %lu000\n"
-                       "Preset: %s\nProtocol: %s\nBit: %lu\nKey:",
-                       (unsigned long)last_decode.frequency_khz, preset_name,
-                       last_decode.protocol, (unsigned long)last_decode.bits) >= 0;
+                       "Preset: %s\n",
+                       (unsigned long)last_decode.frequency_khz, preset_name) >= 0;
+    if (ok && last_decode.preset == CC1101_PRESET_CUSTOM) {
+        uint8_t pairs[CC1101_CUSTOM_MAX_PAIRS * 2];
+        size_t npairs = cc1101_custom_preset_get(pairs, CC1101_CUSTOM_MAX_PAIRS);
+        uint8_t pa[CC1101_CUSTOM_PA_SIZE];
+        bool have_pa = cc1101_custom_preset_get_pa(pa);
+        if (!npairs) {
+            ok = false;
+        } else {
+            ok = f_printf(&file, "Custom_preset_module: CC1101\nCustom_preset_data:") >= 0;
+            for (size_t i = 0; i < npairs && ok; i++) {
+                if (f_printf(&file, " %02X %02X", pairs[i * 2u], pairs[i * 2u + 1u]) < 0) {
+                    ok = false;
+                }
+            }
+            if (ok && have_pa) {
+                if (f_printf(&file, " 00 00") < 0) {
+                    ok = false;
+                }
+                for (size_t i = 0; i < sizeof(pa) && ok; i++) {
+                    if (f_printf(&file, " %02X", pa[i]) < 0) {
+                        ok = false;
+                    }
+                }
+            }
+            if (ok && f_printf(&file, "\n") < 0) {
+                ok = false;
+            }
+        }
+    }
+    if (ok && f_printf(&file, "Protocol: %s\nBit: %lu\nKey:", last_decode.protocol,
+                       (unsigned long)last_decode.bits) < 0) {
+        ok = false;
+    }
     for (uint32_t i = 8u - nbytes; i < 8u && ok; i++) {
         if (f_printf(&file, "%s%02X", i == 8u - nbytes ? " " : " ", bytes[i]) < 0) {
             ok = false;
@@ -1832,7 +2117,40 @@ static void send_handler(struct command_result *res) {
 
 /* Parse "Custom_preset_data: 02 0D 03 47 ..." hex bytes into addr/val pairs. */
 static bool parse_custom_preset(const char *line, uint8_t *pairs, size_t *pair_count) {
-    return subghz_parse_custom_preset(line, pairs, pair_count, CC1101_CUSTOM_MAX_PAIRS);
+    uint8_t pa[CC1101_CUSTOM_PA_SIZE];
+    bool have_pa = false;
+    return subghz_parse_custom_preset_full(line, pairs, pair_count, CC1101_CUSTOM_MAX_PAIRS,
+                                           pa, &have_pa);
+}
+
+static bool parse_custom_preset_full(const char *line, uint8_t *pairs, size_t *pair_count,
+                                     uint8_t *pa_table, bool *have_pa) {
+    return subghz_parse_custom_preset_full(line, pairs, pair_count, CC1101_CUSTOM_MAX_PAIRS,
+                                           pa_table, have_pa);
+}
+
+/* Canonical Flipper preset names for .sub files (record/savekey output). */
+static const char *preset_to_flipper_name(cc1101_preset_t preset) {
+    switch (preset) {
+    case CC1101_PRESET_OOK_270:
+        return "FuriHalSubGhzPresetOok270Async";
+    case CC1101_PRESET_OOK_650:
+        return "FuriHalSubGhzPresetOok650Async";
+    case CC1101_PRESET_2FSK_DEV238:
+        return "FuriHalSubGhzPreset2FSKDev238Async";
+    case CC1101_PRESET_2FSK_DEV12K:
+        return "FuriHalSubGhzPreset2FSKDev12KAsync";
+    case CC1101_PRESET_2FSK_DEV476:
+        return "FuriHalSubGhzPreset2FSKDev476Async";
+    case CC1101_PRESET_GFSK_10K:
+        return "FuriHalSubGhzPresetGFSK9_99KbAsync";
+    case CC1101_PRESET_MSK_100K:
+        return "FuriHalSubGhzPresetMSK99_97KbAsync";
+    case CC1101_PRESET_CUSTOM:
+        return "FuriHalSubGhzPresetCustom";
+    default:
+        return "FuriHalSubGhzPresetOok270Async";
+    }
 }
 
 static void preset_handler(struct command_result *res) {
@@ -1864,11 +2182,12 @@ static void preset_handler(struct command_result *res) {
             }
             uint8_t pairs[CC1101_CUSTOM_MAX_PAIRS * 2];
             size_t npairs = 0;
-            bool found = false;
+            uint8_t pa[CC1101_CUSTOM_PA_SIZE];
+            bool have_pa = false, found = false;
             char line[256];
             while (f_gets(line, sizeof(line), &f)) {
                 if (!strncmp(line, "Custom_preset_data:", 19) &&
-                    parse_custom_preset(line, pairs, &npairs)) {
+                    parse_custom_preset_full(line, pairs, &npairs, pa, &have_pa)) {
                     found = true;
                     break;
                 }
@@ -1878,19 +2197,22 @@ static void preset_handler(struct command_result *res) {
                 printf("No Custom_preset_data in %s.\r\n", file);
                 return;
             }
-            if (!cc1101_custom_preset_set(pairs, npairs) ||
+            if (!cc1101_custom_preset_set_full(pairs, npairs, have_pa ? pa : NULL) ||
                 !cc1101_set_preset(CC1101_PRESET_CUSTOM) || !cc1101_rx()) {
                 printf("Failed to apply custom preset.\r\n");
                 return;
             }
             mode_config.preset = CC1101_PRESET_CUSTOM;
             mode_config.bandwidth_khz = 0;
-            printf("Custom preset applied (%u registers).\r\n", (unsigned)npairs);
+            printf("Custom preset applied (%u registers%s).\r\n", (unsigned)npairs,
+                   have_pa ? ", PA table" : "");
             return;
         }
-        /* Export: dump config registers 0x00-0x2E + PATABLE. */
+        /* Export: Flipper-exact register pairs + 00 00 terminator + PA table. */
         uint8_t regs[0x2f];
-        if (!cc1101_read_config(0x00, regs, sizeof(regs))) {
+        uint8_t pa[CC1101_CUSTOM_PA_SIZE];
+        if (!cc1101_read_config(0x00, regs, sizeof(regs)) ||
+            !cc1101_read_patable(pa)) {
             printf("Failed to read CC1101 registers.\r\n");
             return;
         }
@@ -1904,6 +2226,15 @@ static void preset_handler(struct command_result *res) {
                                "Custom_preset_module: CC1101\nCustom_preset_data:") >= 0;
         for (uint a = 0; a < sizeof(regs) && ok; a++) {
             if (f_printf(&f, " %02X %02X", a, regs[a]) < 0) {
+                ok = false;
+            }
+        }
+        /* Register-block terminator + 8-byte PA table (Flipper format). */
+        if (ok && f_printf(&f, " 00 00") < 0) {
+            ok = false;
+        }
+        for (uint i = 0; i < sizeof(pa) && ok; i++) {
+            if (f_printf(&f, " %02X", pa[i]) < 0) {
                 ok = false;
             }
         }

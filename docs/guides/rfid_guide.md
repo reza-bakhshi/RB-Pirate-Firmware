@@ -1,6 +1,6 @@
 # PN532 RFID / NFC Mode
 
-The `RFID` mode connects an external NXP PN532 NFC/RFID transceiver module to the Bus Pirate's buffered I/O header via I2C. It supports tag detection, UID reading, memory dumping, sector/page writing, UID cloning to Chinese "Magic" cards, block erasing, and NDEF smart-tag reading/writing.
+The `RFID` mode connects an external NXP PN532 NFC/RFID transceiver module to the Bus Pirate's buffered I/O header via **High-Speed UART (HSU)**. It supports tag detection, UID reading, memory dumping, sector/page writing, UID cloning to Chinese "Magic" cards, block erasing, and NDEF smart-tag reading/writing.
 
 ## Supported Tag Architectures
 
@@ -17,19 +17,28 @@ The `RFID` mode connects an external NXP PN532 NFC/RFID transceiver module to th
 
 ---
 
-## Wiring
+## Hardware Setup & Wiring
 
-Connect the PN532 module in **I2C mode** (on standard red PN532 boards, set the DIP switches to `SEL0 = 1`, `SEL1 = 0` for I2C).
+### 1. PN532 DIP Switches
+Set the module DIP switches for **High-Speed UART (HSU)** mode:
+* **SEL0 = 0 (OFF / LOW)**
+* **SEL1 = 0 (OFF / LOW)**
+
+### 2. Pin Connections
 
 | PN532 Pin | Bus Pirate Pin | Description |
 | :--- | :--- | :--- |
-| **SDA** | **BIO0** (default, selectable BIO0-BIO7) | I2C Data line |
-| **SCL** | **BIO1** (default, selectable BIO0-BIO7) | I2C Clock line |
+| **RX** | **BIO4** (default) or **BIO0** | Bus Pirate TX &rarr; PN532 RX |
+| **TX** | **BIO5** (default) or **BIO1** | Bus Pirate RX &larr; PN532 TX |
 | **GND** | **GND** | Ground |
-| **VCC** | **3.3V** | 3.3V Power (do NOT connect to 5V) |
+| **VCC** | **VOUT** | 3.3V Power from Bus Pirate |
 
-> [!NOTE]
-> Enable the Bus Pirate onboard pull-up resistors (`P` command) or ensure your PN532 breakout board has pull-up resistors installed on the I2C bus.
+> [!IMPORTANT]
+> External power is **OFF by default** when entering a mode on the Bus Pirate.
+> After selecting RFID mode, enable 3.3V power to the module by typing:
+> ```text
+> RFID> W 3.3
+> ```
 
 ---
 
@@ -37,34 +46,48 @@ Connect the PN532 module in **I2C mode** (on standard red PN532 boards, set the 
 
 ### Interactive Mode:
 ```text
-m rfid
+HiZ> m rfid
 ```
+Prompts will ask for:
+1. **UART Pin Pair:**
+   * `0`: TX: BIO4, RX: BIO5 (uart0 - Default)
+   * `1`: TX: BIO0, RX: BIO1 (uart1)
+2. **Baud Rate:**
+   * `115200` (Default for PN532 HSU)
+   * `9600`
 
 ### Direct CLI Flags:
 ```text
-m rfid -s 0 -c 1 -k 100
+HiZ> m rfid -p 0 -b 115200
 ```
-* `-s <pin>`: SDA BIO pin (default: 0)
-* `-c <pin>`: SCL BIO pin (default: 1)
-* `-k <speed>`: I2C bus speed in kHz (`100` for Standard Mode, `400` for Fast Mode)
-
-When entering the mode, the firmware queries the PN532 firmware registers (`CMD 0x02`) and displays:
-```text
-[+] PN532 detected (IC=0x32, Ver 1.6), I2C @ 100kHz.
-```
+* `-p <0|1>`: Pin pair (`0` for BIO4/BIO5, `1` for BIO0/BIO1)
+* `-b <baud>`: Baud rate (`115200` or `9600`)
 
 ---
 
 ## Available Commands
+
+Every command provides interactive help via `-h` / `--help`.
 
 ### 1. `info`
 Queries chip model, firmware version, revision, and supported RF protocols:
 ```text
 RFID> info
 ```
+Output preview:
+```text
+--- PN532 NFC/RFID Controller ---
+Chip IC:           0x32 (PN532)
+Firmware Version:  1.6
+Supported Modes:   0x07
+  - ISO/IEC 14443 Type A (MIFARE)
+  - ISO/IEC 14443 Type B
+  - ISO/IEC 18092 (FeliCa / NFCIP-1)
+Interface:         HSU (UART) @ 115200 baud (TX: BIO4, RX: BIO5)
+```
 
 ### 2. `read`
-Detects tags placed in the RF field and displays UID, ATQA, SAK, and memory preview.
+Detects tags placed in the RF field and displays UID, ATQA, SAK, tag type, and memory preview.
 ```text
 RFID> read
 RFID> read -s

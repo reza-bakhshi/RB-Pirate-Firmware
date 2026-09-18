@@ -1,7 +1,7 @@
 /**
  * @file rfid.c
  * @brief RFID / NFC Mode for Bus Pirate 5/6
- * @details Implements PN532 RFID/NFC reader/writer support,
+ * @details Implements PN532 RFID/NFC reader/writer support over High-Speed UART (HSU),
  *          supporting MIFARE Classic, Ultralight, NTAG, UID magic cloning, and NDEF.
  * @author Bus Pirate Project
  * @date 2026
@@ -16,6 +16,7 @@
 #include <string.h>
 #include "pico/stdlib.h"
 #include "pirate.h"
+#include "pirate/psu.h"
 #include "system_config.h"
 #include "command_struct.h"
 #include "pirate/bio.h"
@@ -29,41 +30,48 @@
 #include "mode/rfid.h"
 
 static struct {
-    uint32_t sda_pin;
-    uint32_t scl_pin;
-    uint32_t speed_khz;
+    uint32_t pin_pair;
+    uint32_t tx_pin;
+    uint32_t rx_pin;
+    uint32_t baudrate;
     uint32_t initialized;
-} rfid_config = { BIO0, BIO1, 100, 0 };
+} rfid_config = { 0, BIO4, BIO5, 115200, 0 };
 
-static const char pin_labels[][5] = { "SDA", "SCL" };
+static const char pin_labels[][5] = { "TX->", "RX<-" };
 
-// Parameter constraints for setup
-static const bp_val_constraint_t sda_pin_range = {
-    .type = BP_VAL_UINT32,
-    .u = { .min = BIO0, .max = BIO7, .def = BIO0 },
+// Parameter choices for setup
+static const bp_val_choice_t pin_choices[] = {
+    { "0", "TX: BIO4, RX: BIO5 (uart0 - Default)", 0, 0 },
+    { "1", "TX: BIO0, RX: BIO1 (uart1)", 0, 1 },
 };
-static const bp_val_constraint_t scl_pin_range = {
-    .type = BP_VAL_UINT32,
-    .u = { .min = BIO0, .max = BIO7, .def = BIO1 },
-};
-static const bp_val_choice_t speed_choices[] = {
-    { "100", "Standard Mode (100kHz)", 0, 100 },
-    { "400", "Fast Mode (400kHz)", 0, 400 },
-};
-static const bp_val_constraint_t speed_choice = {
+static const bp_val_constraint_t pin_choice = {
     .type = BP_VAL_CHOICE,
-    .choice = { .choices = speed_choices, .count = count_of(speed_choices), .def = 0 },
+    .choice = { .choices = pin_choices, .count = count_of(pin_choices), .def = 0 },
+    .prompt = (uint32_t)(uintptr_t)"Select UART Pin Pair",
+    .hint = (uint32_t)(uintptr_t)"0: TX=BIO4, RX=BIO5 | 1: TX=BIO0, RX=BIO1",
+};
+
+static const bp_val_choice_t baud_choices[] = {
+    { "115200", "115200 baud (PN532 default)", 0, 115200 },
+    { "9600", "9600 baud", 0, 9600 },
+};
+static const bp_val_constraint_t baud_choice = {
+    .type = BP_VAL_CHOICE,
+    .choice = { .choices = baud_choices, .count = count_of(baud_choices), .def = 0 },
+    .prompt = (uint32_t)(uintptr_t)"Select Baud Rate",
+    .hint = (uint32_t)(uintptr_t)"Default: 115200",
 };
 
 // Setup command definition
 static const bp_command_opt_t rfid_setup_opts[] = {
-    { "sda", 's', BP_ARG_REQUIRED, "SDA BIO pin (0-7)", 0 },
-    { "scl", 'c', BP_ARG_REQUIRED, "SCL BIO pin (0-7)", 0 },
-    { "speed", 'k', BP_ARG_REQUIRED, "kHz (100, 400)", 0 },
+    { "pins", 'p', BP_ARG_REQUIRED, "pair", (uint32_t)(uintptr_t)"Select UART pins: 0=BIO4/BIO5, 1=BIO0/BIO1", &pin_choice },
+    { "baud", 'b', BP_ARG_REQUIRED, "baud", (uint32_t)(uintptr_t)"UART baud rate (default 115200)", &baud_choice },
     { 0 }
 };
 const bp_command_def_t rfid_setup_def = {
-    .name = "rfid", .description = 0, .opts = rfid_setup_opts,
+    .name = "rfid",
+    .description = (uint32_t)(uintptr_t)"RFID/NFC mode using PN532 over UART (HSU)",
+    .opts = rfid_setup_opts,
 };
 
 // Helper: parse hex string into byte array
@@ -86,17 +94,67 @@ static size_t parse_hex_bytes(const char *hex_str, uint8_t *out, size_t max_out)
     return count;
 }
 
+// Lazy connect check with diagnostic message if unpowered
 static bool command_ready(void) {
-    if (rfid_config.initialized && pn532_is_initialized()) return true;
-    printf("PN532 RFID controller is not initialized. Check wiring and 3.3V power.\r\n");
-    return false;
+    if (!pn532_is_initialized()) {
+        printf("%sRFID mode is not configured.%s\r\n", ui_term_color_error(), ui_term_color_reset());
+        return false;
+    }
+    if (!pn532_is_connected()) {
+        // Attempt lazy connection in case power was just enabled
+        if (!pn532_connect()) {
+            printf("\r\n%s[-] PN532 RFID module not responding.%s\r\n", ui_term_color_error(), ui_term_color_reset());
+            uint32_t rx_count = pn532_get_diag_rx_count();
+            uint32_t uart_errors = pn532_get_diag_uart_errors();
+            if (rx_count == 0) {
+                if (uart_errors & 0x04u) {
+                    printf(" %sDiagnostics:%s UART break detected on RX (BIO%u); the line is held LOW.\r\n",
+                           ui_term_color_info(), ui_term_color_reset(), (unsigned int)rfid_config.rx_pin);
+                    printf(" The PN532 is probably not in HSU mode (an I2C SDA line can remain LOW),\r\n");
+                    printf(" or PN532 TX is shorted to ground. Set both selectors to OFF, then power-cycle it.\r\n");
+                } else {
+                    printf(" %sDiagnostics:%s 0 bytes received on RX pin (BIO%u); line is idle %s.\r\n",
+                           ui_term_color_info(), ui_term_color_reset(), (unsigned int)rfid_config.rx_pin,
+                           pn532_get_diag_rx_line_high() ? "HIGH" : "LOW");
+                }
+                if (uart_errors & ~0x04u) {
+                    printf(" UART errors:%s%s%s (0x%02X).\r\n",
+                           (uart_errors & 0x01u) ? " framing" : "",
+                           (uart_errors & 0x02u) ? " parity" : "",
+                           (uart_errors & 0x08u) ? " overrun" : "",
+                           (unsigned int)uart_errors);
+                }
+                printf(" 1. %sCheck power:%s VREG is %s. %s\r\n",
+                       ui_term_color_prompt(), ui_term_color_reset(),
+                       psu_status.enabled ? "enabled" : "OFF",
+                       psu_status.enabled ? "" : "Use W 3.3 to power the PN532 module.");
+                printf(" 2. %sCheck DIP switches:%s On PN532 board, set %sSEL0 = 0 (OFF), SEL1 = 0 (OFF)%s for HSU mode.\r\n",
+                       ui_term_color_prompt(), ui_term_color_reset(), ui_term_color_prompt(), ui_term_color_reset());
+                printf(" 3. %sCheck wiring:%s Bus Pirate TX (BIO%u) -> PN532 RX, Bus Pirate RX (BIO%u) -> PN532 TX.\r\n",
+                       ui_term_color_prompt(), ui_term_color_reset(), (unsigned int)rfid_config.tx_pin, (unsigned int)rfid_config.rx_pin);
+                printf("    Try swapping the TX and RX jumper wires if module silkscreen is reversed.\r\n\r\n");
+            } else {
+                printf(" %sDiagnostics:%s Received %u bytes on UART, but frame handshake failed.\r\n",
+                       ui_term_color_info(), ui_term_color_reset(), (unsigned int)rx_count);
+                uint8_t last_bytes[16];
+                uint8_t count = sizeof(last_bytes);
+                pn532_get_diag_last_bytes(last_bytes, &count);
+                printf(" Last bytes: ");
+                for (uint8_t i = 0; i < count; i++) printf("%02X ", last_bytes[i]);
+                printf("\r\n\r\n");
+            }
+            return false;
+        }
+    }
+    return true;
 }
 
 // -----------------------------------------------------------------------------
 // Command: info
 // -----------------------------------------------------------------------------
 static const bp_command_def_t info_def = {
-    .name = "info", .description = 0,
+    .name = "info",
+    .description = (uint32_t)(uintptr_t)"Show PN532 firmware version and connection status",
 };
 
 static void info_handler(struct command_result *res) {
@@ -116,8 +174,8 @@ static void info_handler(struct command_result *res) {
     if (sup & 0x01) printf("  - ISO/IEC 14443 Type A (MIFARE)\r\n");
     if (sup & 0x02) printf("  - ISO/IEC 14443 Type B\r\n");
     if (sup & 0x04) printf("  - ISO/IEC 18092 (FeliCa / NFCIP-1)\r\n");
-    printf("Interface:         I2C @ %u kHz (SDA: BIO%u, SCL: BIO%u)\r\n\r\n",
-           rfid_config.speed_khz, rfid_config.sda_pin, rfid_config.scl_pin);
+    printf("Interface:         HSU (UART) @ %u baud (TX: BIO%u, RX: BIO%u)\r\n\r\n",
+           rfid_config.baudrate, rfid_config.tx_pin, rfid_config.rx_pin);
 }
 
 // -----------------------------------------------------------------------------
@@ -139,7 +197,7 @@ static void print_tag_header(const pn532_tag_info_t *tag) {
 // Command: read
 // -----------------------------------------------------------------------------
 static const bp_command_opt_t read_opts[] = {
-    { "single", 's', BP_ARG_NONE, NULL, 0 },
+    { "single", 's', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Single tag read then exit" },
     { 0 }
 };
 static const char *const read_usage[] = {
@@ -148,8 +206,11 @@ static const char *const read_usage[] = {
     "Single tag read:%s read -s",
 };
 static const bp_command_def_t read_def = {
-    .name = "read", .description = 0, .opts = read_opts,
-    .usage = read_usage, .usage_count = count_of(read_usage),
+    .name = "read",
+    .description = (uint32_t)(uintptr_t)"Scan and display RFID tag UID, type, and ATQA/SAK",
+    .opts = read_opts,
+    .usage = read_usage,
+    .usage_count = count_of(read_usage),
 };
 
 static void read_handler(struct command_result *res) {
@@ -220,7 +281,7 @@ static void read_handler(struct command_result *res) {
 // Command: dump
 // -----------------------------------------------------------------------------
 static const bp_command_opt_t dump_opts[] = {
-    { "file", 'f', BP_ARG_REQUIRED, "save to TF-card file", 0 },
+    { "file", 'f', BP_ARG_REQUIRED, "filename", (uint32_t)(uintptr_t)"Save dump to TF-card file" },
     { 0 }
 };
 static const char *const dump_usage[] = {
@@ -229,8 +290,11 @@ static const char *const dump_usage[] = {
     "Dump memory to TF-card:%s dump -f card.txt",
 };
 static const bp_command_def_t dump_def = {
-    .name = "dump", .description = 0, .opts = dump_opts,
-    .usage = dump_usage, .usage_count = count_of(dump_usage),
+    .name = "dump",
+    .description = (uint32_t)(uintptr_t)"Dump entire tag memory contents (MIFARE Classic / Ultralight / NTAG)",
+    .opts = dump_opts,
+    .usage = dump_usage,
+    .usage_count = count_of(dump_usage),
 };
 
 static void dump_handler(struct command_result *res) {
@@ -355,9 +419,9 @@ static void dump_handler(struct command_result *res) {
 // Command: write
 // -----------------------------------------------------------------------------
 static const bp_command_opt_t write_opts[] = {
-    { "block", 'b', BP_ARG_REQUIRED, "block or page index", 0 },
-    { "data", 'd', BP_ARG_REQUIRED, "hex data (4 or 16 bytes)", 0 },
-    { "uid", 'u', BP_ARG_REQUIRED, "magic UID hex (4 bytes)", 0 },
+    { "block", 'b', BP_ARG_REQUIRED, "index", (uint32_t)(uintptr_t)"Block or page index to write" },
+    { "data",  'd', BP_ARG_REQUIRED, "hex",   (uint32_t)(uintptr_t)"Hex data bytes (4B for Ultralight, 16B for Classic)" },
+    { "uid",   'u', BP_ARG_REQUIRED, "hex",   (uint32_t)(uintptr_t)"Magic UID hex (4 bytes, e.g. 12345678)" },
     { 0 }
 };
 static const char *const write_usage[] = {
@@ -367,8 +431,11 @@ static const char *const write_usage[] = {
     "Write magic UID (4 bytes):%s write -u 12345678",
 };
 static const bp_command_def_t write_def = {
-    .name = "write", .description = 0, .opts = write_opts,
-    .usage = write_usage, .usage_count = count_of(write_usage),
+    .name = "write",
+    .description = (uint32_t)(uintptr_t)"Write data block (16B) or page (4B) or magic UID (4B)",
+    .opts = write_opts,
+    .usage = write_usage,
+    .usage_count = count_of(write_usage),
 };
 
 static void write_handler(struct command_result *res) {
@@ -437,23 +504,23 @@ static void write_handler(struct command_result *res) {
     if (data_len == 16 && tag.is_mifare_classic) {
         uint8_t key[6];
         if (pn532_mifare_auth_auto((uint8_t)block_idx, tag.uid, tag.uid_len, key) != PN532_OK) {
-            printf("Error: Authentication failed for block %u.\r\n", block_idx);
+            printf("Error: Authentication failed for block %u.\r\n", (unsigned int)block_idx);
             return;
         }
         pn532_status_t st = pn532_mifare_write_block((uint8_t)block_idx, payload);
         if (st == PN532_OK) {
             printf("%s[+] Successfully wrote 16 bytes to Block %u.%s\r\n",
-                   ui_term_color_prompt(), ui_term_color_reset(), block_idx);
+                   ui_term_color_prompt(), ui_term_color_reset(), (unsigned int)block_idx);
         } else {
-            printf("[-] Failed to write Block %u (%s).\r\n", block_idx, pn532_status_str(st));
+            printf("[-] Failed to write Block %u (%s).\r\n", (unsigned int)block_idx, pn532_status_str(st));
         }
     } else if (data_len == 4 && tag.is_ultralight_or_ntag) {
         pn532_status_t st = pn532_ultralight_write_page((uint8_t)block_idx, payload);
         if (st == PN532_OK) {
             printf("%s[+] Successfully wrote 4 bytes to Page %u.%s\r\n",
-                   ui_term_color_prompt(), ui_term_color_reset(), block_idx);
+                   ui_term_color_prompt(), ui_term_color_reset(), (unsigned int)block_idx);
         } else {
-            printf("[-] Failed to write Page %u (%s).\r\n", block_idx, pn532_status_str(st));
+            printf("[-] Failed to write Page %u (%s).\r\n", (unsigned int)block_idx, pn532_status_str(st));
         }
     } else {
         printf("Data size (%u bytes) does not match tag architecture (%s).\r\n",
@@ -465,7 +532,8 @@ static void write_handler(struct command_result *res) {
 // Command: clone
 // -----------------------------------------------------------------------------
 static const bp_command_def_t clone_def = {
-    .name = "clone", .description = 0,
+    .name = "clone",
+    .description = (uint32_t)(uintptr_t)"Clone UID to Magic Card (Gen1A / Gen2 UID changeable tag)",
 };
 
 static void clone_handler(struct command_result *res) {
@@ -492,7 +560,6 @@ static void clone_handler(struct command_result *res) {
     printf("\r\n[Step 2] Remove source card.\r\n");
     printf("Place target MAGIC card on reader and press any key when ready...\r\n");
 
-    // Wait for keypress
     while (true) {
         char c;
         if (rx_fifo_try_get(&c)) break;
@@ -525,7 +592,8 @@ static void clone_handler(struct command_result *res) {
 // Command: erase
 // -----------------------------------------------------------------------------
 static const bp_command_def_t erase_def = {
-    .name = "erase", .description = 0,
+    .name = "erase",
+    .description = (uint32_t)(uintptr_t)"Erase tag user memory blocks to zero",
 };
 
 static void erase_handler(struct command_result *res) {
@@ -572,8 +640,8 @@ static void erase_handler(struct command_result *res) {
 // Command: ndef
 // -----------------------------------------------------------------------------
 static const bp_command_opt_t ndef_opts[] = {
-    { "uri", 'u', BP_ARG_REQUIRED, "NDEF URL / URI", 0 },
-    { "msg", 'm', BP_ARG_REQUIRED, "NDEF text message", 0 },
+    { "uri", 'u', BP_ARG_REQUIRED, "url",  (uint32_t)(uintptr_t)"NDEF URL / URI to write (e.g. https://buspirate.com)" },
+    { "msg", 'm', BP_ARG_REQUIRED, "text", (uint32_t)(uintptr_t)"NDEF text message to write" },
     { 0 }
 };
 static const char *const ndef_usage[] = {
@@ -583,8 +651,11 @@ static const char *const ndef_usage[] = {
     "Write text message:%s ndef -m \"Bus Pirate 5\"",
 };
 static const bp_command_def_t ndef_def = {
-    .name = "ndef", .description = 0, .opts = ndef_opts,
-    .usage = ndef_usage, .usage_count = count_of(ndef_usage),
+    .name = "ndef",
+    .description = (uint32_t)(uintptr_t)"Read or write NDEF URI or Text record on NFC tags",
+    .opts = ndef_opts,
+    .usage = ndef_usage,
+    .usage_count = count_of(ndef_usage),
 };
 
 static void ndef_handler(struct command_result *res) {
@@ -638,82 +709,90 @@ static void ndef_handler(struct command_result *res) {
 
 // Command table
 const struct _mode_command_struct rfid_commands[] = {
-    { .func = read_handler, .def = &read_def, .supress_fala_capture = true },
-    { .func = dump_handler, .def = &dump_def, .supress_fala_capture = true },
+    { .func = read_handler,  .def = &read_def,  .supress_fala_capture = true },
+    { .func = dump_handler,  .def = &dump_def,  .supress_fala_capture = true },
     { .func = write_handler, .def = &write_def, .supress_fala_capture = true },
     { .func = clone_handler, .def = &clone_def, .supress_fala_capture = true },
     { .func = erase_handler, .def = &erase_def, .supress_fala_capture = true },
-    { .func = ndef_handler, .def = &ndef_def, .supress_fala_capture = true },
-    { .func = info_handler, .def = &info_def, .supress_fala_capture = true },
+    { .func = ndef_handler,  .def = &ndef_def,  .supress_fala_capture = true },
+    { .func = info_handler,  .def = &info_def,  .supress_fala_capture = true },
 };
 const uint32_t rfid_commands_count = count_of(rfid_commands);
 
 // Setup UI
 uint32_t rfid_setup(void) {
     const char config_file[] = "bprfid.bp";
-    const mode_config_t config[] = {
-        { "$.sda_pin", &rfid_config.sda_pin, MODE_CONFIG_FORMAT_DECIMAL },
-        { "$.scl_pin", &rfid_config.scl_pin, MODE_CONFIG_FORMAT_DECIMAL },
-        { "$.speed_khz", &rfid_config.speed_khz, MODE_CONFIG_FORMAT_DECIMAL },
+    const mode_config_t config_t[] = {
+        { "$.pin_pair", &rfid_config.pin_pair, MODE_CONFIG_FORMAT_DECIMAL },
+        { "$.baudrate", &rfid_config.baudrate, MODE_CONFIG_FORMAT_DECIMAL },
     };
 
-    uint32_t sda, scl, speed;
-    bp_cmd_status_t status = bp_cmd_flag(&rfid_setup_def, 's', &sda);
-    if (status == BP_CMD_INVALID) return 0;
+    uint32_t temp = 0;
+    bp_cmd_status_t st = bp_cmd_flag(&rfid_setup_def, 'p', &temp);
+    if (st == BP_CMD_INVALID) return 0;
+    bool interactive = (st == BP_CMD_MISSING);
 
-    if (status == BP_CMD_MISSING) {
-        if (!storage_load_mode(config_file, config, count_of(config)) ||
-            rfid_config.sda_pin > BIO7 || rfid_config.scl_pin > BIO7 ||
-            (rfid_config.speed_khz != 100 && rfid_config.speed_khz != 400)) {
-            rfid_config.sda_pin = BIO0;
-            rfid_config.scl_pin = BIO1;
-            rfid_config.speed_khz = 100;
+    if (interactive) {
+        if (storage_load_mode(config_file, config_t, count_of(config_t))) {
+            printf("\r\n\r\n%s%s%s\r\n", ui_term_color_info(), GET_T(T_USE_PREVIOUS_SETTINGS), ui_term_color_reset());
+            rfid_settings();
+            int r = bp_cmd_yes_no_exit("");
+            if (r == BP_YN_EXIT) return 0;
+            if (r == BP_YN_YES) return 1;
         }
 
-        if (bp_cmd_prompt(&sda_pin_range, &sda) != BP_CMD_OK) return 0;
-        if (bp_cmd_prompt(&scl_pin_range, &scl) != BP_CMD_OK) return 0;
-        if (bp_cmd_prompt(&speed_choice, &speed) != BP_CMD_OK) return 0;
+        if (bp_cmd_prompt(&pin_choice, &temp) != BP_CMD_OK) return 0;
+        rfid_config.pin_pair = temp;
+
+        if (bp_cmd_prompt(&baud_choice, &temp) != BP_CMD_OK) return 0;
+        rfid_config.baudrate = temp;
     } else {
-        status = bp_cmd_flag(&rfid_setup_def, 'c', &scl);
-        if (status == BP_CMD_INVALID) return 0;
-        if (status == BP_CMD_MISSING) scl = BIO1;
+        rfid_config.pin_pair = (temp == 1) ? 1 : 0;
 
-        status = bp_cmd_flag(&rfid_setup_def, 'k', &speed);
-        if (status == BP_CMD_INVALID) return 0;
-        if (status == BP_CMD_MISSING) speed = 100;
+        st = bp_cmd_flag(&rfid_setup_def, 'b', &temp);
+        if (st == BP_CMD_INVALID) return 0;
+        if (st == BP_CMD_OK) {
+            rfid_config.baudrate = temp;
+        } else {
+            rfid_config.baudrate = 115200;
+        }
     }
 
-    if (sda == scl) {
-        printf("Error: SDA and SCL cannot use the same pin.\r\n");
-        return 0;
+    if (rfid_config.pin_pair == 1) {
+        rfid_config.tx_pin = BIO0;
+        rfid_config.rx_pin = BIO1;
+    } else {
+        rfid_config.tx_pin = BIO4;
+        rfid_config.rx_pin = BIO5;
     }
 
-    rfid_config.sda_pin = sda;
-    rfid_config.scl_pin = scl;
-    rfid_config.speed_khz = speed;
-
-    storage_save_mode(config_file, config, count_of(config));
+    storage_save_mode(config_file, config_t, count_of(config_t));
     return 1;
 }
 
 uint32_t rfid_setup_exc(void) {
-    system_bio_update_purpose_and_label(true, (uint8_t)rfid_config.sda_pin, BP_PIN_MODE, pin_labels[0]);
-    system_bio_update_purpose_and_label(true, (uint8_t)rfid_config.scl_pin, BP_PIN_MODE, pin_labels[1]);
-
-    rfid_config.initialized = pn532_init((uint8_t)rfid_config.sda_pin,
-                                        (uint8_t)rfid_config.scl_pin,
-                                        rfid_config.speed_khz * 1000);
-
-    if (!rfid_config.initialized) {
-        printf("\r\n[-] PN532 not detected. Check I2C wiring (SDA/SCL) and 3.3V power.\r\n");
-        rfid_cleanup();
-        return 0;
+    if (rfid_config.pin_pair == 1) {
+        rfid_config.tx_pin = BIO0;
+        rfid_config.rx_pin = BIO1;
+    } else {
+        rfid_config.tx_pin = BIO4;
+        rfid_config.rx_pin = BIO5;
     }
 
-    uint8_t ic, ver, rev, sup;
-    pn532_get_firmware_version(&ic, &ver, &rev, &sup);
-    printf("\r\n[+] PN532 detected (IC=0x%02X, Ver %u.%u), I2C @ %ukHz.\r\n",
-           ic, ver, rev, rfid_config.speed_khz);
+    system_bio_update_purpose_and_label(true, (uint8_t)rfid_config.tx_pin, BP_PIN_MODE, pin_labels[0]);
+    system_bio_update_purpose_and_label(true, (uint8_t)rfid_config.rx_pin, BP_PIN_MODE, pin_labels[1]);
+
+    pn532_init((uint8_t)rfid_config.tx_pin, (uint8_t)rfid_config.rx_pin, rfid_config.baudrate);
+    rfid_config.initialized = 1;
+
+    printf("\r\n%sRFID Mode Configured (PN532 High-Speed UART)%s\r\n", ui_term_color_notice(), ui_term_color_reset());
+    printf(" Pins: TX = BIO%u (PN532 RX), RX = BIO%u (PN532 TX)\r\n",
+           (unsigned int)rfid_config.tx_pin, (unsigned int)rfid_config.rx_pin);
+    printf(" Baud: %u 8N1 | DIP switches: %sSEL0 = 0 (OFF), SEL1 = 0 (OFF)%s\r\n",
+           (unsigned int)rfid_config.baudrate, ui_term_color_prompt(), ui_term_color_reset());
+    printf("\r\n%sNOTE:%s VREG power is OFF by default.\r\n", ui_term_color_warning(), ui_term_color_reset());
+    printf(" Type %sW 3.3%s to power the PN532 module.\r\n\r\n", ui_term_color_prompt(), ui_term_color_reset());
+
     return 1;
 }
 
@@ -722,21 +801,25 @@ void rfid_cleanup(void) {
         pn532_deinit();
     }
     rfid_config.initialized = 0;
-    system_bio_update_purpose_and_label(false, (uint8_t)rfid_config.sda_pin, BP_PIN_MODE, 0);
-    system_bio_update_purpose_and_label(false, (uint8_t)rfid_config.scl_pin, BP_PIN_MODE, 0);
+    system_bio_update_purpose_and_label(false, (uint8_t)rfid_config.tx_pin, BP_PIN_MODE, 0);
+    system_bio_update_purpose_and_label(false, (uint8_t)rfid_config.rx_pin, BP_PIN_MODE, 0);
 }
 
 void rfid_settings(void) {
-    printf("PN532 SDA: BIO%u\r\n", rfid_config.sda_pin);
-    printf("PN532 SCL: BIO%u\r\n", rfid_config.scl_pin);
-    printf("I2C Speed: %u kHz\r\n", rfid_config.speed_khz);
+    printf("PN532 TX: BIO%u (Bus Pirate TX -> PN532 RX)\r\n", (unsigned int)rfid_config.tx_pin);
+    printf("PN532 RX: BIO%u (Bus Pirate RX <- PN532 TX)\r\n", (unsigned int)rfid_config.rx_pin);
+    printf("Baud Rate: %u bps (8N1)\r\n", (unsigned int)rfid_config.baudrate);
+    printf("Status:   %s\r\n", pn532_is_connected() ? "Connected & Ready" : "Awaiting power / Not connected");
 }
 
 void rfid_help(void) {
-    printf("NXP PN532 RFID / NFC Reader/Writer Mode.\r\n\r\n");
-    printf("Wiring: Connect PN532 to 3.3V and GND. Connect SDA to BIO%u, SCL to BIO%u.\r\n",
-           rfid_config.sda_pin, rfid_config.scl_pin);
-    printf("Ensure I2C pull-up resistors (P command) or onboard pull-ups are enabled.\r\n\r\n");
+    printf("NXP PN532 RFID / NFC Reader/Writer Mode (High-Speed UART).\r\n\r\n");
+    printf("Hardware Setup:\r\n");
+    printf("  1. Configure PN532 DIP switches: SEL0 = 0 (OFF), SEL1 = 0 (OFF) for HSU.\r\n");
+    printf("  2. Connect VCC -> VOUT, GND -> GND.\r\n");
+    printf("  3. Connect PN532 RX -> BIO%u (TX), PN532 TX -> BIO%u (RX).\r\n",
+           (unsigned int)rfid_config.tx_pin, (unsigned int)rfid_config.rx_pin);
+    printf("  4. Turn on power using 'W 3.3' command.\r\n\r\n");
     ui_help_mode_commands(rfid_commands, rfid_commands_count);
 }
 

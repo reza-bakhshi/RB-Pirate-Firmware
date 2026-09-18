@@ -123,9 +123,46 @@ bool ui_process_commands(void) {
             MODE
         };
 
-        // first search global commands
         uint32_t user_cmd_id = 0;
         uint32_t command_type = NONE;
+
+        // first search mode specific commands
+        if (modes[system_config.mode].mode_commands_count) {
+            for (int i = 0; i < *modes[system_config.mode].mode_commands_count; i++) {
+                if (modes[system_config.mode].mode_commands[i].def && 
+                    strcmp(command_string, modes[system_config.mode].mode_commands[i].def->name) == 0) {
+                    user_cmd_id = i;
+                    command_type = MODE;
+                    // mode help handler
+                    if (bp_cmd_has_help_flag()) {
+                        // mode commands must supply their own help text
+                        result.help_flag = true;
+                    }
+                    
+                    //for all mode commands we run FALA, unless it is disabled
+                    if(!modes[system_config.mode].mode_commands[user_cmd_id].supress_fala_capture){
+                        fala_start_hook();
+                    }
+
+                    //do a sanity check before executing the command
+                    if(!result.help_flag && modes[system_config.mode].protocol_preflight_sanity_check){
+                        modes[system_config.mode].protocol_preflight_sanity_check();
+                    }
+                    
+                    //execute the mode command
+                    modes[system_config.mode].mode_commands[user_cmd_id].func(&result);
+                    
+                    //stop FALA
+                    if(!modes[system_config.mode].mode_commands[user_cmd_id].supress_fala_capture){
+                        fala_stop_hook();
+                        fala_notify_hook();
+                    }
+                    goto cmd_ok;
+                }
+            }
+        }
+
+        // if not mode command, search global commands
         for (int i = 0; i < commands_count; i++) {
             if (strcmp(command_string, commands[i].command) == 0) {
                 user_cmd_id = i;
@@ -142,44 +179,6 @@ bool ui_process_commands(void) {
                 }
                 commands[user_cmd_id].func(&result);
                 goto cmd_ok;
-            }
-        }
-
-        // if not global, search mode specific commands
-        if (!command_type) {
-            if (modes[system_config.mode].mode_commands_count) {
-                for (int i = 0; i < *modes[system_config.mode].mode_commands_count; i++) {
-                    if (modes[system_config.mode].mode_commands[i].def && 
-                        strcmp(command_string, modes[system_config.mode].mode_commands[i].def->name) == 0) {
-                        user_cmd_id = i;
-                        command_type = MODE;
-                        // mode help handler
-                        if (bp_cmd_has_help_flag()) {
-                            // mode commands must supply their own help text
-                            result.help_flag = true;
-                        }
-                        
-                        //for all mode commands we run FALA, unless it is disabled
-                        if(!modes[system_config.mode].mode_commands[user_cmd_id].supress_fala_capture){
-                            fala_start_hook();
-                        }
-
-                        //do a sanity check before executing the command
-                        if(!result.help_flag && modes[system_config.mode].protocol_preflight_sanity_check){
-                            modes[system_config.mode].protocol_preflight_sanity_check();
-                        }
-                        
-                        //execute the mode command
-                        modes[system_config.mode].mode_commands[user_cmd_id].func(&result);
-                        
-                        //stop FALA
-                        if(!modes[system_config.mode].mode_commands[user_cmd_id].supress_fala_capture){
-                            fala_stop_hook();
-                            fala_notify_hook();
-                        }
-                        goto cmd_ok;
-                    }
-                }
             }
         }
 

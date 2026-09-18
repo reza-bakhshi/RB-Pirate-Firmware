@@ -40,8 +40,17 @@
 #define NRF_REG_RPD               0x09u
 #define NRF_REG_RX_ADDR_P0        0x0au
 #define NRF_REG_RX_ADDR_P1        0x0bu
+#define NRF_REG_RX_ADDR_P2        0x0cu
+#define NRF_REG_RX_ADDR_P3        0x0du
+#define NRF_REG_RX_ADDR_P4        0x0eu
+#define NRF_REG_RX_ADDR_P5        0x0fu
 #define NRF_REG_TX_ADDR           0x10u
 #define NRF_REG_RX_PW_P0          0x11u
+#define NRF_REG_RX_PW_P1          0x12u
+#define NRF_REG_RX_PW_P2          0x13u
+#define NRF_REG_RX_PW_P3          0x14u
+#define NRF_REG_RX_PW_P4          0x15u
+#define NRF_REG_RX_PW_P5          0x16u
 #define NRF_REG_FIFO_STATUS       0x17u
 #define NRF_REG_DYNPD             0x1cu
 #define NRF_REG_FEATURE           0x1du

@@ -3,8 +3,6 @@
  * @brief nRF24L01 2.4GHz packet and channel-analysis mode.
  *
  * Provides ordinary packet interoperability and passive RPD channel analysis.
- * Constant-carrier and interference/jamming operations are intentionally not
- * provided.
  *
  * @author Bus Pirate Project
  * @date 2026
@@ -30,6 +28,39 @@
 
 #define RF24_DEFAULT_CHANNEL 76u
 #define RF24_DEFAULT_CE_PIN  BIO0
+
+typedef struct {
+    const char *name;
+    const uint8_t *channels;
+    uint32_t count;
+} rf24_channel_group_t;
+
+static const uint8_t wifi_channels[] = {
+    6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18,
+    22, 24, 26, 28,
+    30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44,
+    46, 48, 50, 52,
+    55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68
+};
+static const uint8_t ble_channels[] = { 1, 2, 3, 25, 26, 27, 79, 80, 81 };
+static const uint8_t bluetooth_channels[] = {
+    2,  4,  6,  8,  10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32,
+    34, 36, 38, 40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62, 64,
+    66, 68, 70, 72, 74, 76, 78, 80
+};
+static const uint8_t usb_channels[] = { 40, 50, 60 };
+static const uint8_t video_channels[] = { 70, 75, 80 };
+static const uint8_t rc_channels[] = { 1, 3, 5, 7 };
+
+static const rf24_channel_group_t rf24_groups[] = {
+    { "WiFi", wifi_channels, sizeof(wifi_channels) },
+    { "BLE", ble_channels, sizeof(ble_channels) },
+    { "Bluetooth", bluetooth_channels, sizeof(bluetooth_channels) },
+    { "USB", usb_channels, sizeof(usb_channels) },
+    { "Video", video_channels, sizeof(video_channels) },
+    { "RC Toys", rc_channels, sizeof(rc_channels) },
+};
+#define RF24_GROUP_COUNT (sizeof(rf24_groups) / sizeof(rf24_groups[0]))
 
 static struct {
     uint32_t channel;
@@ -163,6 +194,40 @@ static const char *const receive_usage[] = {
 static const bp_command_def_t receive_def = {
     .name = "receive", .description = T_RF24_CMD_RECEIVE, .opts = receive_opts,
     .usage = receive_usage, .usage_count = count_of(receive_usage),
+};
+
+static const bp_command_positional_t jam_channel_start_positionals[] = {
+    { "start_channel", "0-125", T_RF24_ARG_CHANNEL, true, &channel_range }, { 0 },
+};
+static const bp_val_choice_t jam_group_choices[] = {
+    { "wifi", NULL, 0, 0 },
+    { "ble", NULL, 0, 1 },
+    { "bluetooth", NULL, 0, 2 },
+    { "usb", NULL, 0, 3 },
+    { "video", NULL, 0, 4 },
+    { "rc", NULL, 0, 5 },
+    { "full", NULL, 0, 6 },
+};
+static const bp_val_constraint_t jam_group_choice = {
+    .type = BP_VAL_CHOICE,
+    .choice = { .choices = jam_group_choices, .count = count_of(jam_group_choices) },
+};
+static const bp_command_opt_t jam_opts[] = {
+    { "group", 'g', BP_ARG_REQUIRED, "wifi|ble|bluetooth|usb|video|rc|full", T_RF24_OPT_GROUP, &jam_group_choice },
+    { "end", 'e', BP_ARG_REQUIRED, "0-125", T_RF24_OPT_END_CHANNEL, &channel_range },
+    { "rate", 'r', BP_ARG_REQUIRED, "250k|1m|2m", T_RF24_OPT_RATE, &rate_choice },
+    { 0 },
+};
+static const char *const jam_usage[] = {
+    "jam [-g group] [-e end_channel] [-r rate]",
+    "Jam WiFi channels:%s jam -g wifi",
+    "Sweep-jam CH76-CH83:%s jam 76 -e 83",
+    "Jam BLE channels at 2Mbps:%s jam -g ble -r 2m",
+};
+static const bp_command_def_t jam_def = {
+    .name = "jam", .description = T_RF24_CMD_JAM, .opts = jam_opts,
+    .positionals = jam_channel_start_positionals, .positional_count = 1,
+    .usage = jam_usage, .usage_count = count_of(jam_usage),
 };
 
 static bool command_ready(void) {
@@ -523,6 +588,70 @@ static void receive_handler(struct command_result *res) {
     printf("Receive stopped; %u packet(s).\r\n", packet_count);
 }
 
+static void jam_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&jam_def, res->help_flag) || !command_ready()) return;
+    uint32_t value;
+    nrf24_data_rate_t rate = NRF24_RATE_2MBPS;
+    if (bp_cmd_get_uint32(&jam_def, 'r', &value)) rate = (nrf24_data_rate_t)value;
+    const uint8_t *channels = NULL;
+    uint32_t channel_count = 0;
+    uint32_t group_idx;
+    if (bp_cmd_get_uint32(&jam_def, 'g', &value)) {
+        if (value >= RF24_GROUP_COUNT) {
+            printf("Invalid group index.\r\n");
+            return;
+        }
+        channels = rf24_groups[value].channels;
+        channel_count = rf24_groups[value].count;
+        printf("Jamming group: %s (%u channels)\r\n", rf24_groups[value].name, channel_count);
+    } else {
+        uint32_t start_channel;
+        if (bp_cmd_get_positional_uint32(&jam_def, 1, &start_channel)) {
+            if (start_channel > 125u) {
+                printf("Start channel must be 0-125.\r\n");
+                return;
+            }
+            uint32_t end_channel = start_channel;
+            if (bp_cmd_get_uint32(&jam_def, 'e', &value)) end_channel = value;
+            if (end_channel > 125u || end_channel < start_channel) {
+                printf("End channel must be %u-125 and >= start channel.\r\n", start_channel);
+                return;
+            }
+            static uint8_t range_channels[126];
+            channel_count = end_channel - start_channel + 1u;
+            for (uint32_t i = 0; i < channel_count; i++) range_channels[i] = (uint8_t)(start_channel + i);
+            channels = range_channels;
+            printf("Jamming CH%u-CH%u (%u-%uMHz)\r\n", start_channel, end_channel,
+                   2400u + start_channel, 2400u + end_channel);
+        } else {
+            static uint8_t full_channels[126];
+            for (uint32_t i = 0; i <= 125u; i++) full_channels[i] = (uint8_t)i;
+            channels = full_channels;
+            channel_count = 126u;
+            printf("Jamming full range: CH0-CH125 (2400-2525MHz)\r\n");
+        }
+    }
+    printf("*** WARNING: RF jamming may be illegal in your jurisdiction. ***\r\n");
+    printf("Rate: %s. Press any key to stop.\r\n", rate == NRF24_RATE_2MBPS ? "2Mbps" : rate == NRF24_RATE_1MBPS ? "1Mbps" : "250kbps");
+    if (!nrf24_jam_start((uint8_t)rate)) {
+        printf("Failed to start jam mode.\r\n");
+        return;
+    }
+    while (true) {
+        for (uint32_t i = 0; i < channel_count; i++) {
+            nrf24_jam_channel(channels[i]);
+            char c;
+            if (rx_fifo_try_get(&c)) {
+                nrf24_tx_stop();
+                nrf24_deinit();
+                mode_config.initialized = 0u;
+                printf("Jam stopped by user.\r\n");
+                return;
+            }
+        }
+    }
+}
+
 const struct _mode_command_struct rf24_commands[] = {
     { .func = setchannel_handler, .def = &setchannel_def, .supress_fala_capture = true },
     { .func = scan_handler, .def = &scan_def, .supress_fala_capture = true },
@@ -530,6 +659,7 @@ const struct _mode_command_struct rf24_commands[] = {
     { .func = waterfall_handler, .def = &waterfall_def, .supress_fala_capture = true },
     { .func = send_handler, .def = &send_def, .supress_fala_capture = true },
     { .func = receive_handler, .def = &receive_def, .supress_fala_capture = true },
+    { .func = jam_handler, .def = &jam_def, .supress_fala_capture = true },
 };
 const uint32_t rf24_commands_count = count_of(rf24_commands);
 
@@ -612,7 +742,6 @@ void rf24_help(void) {
     printf("Connect VCC to VOUT, then use W 3.3; a local 10uF capacitor is recommended.\r\n");
     printf("Passive analysis covers CH0-CH125; transmission is restricted to the common "
            "2400-2483.5MHz ISM band.\r\n");
-    printf("Transmit only to equipment you control and within local 2.4GHz ISM regulations.\r\n");
-    printf("Interference/jamming operations are intentionally not included.\r\n\r\n");
+    printf("Transmit only to equipment you control and within local 2.4GHz ISM regulations.\r\n\r\n");
     ui_help_mode_commands(rf24_commands, rf24_commands_count);
 }

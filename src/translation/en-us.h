@@ -703,6 +703,9 @@ static char const * const en_us[]={
 	[T_RF24_OPT_DELAY]="Delay between repeated packets in milliseconds",
 	[T_RF24_OPT_PIPE]="Receive pipe number from 0 to 5",
 	[T_RF24_OPT_TIME]="Receive duration in milliseconds",
+	[T_RF24_CMD_JAM]="Sweep RF noise across a channel range for testing",
+	[T_RF24_OPT_GROUP]="Channel group to jam: wifi, ble, bluetooth, usb, video, rc, or full",
+	[T_RF24_OPT_END_CHANNEL]="End channel for sweep range",
 };
 
 // Since en-us is the base language, the following static assert at least verifies the table size

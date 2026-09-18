@@ -1,8 +1,8 @@
 # nRF24L01 RF24 Mode
 
 The RF24 mode connects a 3.3V nRF24L01 or nRF24L01+ module to the Bus Pirate. It supports normal packet
-transmission and reception plus passive channel-activity measurements using the radio's Received Power Detector
-(RPD). Interference and jamming functions are intentionally not included.
+transmission and reception, passive channel-activity measurements using the radio's Received Power Detector
+(RPD), and RF sweep-jamming for testing purposes.
 
 ## Wiring
 
@@ -64,6 +64,7 @@ The non-interference RF24 features from ESP32-Bit-Pirate are represented as foll
 | `waterfall`              | Terminal `waterfall` |
 | `send`                   | `send` |
 | `receive`                | `receive` |
+| `jam`                    | `jam` |
 
 ```text
 setchannel 40
@@ -93,10 +94,30 @@ operation automatically disables acknowledgement because Enhanced ShockBurst ack
 
 Run `<command> -h` for all options and limits.
 
+Sweep-jam from CH76 to CH83:
+
+```text
+jam 76 -e 83
+```
+
+Jam WiFi channels:
+
+```text
+jam -g wifi
+```
+
+Jam BLE channels at 2Mbps:
+
+```text
+jam -g ble -r 2m
+```
+
+Available groups: `wifi`, `ble`, `bluetooth`, `usb`, `video`, `rc`, `full`.
+
 Only transmit to equipment you control, and follow the power, channel-use, and duty-cycle rules that apply in
 your jurisdiction.
 
-The RF24 mode intentionally excludes constant-carrier generation, sweeping noise, beacon spam, and jamming.
-Receiving private communications, injecting or replaying packets against equipment without permission, causing
-interference, exceeding permitted EIRP, or using unapproved radio hardware may be unlawful. Exact requirements
-vary by country; this firmware cannot determine whether a particular transmission is legally authorized.
+RF jamming may be illegal in your jurisdiction. Receiving private communications, injecting or replaying
+packets against equipment without permission, causing interference, exceeding permitted EIRP, or using
+unapproved radio hardware may be unlawful. Exact requirements vary by country; this firmware cannot determine
+whether a particular transmission is legally authorized.

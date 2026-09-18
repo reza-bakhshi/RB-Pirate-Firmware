@@ -2,8 +2,7 @@
  * @file nrf24l01.c
  * @brief Minimal nRF24L01/nRF24L01+ driver for the Bus Pirate RF24 mode.
  *
- * Implements standard packet transmit/receive and RPD energy detection. It
- * deliberately does not implement constant-carrier or interference features.
+ * Implements standard packet transmit/receive and RPD energy detection.
  *
  * @author Bus Pirate Project
  * @date 2026
@@ -373,4 +372,149 @@ void nrf24_power_down(void) {
     if (!nrf_initialized) return;
     nrf24_stop_listening();
     write_register(NRF_REG_CONFIG, read_register(NRF_REG_CONFIG) & (uint8_t)~NRF_CONFIG_PWR_UP);
+}
+
+bool nrf24_tx_start(uint8_t channel, const uint8_t *data, uint8_t length) {
+    if (!nrf_initialized || !data || !length || length > 32u) return false;
+    nrf24_stop_listening();
+    if (!nrf24_set_channel(channel)) return false;
+    nrf_dynamic_payload = false;
+    nrf_fixed_payload_length = length;
+    write_register(NRF_REG_DYNPD, 0u);
+    write_register(NRF_REG_FEATURE, 0u);
+    write_register(NRF_REG_EN_AA, 0u);
+    write_register(NRF_REG_EN_RXADDR, 1u);
+    write_register(NRF_REG_SETUP_RETR, 0u);
+    uint8_t config = (read_register(NRF_REG_CONFIG) | NRF_CONFIG_PWR_UP) & (uint8_t)~NRF_CONFIG_PRIM_RX;
+    write_register(NRF_REG_CONFIG, config);
+    clear_irqs();
+    nrf24_flush_tx();
+    hwspi_select();
+    transfer(NRF_CMD_W_TX_PAYLOAD);
+    for (uint8_t i = 0; i < length; i++) transfer(data[i]);
+    hwspi_deselect();
+    sleep_us(NRF_POWER_UP_DELAY_US);
+    bio_put(nrf_ce_pin, true);
+    return true;
+}
+
+void nrf24_tx_stop(void) {
+    if (!nrf_initialized) return;
+    bio_put(nrf_ce_pin, false);
+    clear_irqs();
+    nrf24_flush_tx();
+}
+
+bool nrf24_set_power_max(void) {
+    if (!nrf_initialized) return false;
+    uint8_t value = read_register(NRF_REG_RF_SETUP);
+    value = (value & (uint8_t)~(3u << 1)) | (3u << 1);
+    write_register(NRF_REG_RF_SETUP, value);
+    return (read_register(NRF_REG_RF_SETUP) & (3u << 1)) == (3u << 1);
+}
+
+bool nrf24_jam_start(uint8_t data_rate) {
+    if (!nrf_initialized) return false;
+    nrf24_stop_listening();
+    write_register(NRF_REG_DYNPD, 0u);
+    write_register(NRF_REG_FEATURE, 0u);
+    write_register(NRF_REG_EN_AA, 0u);
+    write_register(NRF_REG_EN_RXADDR, 1u);
+    write_register(NRF_REG_SETUP_RETR, 0u);
+    set_data_rate((nrf24_data_rate_t)data_rate);
+    nrf24_set_power_max();
+    uint8_t config = (read_register(NRF_REG_CONFIG) | NRF_CONFIG_PWR_UP) & (uint8_t)~NRF_CONFIG_PRIM_RX;
+    write_register(NRF_REG_CONFIG, config);
+    clear_irqs();
+    sleep_us(NRF_POWER_UP_DELAY_US);
+    bio_put(nrf_ce_pin, true);
+    return true;
+}
+
+bool nrf24_jam_channel(uint8_t channel) {
+    if (!nrf_initialized || channel > 125u) return false;
+    write_register(NRF_REG_RF_CH, channel);
+    return true;
+}
+
+bool nrf24_sniff_start(uint8_t channel, uint8_t data_rate) {
+    if (!nrf_initialized || channel > 125u) return false;
+    nrf24_stop_listening();
+    if (!nrf24_set_channel(channel)) return false;
+    set_data_rate((nrf24_data_rate_t)data_rate);
+    write_register(NRF_REG_SETUP_AW, 3u);
+    write_register_bytes(NRF_REG_RX_ADDR_P0, (const uint8_t *)"\xe7\xe7\xe7\xe7\xe7", 5u);
+    write_register_bytes(NRF_REG_RX_ADDR_P1, (const uint8_t *)"\xc2\xc2\xc2\xc2\xc2", 5u);
+    write_register(NRF_REG_RX_ADDR_P2, 0xc3u);
+    write_register(NRF_REG_RX_ADDR_P3, 0xc4u);
+    write_register(NRF_REG_RX_ADDR_P4, 0xc5u);
+    write_register(NRF_REG_RX_ADDR_P5, 0xc6u);
+    write_register(NRF_REG_EN_RXADDR, 0x3fu);
+    write_register(NRF_REG_EN_AA, 0u);
+    write_register(NRF_REG_DYNPD, 0x3fu);
+    write_register(NRF_REG_FEATURE, NRF_FEATURE_EN_DPL);
+    write_register(NRF_REG_CONFIG, NRF_CONFIG_PWR_UP | NRF_CONFIG_PRIM_RX);
+    clear_irqs();
+    nrf24_flush_rx();
+    sleep_us(NRF_POWER_UP_DELAY_US);
+    bio_put(nrf_ce_pin, true);
+    sleep_us(130u);
+    return true;
+}
+
+bool nrf24_sniff_read(uint8_t *data, size_t capacity, uint8_t *length, uint8_t *pipe) {
+    if (!nrf_initialized || !data || !length || !capacity) return false;
+    uint8_t state = status();
+    uint8_t pipe_number = (state & NRF_STATUS_RX_P_NO_MASK) >> 1;
+    if (pipe_number > 5u) {
+        if (!(read_register(NRF_REG_FIFO_STATUS) & NRF_FIFO_RX_EMPTY)) pipe_number = 7u;
+        else return false;
+    }
+    if (pipe) *pipe = pipe_number;
+    uint8_t payload_length = 32u;
+    hwspi_select();
+    transfer(NRF_CMD_R_RX_PL_WID);
+    payload_length = transfer(NRF_CMD_NOP);
+    hwspi_deselect();
+    if (!payload_length || payload_length > 32u) {
+        nrf24_flush_rx();
+        clear_irqs();
+        return false;
+    }
+    uint8_t copy_length = payload_length > capacity ? (uint8_t)capacity : payload_length;
+    hwspi_select();
+    transfer(NRF_CMD_R_RX_PAYLOAD);
+    for (uint8_t i = 0; i < payload_length; i++) {
+        uint8_t value = transfer(NRF_CMD_NOP);
+        if (i < copy_length) data[i] = value;
+    }
+    hwspi_deselect();
+    write_register(NRF_REG_STATUS, NRF_STATUS_RX_DR);
+    *length = copy_length;
+    return true;
+}
+
+bool nrf24_addr_scan(uint8_t channel, const uint8_t *address, uint8_t address_length, uint8_t data_rate) {
+    if (!nrf_initialized || !address || address_length < 3u || address_length > 5u || channel > 125u)
+        return false;
+    nrf24_stop_listening();
+    if (!nrf24_set_channel(channel)) return false;
+    set_data_rate((nrf24_data_rate_t)data_rate);
+    write_register(NRF_REG_SETUP_AW, address_length - 2u);
+    write_register_bytes(NRF_REG_RX_ADDR_P0, address, address_length);
+    write_register(NRF_REG_EN_RXADDR, 1u);
+    write_register(NRF_REG_EN_AA, 0u);
+    write_register(NRF_REG_DYNPD, 0u);
+    write_register(NRF_REG_FEATURE, 0u);
+    write_register(NRF_REG_RX_PW_P0, 32u);
+    write_register(NRF_REG_CONFIG, NRF_CONFIG_PWR_UP | NRF_CONFIG_PRIM_RX | NRF_CONFIG_EN_CRC);
+    write_register(NRF_REG_STATUS, NRF_STATUS_RX_DR | NRF_STATUS_TX_DS | NRF_STATUS_MAX_RT);
+    nrf24_flush_rx();
+    sleep_us(NRF_POWER_UP_DELAY_US);
+    bio_put(nrf_ce_pin, true);
+    sleep_us(500u);
+    bool detected = !(read_register(NRF_REG_FIFO_STATUS) & NRF_FIFO_RX_EMPTY);
+    bio_put(nrf_ce_pin, false);
+    nrf24_flush_rx();
+    return detected;
 }

@@ -53,5 +53,13 @@ bool nrf24_send(const uint8_t *data, uint8_t length, bool *acknowledged);
 void nrf24_flush_rx(void);
 void nrf24_flush_tx(void);
 void nrf24_power_down(void);
+bool nrf24_tx_start(uint8_t channel, const uint8_t *data, uint8_t length);
+void nrf24_tx_stop(void);
+bool nrf24_set_power_max(void);
+bool nrf24_jam_start(uint8_t data_rate);
+bool nrf24_jam_channel(uint8_t channel);
+bool nrf24_sniff_start(uint8_t channel, uint8_t data_rate);
+bool nrf24_sniff_read(uint8_t *data, size_t capacity, uint8_t *length, uint8_t *pipe);
+bool nrf24_addr_scan(uint8_t channel, const uint8_t *address, uint8_t address_length, uint8_t data_rate);
 
 #endif

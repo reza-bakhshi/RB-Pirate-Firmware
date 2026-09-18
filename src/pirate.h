@@ -44,6 +44,7 @@
 #define BP_USE_DIO
 #define BP_USE_INFRARED
 #define BP_USE_SUBGHZ
+#define BP_USE_RF24
 // #define 	BP_USE_DUMMY1
 // #define 	BP_USE_DUMMY2
 // #define     BP_USE_BINLOOPBACK

@@ -417,6 +417,12 @@ set(buspirate_common
         pirate/cc1101.c
         pirate/cc1101.h
 
+        # nRF24L01 2.4GHz radio
+        mode/rf24.c
+        mode/rf24.h
+        pirate/nrf24l01.c
+        pirate/nrf24l01.h
+
         # JTAG
         mode/jtag.h
         mode/jtag.c

@@ -18,6 +18,7 @@ docs/
 │   ├── bio_pin_guide.md          — Buffered I/O pin subsystem
 │   ├── storage_guide.md          — Flash/SD storage and config persistence
 │   ├── system_monitor_guide.md   — Voltage, ADC, PSU monitoring
+│   ├── rf24_guide.md             — nRF24L01 wiring, scanning, TX, and RX
 │   ├── build_system_guide.md     — CMake build system & platform targets
 │   ├── translation_guide.md      — Localization / translation system
 │   └── contributing.md           — Contributor rules and conventions

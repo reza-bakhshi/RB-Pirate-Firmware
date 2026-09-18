@@ -54,6 +54,9 @@
 #define MIFARE_CMD_READ                 0x30
 #define MIFARE_CMD_WRITE                0xA0
 #define MIFARE_ULTRALIGHT_CMD_WRITE     0xA2
+#define NTAG_CMD_GET_VERSION            0x60
+#define NTAG_CMD_READ_SIG               0x3C
+#define NTAG_CMD_PWD_AUTH               0x1B
 
 // Card Baud Rates
 #define PN532_BAUDRATE_106KBPS_ISO14443A 0x00
@@ -135,6 +138,15 @@ bool pn532_sam_config(void);
 bool pn532_set_passive_activation_retries(uint8_t max_retries);
 
 /**
+ * @brief Switch PN532 HSU baud rate (SetSerialBaudrate 0x10)
+ * @details Sends the baud switch at the current UART rate, then re-inits the
+ *          local UART and verifies with GetFirmwareVersion. Supported:
+ *          9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600.
+ * @return true when the PN532 answers at the new rate
+ */
+bool pn532_set_serial_baudrate(uint32_t baudrate);
+
+/**
  * @brief Execute a raw PN532 host command
  * @details The command byte is the first byte in cmd. PN532 framing, ACK, and
  *          response validation are handled by the driver.
@@ -189,11 +201,6 @@ pn532_status_t pn532_detect_tag(pn532_tag_info_t *tag, uint32_t timeout_ms);
 pn532_status_t pn532_mifare_auth(uint8_t block, uint8_t key_type, const uint8_t *key, const uint8_t *uid, uint8_t uid_len);
 
 /**
- * @brief Authenticate block using built-in dictionary of common keys
- */
-pn532_status_t pn532_mifare_auth_auto(uint8_t block, const uint8_t *uid, uint8_t uid_len, uint8_t *found_key);
-
-/**
  * @brief Read 16-byte block from MIFARE Classic card
  */
 pn532_status_t pn532_mifare_read_block(uint8_t block, uint8_t *data16);
@@ -209,6 +216,43 @@ pn532_status_t pn532_mifare_write_block(uint8_t block, const uint8_t *data16);
 pn532_status_t pn532_ultralight_read_page(uint8_t page, uint8_t *data4);
 
 /**
+ * @brief Read 16 bytes (4 pages) starting at page, via MIFARE READ
+ * @details A single MIFARE READ returns 4 pages. Use this for efficient
+ *          NDEF/memory scans instead of 4 separate page reads.
+ */
+pn532_status_t pn532_ultralight_read16(uint8_t page, uint8_t *data16);
+
+/**
+ * @brief Authenticate block using built-in dictionary of common keys
+ * @details Tries every dictionary key with Key A first, then Key B,
+ *          mirroring nfc-mfclassic behaviour for classroom demos.
+ */
+pn532_status_t pn532_mifare_auth_auto(uint8_t block, const uint8_t *uid, uint8_t uid_len, uint8_t *found_key);
+
+/**
+ * @brief Same as auth_auto but also reports which key type worked (0x60/0x61)
+ */
+pn532_status_t pn532_mifare_auth_auto_type(uint8_t block, const uint8_t *uid, uint8_t uid_len,
+                                           uint8_t *found_key, uint8_t *found_type);
+
+/**
+ * @brief Try one explicit 6-byte key (Key A or Key B) for a block
+ */
+pn532_status_t pn532_mifare_auth_key(uint8_t block, const uint8_t *uid, uint8_t uid_len,
+                                     const uint8_t *key, uint8_t key_type);
+
+/**
+ * @brief NTAG EV1/NTAG21x password authentication (PWD_AUTH 0x1B)
+ * @param pwd 4-byte password, pack_out receives 2-byte PACK on success
+ */
+pn532_status_t pn532_ntag_pwd_auth(const uint8_t *pwd, uint8_t *pack_out);
+
+/**
+ * @brief NTAG GET_VERSION (0x60), returns 8-byte version info
+ */
+pn532_status_t pn532_ntag_get_version(uint8_t *version8);
+
+/**
  * @brief Write 4-byte page to MIFARE Ultralight or NTAG
  */
 pn532_status_t pn532_ultralight_write_page(uint8_t page, const uint8_t *data4);
@@ -220,8 +264,15 @@ pn532_status_t pn532_write_magic_block0(const uint8_t *uid, uint8_t uid_len, uin
 
 /**
  * @brief Erase data blocks/pages on card (zero out user memory)
+ * @details Classic: skips sector trailers + block 0. NTAG: only user pages.
  */
 pn532_status_t pn532_erase_tag(const pn532_tag_info_t *tag);
+
+/**
+ * @brief Erase with an explicit Classic key tried first (then dictionary A/B)
+ */
+pn532_status_t pn532_erase_tag_ex(const pn532_tag_info_t *tag, const uint8_t *custom_key,
+                                  bool has_custom, uint8_t custom_type);
 
 /**
  * @brief Read NDEF record from tag

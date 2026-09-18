@@ -517,6 +517,37 @@ bool pn532_set_passive_activation_retries(uint8_t max_retries) {
     return pn532_transceive(cmd, sizeof(cmd), resp, &resp_len, 200);
 }
 
+static int8_t pn532_baud_code(uint32_t baudrate) {
+    switch (baudrate) {
+        case 9600:   return 0;
+        case 19200:  return 1;
+        case 38400:  return 2;
+        case 57600:  return 3;
+        case 115200: return 4;
+        case 230400: return 5;
+        case 460800: return 6;
+        case 921600: return 7;
+        default:     return -1;
+    }
+}
+
+bool pn532_set_serial_baudrate(uint32_t baudrate) {
+    int8_t code = pn532_baud_code(baudrate);
+    if (code < 0 || !pn532_uart) return false;
+    if (baudrate == pn532_baudrate) return true;
+    uint8_t cmd[] = { PN532_CMD_SETSERIALBAUDRATE, (uint8_t)code };
+    uint8_t resp[4];
+    uint8_t resp_len = sizeof(resp);
+    // Sent at the CURRENT rate; the PN532 switches after its ACK+response.
+    if (!pn532_transceive(cmd, sizeof(cmd), resp, &resp_len, 300)) return false;
+    sleep_ms(10);
+    pn532_baudrate = baudrate;
+    pn532_hardware_reinit();
+    sleep_ms(10);
+    uint8_t ic = 0, ver = 0, rev = 0, sup = 0;
+    return pn532_get_firmware_version(&ic, &ver, &rev, &sup);
+}
+
 bool pn532_connect(void) {
     if (!pn532_is_initialized()) return false;
 
@@ -525,9 +556,12 @@ bool pn532_connect(void) {
     pn532_diag_uart_errors = 0;
     pn532_diag_rx_line_high = true;
 
+    uint32_t requested = pn532_baudrate ? pn532_baudrate : 115200;
+
     // 1. Re-initialize UART and buffer directions now that power is on
     pn532_hardware_reinit();
 
+    // Helper: full wakeup + SAM + firmware check at the CURRENT uart rate.
     // 2. A PN532 on HSU starts in LowVbat. First try the Elechouse sequence,
     // where wake-up preamble and SAMConfiguration are one continuous transfer.
     if (!pn532_sam_config_internal(true)) {
@@ -536,9 +570,29 @@ bool pn532_connect(void) {
         sleep_ms(50);
         pn532_uart_flush();
         if (!pn532_sam_config()) {
-            pn532_uart_capture_status();
-            pn532_is_ready_flag = false;
-            return false;
+            // A power-cycled PN532 always returns to 115200. If we asked for a
+            // faster rate, retry the whole handshake at 115200 first.
+            if (requested != 115200) {
+                pn532_baudrate = 115200;
+                pn532_hardware_reinit();
+                pn532_diag_bytes_rx = 0;
+                pn532_diag_last_bytes_count = 0;
+                if (!pn532_sam_config_internal(true)) {
+                    pn532_wakeup();
+                    sleep_ms(50);
+                    pn532_uart_flush();
+                    if (!pn532_sam_config()) {
+                        pn532_uart_capture_status();
+                        pn532_is_ready_flag = false;
+                        pn532_baudrate = requested;
+                        return false;
+                    }
+                }
+            } else {
+                pn532_uart_capture_status();
+                pn532_is_ready_flag = false;
+                return false;
+            }
         }
     }
 
@@ -547,10 +601,20 @@ bool pn532_connect(void) {
     if (!pn532_get_firmware_version(&ic, &ver, &rev, &sup)) {
         pn532_uart_capture_status();
         pn532_is_ready_flag = false;
+        pn532_baudrate = requested;
         return false;
     }
 
-    // 4. Configure passive retries.
+    // 4. Switch to the requested high rate if we handshaked at 115200.
+    if (pn532_baudrate != requested) {
+        if (!pn532_set_serial_baudrate(requested)) {
+            pn532_uart_capture_status();
+            pn532_is_ready_flag = false;
+            return false;
+        }
+    }
+
+    // 5. Configure passive retries.
     pn532_set_passive_activation_retries(0x02);
     pn532_is_ready_flag = true;
     return true;
@@ -663,14 +727,30 @@ pn532_status_t pn532_mifare_auth(uint8_t block, uint8_t key_type, const uint8_t 
     return pn532_data_exchange(auth_payload, sizeof(auth_payload), NULL, NULL, 200);
 }
 
-pn532_status_t pn532_mifare_auth_auto(uint8_t block, const uint8_t *uid, uint8_t uid_len, uint8_t *found_key) {
-    for (uint32_t i = 0; i < common_keys_count; i++) {
-        if (pn532_mifare_auth(block, MIFARE_CMD_AUTH_A, common_mifare_keys[i], uid, uid_len) == PN532_OK) {
-            if (found_key) memcpy(found_key, common_mifare_keys[i], 6);
-            return PN532_OK;
+pn532_status_t pn532_mifare_auth_auto_type(uint8_t block, const uint8_t *uid, uint8_t uid_len,
+                                           uint8_t *found_key, uint8_t *found_type) {
+    // Mirror nfc-mfclassic: try every dictionary key as Key A first, then as Key B.
+    for (uint8_t pass = 0; pass < 2; pass++) {
+        uint8_t key_type = (pass == 0) ? MIFARE_CMD_AUTH_A : MIFARE_CMD_AUTH_B;
+        for (uint32_t i = 0; i < common_keys_count; i++) {
+            if (pn532_mifare_auth(block, key_type, common_mifare_keys[i], uid, uid_len) == PN532_OK) {
+                if (found_key) memcpy(found_key, common_mifare_keys[i], 6);
+                if (found_type) *found_type = key_type;
+                return PN532_OK;
+            }
         }
     }
     return PN532_ERR_AUTH;
+}
+
+pn532_status_t pn532_mifare_auth_auto(uint8_t block, const uint8_t *uid, uint8_t uid_len, uint8_t *found_key) {
+    return pn532_mifare_auth_auto_type(block, uid, uid_len, found_key, NULL);
+}
+
+pn532_status_t pn532_mifare_auth_key(uint8_t block, const uint8_t *uid, uint8_t uid_len,
+                                     const uint8_t *key, uint8_t key_type) {
+    if (!key || (key_type != MIFARE_CMD_AUTH_A && key_type != MIFARE_CMD_AUTH_B)) return PN532_ERR_COMM;
+    return pn532_mifare_auth(block, key_type, key, uid, uid_len);
 }
 
 pn532_status_t pn532_mifare_read_block(uint8_t block, uint8_t *data16) {
@@ -701,6 +781,32 @@ pn532_status_t pn532_ultralight_read_page(uint8_t page, uint8_t *data4) {
         return PN532_OK;
     }
     return st;
+}
+
+pn532_status_t pn532_ultralight_read16(uint8_t page, uint8_t *data16) {
+    if (!data16) return PN532_ERR_COMM;
+    uint8_t cmd[] = { MIFARE_CMD_READ, page };
+    uint8_t rx_len = 16;
+    // A single MIFARE READ returns 4 pages (16 bytes) starting at page.
+    return pn532_data_exchange(cmd, sizeof(cmd), data16, &rx_len, 200);
+}
+
+pn532_status_t pn532_ntag_pwd_auth(const uint8_t *pwd, uint8_t *pack_out) {
+    if (!pwd) return PN532_ERR_COMM;
+    uint8_t cmd[5] = { NTAG_CMD_PWD_AUTH, pwd[0], pwd[1], pwd[2], pwd[3] };
+    uint8_t rx[4];
+    uint8_t rx_len = sizeof(rx);
+    pn532_status_t st = pn532_data_exchange(cmd, sizeof(cmd), rx, &rx_len, 300);
+    if (st != PN532_OK || rx_len < 2) return (st == PN532_OK) ? PN532_ERR_AUTH : st;
+    if (pack_out) memcpy(pack_out, rx, 2);
+    return PN532_OK;
+}
+
+pn532_status_t pn532_ntag_get_version(uint8_t *version8) {
+    if (!version8) return PN532_ERR_COMM;
+    uint8_t cmd[] = { NTAG_CMD_GET_VERSION };
+    uint8_t rx_len = 8;
+    return pn532_data_exchange(cmd, sizeof(cmd), version8, &rx_len, 300);
 }
 
 pn532_status_t pn532_ultralight_write_page(uint8_t page, const uint8_t *data4) {
@@ -735,7 +841,8 @@ pn532_status_t pn532_write_magic_block0(const uint8_t *uid, uint8_t uid_len, uin
     return pn532_mifare_write_block(0, block0);
 }
 
-pn532_status_t pn532_erase_tag(const pn532_tag_info_t *tag) {
+pn532_status_t pn532_erase_tag_ex(const pn532_tag_info_t *tag, const uint8_t *custom_key,
+                                  bool has_custom, uint8_t custom_type) {
     if (!tag) return PN532_ERR_COMM;
 
     if (tag->is_mifare_classic) {
@@ -747,9 +854,20 @@ pn532_status_t pn532_erase_tag(const pn532_tag_info_t *tag) {
             uint8_t first_block = (s < 32) ? (s * 4) : (128 + (s - 32) * 16);
             uint8_t num_blocks = (s < 32) ? 4 : 16;
 
-            if (pn532_mifare_auth_auto(first_block, tag->uid, tag->uid_len, NULL) != PN532_OK) {
-                continue;
+            uint8_t dummy_key[6];
+            uint8_t dummy_type = MIFARE_CMD_AUTH_A;
+            bool authed = false;
+            if (has_custom && custom_key) {
+                authed = (pn532_mifare_auth(first_block, custom_type, custom_key, tag->uid, tag->uid_len) == PN532_OK);
+                if (!authed) {
+                    // Fall back to dictionary A then B.
+                    authed = (pn532_mifare_auth_auto_type(first_block, tag->uid, tag->uid_len, dummy_key,
+                                                          &dummy_type) == PN532_OK);
+                }
+            } else {
+                authed = (pn532_mifare_auth_auto_type(first_block, tag->uid, tag->uid_len, NULL, NULL) == PN532_OK);
             }
+            if (!authed) continue;
 
             for (uint8_t b = 0; b < num_blocks - 1; b++) {
                 uint8_t blk = first_block + b;
@@ -760,8 +878,12 @@ pn532_status_t pn532_erase_tag(const pn532_tag_info_t *tag) {
         return PN532_OK;
     } else if (tag->is_ultralight_or_ntag) {
         uint8_t zero_page[4] = { 0x00, 0x00, 0x00, 0x00 };
+        // Only erase user pages (4 .. 4+data_pages-1). Lock/config/password
+        // pages at the end are preserved so students cannot brick NTAGs.
+        uint16_t user_end = (uint16_t)(4 + tag->data_pages);
         uint16_t max_pages = tag->total_pages ? tag->total_pages : 16;
-        for (uint16_t p = 4; p < max_pages; p++) {
+        if (user_end > max_pages) user_end = max_pages;
+        for (uint16_t p = 4; p < user_end; p++) {
             pn532_ultralight_write_page((uint8_t)p, zero_page);
         }
         return PN532_OK;
@@ -770,19 +892,26 @@ pn532_status_t pn532_erase_tag(const pn532_tag_info_t *tag) {
     return PN532_ERR_UNSUPPORTED;
 }
 
+pn532_status_t pn532_erase_tag(const pn532_tag_info_t *tag) {
+    return pn532_erase_tag_ex(tag, NULL, false, MIFARE_CMD_AUTH_A);
+}
+
 pn532_status_t pn532_read_ndef(char *buf, size_t max_len, char *type_out, size_t type_out_len) {
     if (!buf || max_len < 8) return PN532_ERR_COMM;
 
-    uint8_t raw[64];
+    // One MIFARE READ returns 16 bytes; 16 reads cover 256 bytes starting at page 4.
+    // This fits Ultralight (64B), NTAG213 (180B window) and typical NDEF demos.
+    uint8_t raw[256];
     memset(raw, 0, sizeof(raw));
 
-    for (uint8_t i = 0; i < 4; i++) {
-        if (pn532_ultralight_read_page(4 + i * 4, &raw[i * 16]) != PN532_OK) {
+    for (uint8_t i = 0; i < 16; i++) {
+        if (pn532_ultralight_read16((uint8_t)(4 + i * 4), &raw[i * 16]) != PN532_OK) {
+            if (i == 0) return PN532_ERR_COMM;
             break;
         }
     }
 
-    uint8_t offset = 0;
+    uint16_t offset = 0;
     while (offset < sizeof(raw) && raw[offset] != 0x03 && raw[offset] != 0xFE) {
         offset++;
     }
@@ -791,9 +920,18 @@ pn532_status_t pn532_read_ndef(char *buf, size_t max_len, char *type_out, size_t
         return PN532_ERR_NO_TAG;
     }
 
-    offset++; // Skip 0x03
-    uint8_t ndef_len = raw[offset++];
-    if (ndef_len == 0 || offset + ndef_len > sizeof(raw)) {
+    offset++; // Skip 0x03 TLV tag
+    if (offset >= sizeof(raw)) return PN532_ERR_COMM;
+    uint16_t ndef_len;
+    if (raw[offset] == 0xFF) {
+        // Long-form TLV length: 0xFF followed by 2-byte big-endian length.
+        if (offset + 2 >= sizeof(raw)) return PN532_ERR_COMM;
+        ndef_len = ((uint16_t)raw[offset + 1] << 8) | raw[offset + 2];
+        offset += 3;
+    } else {
+        ndef_len = raw[offset++];
+    }
+    if (ndef_len == 0 || (uint32_t)offset + ndef_len > sizeof(raw)) {
         return PN532_ERR_COMM;
     }
 

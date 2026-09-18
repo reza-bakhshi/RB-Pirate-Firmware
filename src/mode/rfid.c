@@ -53,6 +53,9 @@ static const bp_val_constraint_t pin_choice = {
 
 static const bp_val_choice_t baud_choices[] = {
     { "115200", "115200 baud (PN532 default)", 0, 115200 },
+    { "230400", "230400 baud (SetSerialBaudrate switch)", 0, 230400 },
+    { "460800", "460800 baud (SetSerialBaudrate switch)", 0, 460800 },
+    { "921600", "921600 baud (short wires only)", 0, 921600 },
     { "9600", "9600 baud", 0, 9600 },
 };
 static const bp_val_constraint_t baud_choice = {
@@ -61,6 +64,13 @@ static const bp_val_constraint_t baud_choice = {
     .prompt = (uint32_t)(uintptr_t)"Select Baud Rate",
     .hint = (uint32_t)(uintptr_t)"Default: 115200",
 };
+
+static bool rfid_baud_supported(uint32_t baud) {
+    for (size_t i = 0; i < count_of(baud_choices); i++) {
+        if (baud_choices[i].value == baud) return true;
+    }
+    return false;
+}
 
 // Setup command definition
 static const bp_command_opt_t rfid_setup_opts[] = {
@@ -92,6 +102,49 @@ static size_t parse_hex_bytes(const char *hex_str, uint8_t *out, size_t max_out)
         out[count++] = (uint8_t)strtoul(byte_str, NULL, 16);
     }
     return count;
+}
+
+// Helper: try a user-supplied key first, then fall back to the dictionary.
+// Tries Key A then Key B in dictionary mode, like nfc-mfclassic, and reports
+// the working key bytes and type (0x60=A, 0x61=B) for teaching purposes.
+static pn532_status_t rfid_auth_sector(uint8_t first_block, const uint8_t *uid, uint8_t uid_len,
+                                       const uint8_t *custom_key, bool has_custom, uint8_t custom_type,
+                                       uint8_t *out_key, uint8_t *out_type) {
+    if (has_custom && custom_key) {
+        if (pn532_mifare_auth_key(first_block, uid, uid_len, custom_key, custom_type) == PN532_OK) {
+            if (out_key) memcpy(out_key, custom_key, 6);
+            if (out_type) *out_type = custom_type;
+            return PN532_OK;
+        }
+        // Fall through to dictionary so one typo does not hide a known key.
+    }
+    uint8_t found_key[6];
+    uint8_t found_type = MIFARE_CMD_AUTH_A;
+    pn532_status_t st = pn532_mifare_auth_auto_type(first_block, uid, uid_len, found_key, &found_type);
+    if (st == PN532_OK) {
+        if (out_key) memcpy(out_key, found_key, 6);
+        if (out_type) *out_type = found_type;
+    }
+    return st;
+}
+
+// Returns true when -k <12 hex digits> was given and valid. type_out defaults
+// to Key A unless -B was passed.
+static bool rfid_parse_custom_key(const bp_command_def_t *def, uint8_t *key_out, uint8_t *type_out) {
+    char key_str[32] = { 0 };
+    if (!bp_cmd_get_string(def, 'k', key_str, sizeof(key_str))) return false;
+    if (parse_hex_bytes(key_str, key_out, 6) != 6) {
+        printf("Invalid key '%s': need exactly 6 bytes (12 hex digits, e.g. FFFFFFFFFFFF).\r\n", key_str);
+        return false;
+    }
+    if (type_out) *type_out = bp_cmd_find_flag(def, 'B') ? MIFARE_CMD_AUTH_B : MIFARE_CMD_AUTH_A;
+    return true;
+}
+
+static bool rfid_is_trailer(uint8_t block, uint8_t sak) {
+    (void)sak;
+    if (block < 128) return (block % 4) == 3;
+    return ((block - 128) % 16) == 15;
 }
 
 // Lazy connect check with diagnostic message if unpowered
@@ -258,6 +311,19 @@ static void print_poll_result(const rfid_poll_type_t *type, const uint8_t *respo
     } else if (type->brty == PN532_BAUDRATE_106KBPS_JEWEL && response_len >= 8) {
         printf("    SENS_RES: %02X%02X  Jewel ID: ", response[2], response[3]);
         print_hex_line(&response[4], 4);
+    } else if (type->brty == PN532_BAUDRATE_106KBPS_ISO14443B && response_len >= 13) {
+        // PN532 InListPassiveTarget (B): [NbTg][ATQB 12B: PUPI 4 + AppData 4 + ProtInfo 3 + ...]
+        // ATQB layout per ISO14443-3B: PUPI(4) ApplicationData(4) ProtocolInfo(3).
+        printf("    PUPI (pseudo-UID): ");
+        print_hex_line(&response[2], 4);
+        printf("    Application Data: ");
+        print_hex_line(&response[6], 4);
+        printf("    Protocol Info: ");
+        print_hex_line(&response[10], 3);
+        // Protocol Info byte 1 bit 4..0 = max frame size code: 16 << ((info>>4)&0x0F)... simplified:
+        uint8_t max_frame_code = (response_len > 13) ? (response[10] >> 4) & 0x0F : 0;
+        printf("    Type-B tag (ISO14443-4 compatible if ProtInfo indicates; use transceive -p b).\r\n");
+        (void)max_frame_code;
     } else {
         printf("    Activation data: ");
         print_hex_line(response, response_len);
@@ -317,7 +383,10 @@ static const bp_command_opt_t transceive_opts[] = {
 static const char *const transceive_usage[] = {
     "transceive -p a|b|f212|f424|jewel -d hex [-t ms] [-c]",
     "Send an ISO14443-4 SELECT APDU:%s transceive -p a -d 00A4040000",
+    "DESFire GetVersion (ISO14443-4):%s transceive -p a -d 9060000000",
+    "DESFire SELECT application:%s transceive -p a -d 905A000003112233",
     "Send a FeliCa frame:%s transceive -p f212 -d 0600FFFFFFFFFFFF",
+    "Type-B ATTRIB example:%s transceive -p b -d <ATTRIB bytes> -c",
     "Use transparent RF exchange:%s transceive -p a -d 3004 -c",
 };
 static const bp_command_def_t transceive_def = {
@@ -827,14 +896,18 @@ static void tools_handler(struct command_result *res) {
     printf("\r\nlibnfc-style workflow                 Bus Pirate RFID command\r\n");
     printf("nfc-list / target scan                scan [-t mask] [-v]\r\n");
     printf("nfc-scan-device                       info (one attached PN532)\r\n");
-    printf("nfc-mfclassic                         dump -b / restore / write / clone\r\n");
-    printf("nfc-mfultralight                      dump -b / restore / write / ndef\r\n");
+    printf("nfc-mfclassic                         dump -b / restore / write [-k key] [-B] / clone\r\n");
+    printf("nfc-mfultralight                      dump -b / restore / write / ndef / pwauth\r\n");
     printf("NDEF Type 2 read/write                ndef [-u URI | -m text]\r\n");
     printf("NFC Forum Type 3 NDEF                forum3 [-f message.ndef]\r\n");
     printf("nfc-emulate-forum-tag4               forum4 [-f in.ndef] [-o out.ndef]\r\n");
     printf("nfc-jewel                             jewel -r/-w dump.jwd\r\n");
     printf("FeliCa and Type 4 APDU access         scan + transceive\r\n");
-    printf("UID copy to compatible magic card     clone\r\n");
+    printf("DESFire GetVersion example            transceive -p a -d 9060000000\r\n");
+    printf("UID copy to Gen2 magic card           clone / write -u (Gen1A backdoor: see clone help)\r\n");
+    printf("NTAG password (--pw)                  pwauth -p <4B hex> + GET_VERSION\r\n");
+    printf("Bulk UID inventory (Tag Scanner)      scanner [-f inventory.csv] [-n num]\r\n");
+    printf("Nested-auth nonces (mfkey32/64)       nonce -b block [-B] [-n num] [-f nonces.csv]\r\n");
     printf("\r\nNot standalone on one PN532:\r\n");
     printf("  PICC relay needs two NFC radios (reader-side target + tag-side initiator).\r\n");
     printf("  NFC Barcode needs a manual bit/parity capture path not implemented yet.\r\n");
@@ -895,15 +968,17 @@ static void read_handler(struct command_result *res) {
                 // Read memory preview
                 if (tag.is_mifare_classic) {
                     uint8_t key[6];
-                    if (pn532_mifare_auth_auto(0, tag.uid, tag.uid_len, key) == PN532_OK) {
+                    uint8_t key_type = MIFARE_CMD_AUTH_A;
+                    if (pn532_mifare_auth_auto_type(0, tag.uid, tag.uid_len, key, &key_type) == PN532_OK) {
                         uint8_t blk0[16];
                         if (pn532_mifare_read_block(0, blk0) == PN532_OK) {
-                            printf("  Block 00: ");
+                            printf("  Block 00 (Key %c): ",
+                                   (key_type == MIFARE_CMD_AUTH_B) ? 'B' : 'A');
                             for (int i = 0; i < 16; i++) printf("%02X ", blk0[i]);
                             printf("\r\n");
                         }
                     } else {
-                        printf("  (Default keys failed to authenticate Sector 0)\r\n");
+                        printf("  (Dictionary Keys A+B failed to authenticate Sector 0)\r\n");
                     }
                 } else if (tag.is_ultralight_or_ntag) {
                     printf("  Pages 00-03 Preview:\r\n");
@@ -925,18 +1000,110 @@ static void read_handler(struct command_result *res) {
 }
 
 // -----------------------------------------------------------------------------
+// Command: scanner (bulk Tag Scanner: collect many UIDs fast, Killer-style)
+// -----------------------------------------------------------------------------
+static const bp_command_opt_t scanner_opts[] = {
+    { "file", 'f', BP_ARG_REQUIRED, "filename", (uint32_t)(uintptr_t)"Save UID inventory as CSV to TF-card" },
+    { "count", 'n', BP_ARG_REQUIRED, "num", (uint32_t)(uintptr_t)"Stop after N unique tags (default: run until keypress)" },
+    { 0 }
+};
+static const char *const scanner_usage[] = {
+    "scanner [-f inventory.csv] [-n num]",
+    "Collect UIDs until any key:%s scanner",
+    "Save 20 unique tags to CSV:%s scanner -f tags.csv -n 20",
+};
+static const bp_command_def_t scanner_def = {
+    .name = "scanner",
+    .description = (uint32_t)(uintptr_t)"Bulk tag inventory: log every unique UID with ATQA/SAK",
+    .opts = scanner_opts,
+    .usage = scanner_usage,
+    .usage_count = count_of(scanner_usage),
+};
+
+#define SCANNER_MAX_TAGS 64
+
+static void scanner_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&scanner_def, res->help_flag)) return;
+    if (!command_ready()) return;
+
+    char file_name[32] = { 0 };
+    bool save_file = bp_cmd_get_string(&scanner_def, 'f', file_name, sizeof(file_name));
+    uint32_t max_unique = 0;
+    (void)bp_cmd_flag(&scanner_def, 'n', &max_unique);
+
+    FIL fil;
+    bool fil_open = false;
+    if (save_file) {
+        if (f_open(&fil, file_name, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+            printf("Failed to create '%s'.\r\n", file_name);
+            return;
+        }
+        fil_open = true;
+        f_printf(&fil, "index,uid,uid_len,atqa,sak,type\r\n");
+    }
+
+    printf("\r\nTag Scanner: present tags one by one. Press any key to stop.\r\n");
+    uint8_t seen_uid[SCANNER_MAX_TAGS][10];
+    uint8_t seen_len[SCANNER_MAX_TAGS] = { 0 };
+    uint32_t unique = 0;
+    uint32_t polls = 0;
+
+    while (true) {
+        char c;
+        if (rx_fifo_try_get(&c)) { printf("Stopped by user.\r\n"); break; }
+        if (max_unique && unique >= max_unique) break;
+
+        pn532_tag_info_t tag;
+        if (pn532_detect_tag(&tag, 120) != PN532_OK) { sleep_ms(30); polls++; continue; }
+        polls++;
+
+        bool known = false;
+        for (uint32_t i = 0; i < unique && i < SCANNER_MAX_TAGS; i++) {
+            if (seen_len[i] == tag.uid_len && !memcmp(seen_uid[i], tag.uid, tag.uid_len)) { known = true; break; }
+        }
+        if (known) { sleep_ms(30); continue; }
+
+        uint32_t now = to_ms_since_boot(get_absolute_time());
+        printf("[%lu] #%u UID: ", (unsigned long)now, (unsigned int)(unique + 1));
+        for (uint8_t i = 0; i < tag.uid_len; i++) printf("%02X%s", tag.uid[i], (i + 1 == tag.uid_len) ? "" : ":");
+        printf(" ATQA: %04X SAK: %02X (%s)\r\n", tag.atqa, tag.sak, tag.type_name);
+
+        if (fil_open) {
+            f_printf(&fil, "%u,", (unsigned int)(unique + 1));
+            for (uint8_t i = 0; i < tag.uid_len; i++) f_printf(&fil, "%02X%s", tag.uid[i], (i + 1 == tag.uid_len) ? "" : ":");
+            f_printf(&fil, ",%u,%04X,%02X,%s\r\n", tag.uid_len, tag.atqa, tag.sak, tag.type_name);
+        }
+        if (unique < SCANNER_MAX_TAGS) {
+            memcpy(seen_uid[unique], tag.uid, tag.uid_len);
+            seen_len[unique] = tag.uid_len;
+        }
+        unique++;
+        sleep_ms(30);
+    }
+    if (fil_open) {
+        f_close(&fil);
+        printf("Saved %u unique tag(s) to '%s'.\r\n", (unsigned int)unique, file_name);
+    } else {
+        printf("Scanner done: %u unique tag(s) in %u poll(s).\r\n", (unsigned int)unique, (unsigned int)polls);
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Command: dump
 // -----------------------------------------------------------------------------
 static const bp_command_opt_t dump_opts[] = {
     { "file", 'f', BP_ARG_REQUIRED, "filename", (uint32_t)(uintptr_t)"Save dump to TF-card file" },
     { "binary", 'b', BP_ARG_REQUIRED, "filename", (uint32_t)(uintptr_t)"Save raw binary memory image for restore" },
+    { "key", 'k', BP_ARG_REQUIRED, "hex", (uint32_t)(uintptr_t)"Custom 6-byte key first (12 hex digits)" },
+    { "key-b", 'B', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Custom/dictionary key is Key B (default Key A)" },
     { 0 }
 };
 static const char *const dump_usage[] = {
-    "dump [-f text-file | -b binary-file]",
+    "dump [-f text-file | -b binary-file] [-k key] [-B]",
     "Dump memory to terminal:%s dump",
     "Dump memory to TF-card:%s dump -f card.txt",
     "Save a restorable binary image:%s dump -b card.bin",
+    "Use custom Key B first:%s dump -k A0A1A2A3A4A5 -B",
 };
 static const bp_command_def_t dump_def = {
     .name = "dump",
@@ -994,12 +1161,25 @@ static void dump_handler(struct command_result *res) {
         uint8_t sectors = (tag.sak == 0x18) ? 40 : ((tag.sak == 0x09) ? 5 : 16);
         printf("\r\nReading MIFARE Classic (%u sectors)...\r\n\r\n", sectors);
 
+        uint8_t custom_key[6] = { 0 };
+        uint8_t custom_type = MIFARE_CMD_AUTH_A;
+        bool has_custom = rfid_parse_custom_key(&dump_def, custom_key, &custom_type);
+        if (!has_custom) {
+            char key_probe[32] = { 0 };
+            if (bp_cmd_get_string(&dump_def, 'k', key_probe, sizeof(key_probe))) {
+                if (fil_open) f_close(&fil);
+                return; // invalid key message already printed
+            }
+        }
+
         for (uint8_t s = 0; s < sectors; s++) {
             uint8_t first_block = (s < 32) ? (s * 4) : (128 + (s - 32) * 16);
             uint8_t num_blocks = (s < 32) ? 4 : 16;
             uint8_t key[6];
+            uint8_t key_type = MIFARE_CMD_AUTH_A;
 
-            if (pn532_mifare_auth_auto(first_block, tag.uid, tag.uid_len, key) != PN532_OK) {
+            if (rfid_auth_sector(first_block, tag.uid, tag.uid_len,
+                                 custom_key, has_custom, custom_type, key, &key_type) != PN532_OK) {
                 printf("Sector %02u: [Authentication Failed]\r\n", s);
                 if (fil_open && !binary_file) f_printf(&fil, "Sector %02u: [Auth Failed]\r\n", s);
                 if (fil_open && binary_file) {
@@ -1013,11 +1193,13 @@ static void dump_handler(struct command_result *res) {
                 continue;
             }
 
-            printf("Sector %02u (Key: %02X%02X%02X%02X%02X%02X):\r\n",
-                   s, key[0], key[1], key[2], key[3], key[4], key[5]);
+            printf("Sector %02u (Key %c: %02X%02X%02X%02X%02X%02X):\r\n",
+                   s, (key_type == MIFARE_CMD_AUTH_B) ? 'B' : 'A',
+                   key[0], key[1], key[2], key[3], key[4], key[5]);
             if (fil_open && !binary_file) {
-                f_printf(&fil, "Sector %02u (Key: %02X%02X%02X%02X%02X%02X):\r\n",
-                         s, key[0], key[1], key[2], key[3], key[4], key[5]);
+                f_printf(&fil, "Sector %02u (Key %c: %02X%02X%02X%02X%02X%02X):\r\n",
+                         s, (key_type == MIFARE_CMD_AUTH_B) ? 'B' : 'A',
+                         key[0], key[1], key[2], key[3], key[4], key[5]);
             }
 
             for (uint8_t b = 0; b < num_blocks; b++) {
@@ -1105,12 +1287,15 @@ static void dump_handler(struct command_result *res) {
 static const bp_command_opt_t restore_opts[] = {
     { "file", 'f', BP_ARG_REQUIRED, "filename", (uint32_t)(uintptr_t)"Raw binary image created by dump -b" },
     { "manufacturer", 'm', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Also write block/page 0 (magic tags only; dangerous)" },
+    { "key", 'k', BP_ARG_REQUIRED, "hex", (uint32_t)(uintptr_t)"Custom 6-byte Classic key first (12 hex digits)" },
+    { "key-b", 'B', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Custom/dictionary key is Key B (default Key A)" },
     { 0 }
 };
 static const char *const restore_usage[] = {
-    "restore -f image.bin [-m]",
+    "restore -f image.bin [-m] [-k key] [-B]",
     "Restore writable data while preserving UID:%s restore -f card.bin",
     "Restore block/page 0 on a compatible magic tag:%s restore -f card.bin -m",
+    "Restore with custom Key B:%s restore -f card.bin -k A0A1A2A3A4A5 -B",
 };
 static const bp_command_def_t restore_def = {
     .name = "restore",
@@ -1164,10 +1349,26 @@ static void restore_handler(struct command_result *res) {
 
     printf("Writing %lu-byte image%s...\r\n", (unsigned long)expected_size,
            write_manufacturer ? " including manufacturer data" : " (preserving manufacturer data)");
+    if (tag.is_mifare_classic) {
+        printf("NOTE: sector trailers (keys/access bits) will be overwritten. Use a magic/clone card.\r\n");
+    }
+
+    uint8_t custom_key[6] = { 0 };
+    uint8_t custom_type = MIFARE_CMD_AUTH_A;
+    bool has_custom = rfid_parse_custom_key(&restore_def, custom_key, &custom_type);
+    if (!has_custom) {
+        char key_probe[32] = { 0 };
+        if (bp_cmd_get_string(&restore_def, 'k', key_probe, sizeof(key_probe))) {
+            f_close(&fil);
+            return; // invalid key message already printed
+        }
+    }
 
     uint32_t written_units = 0;
     if (tag.is_mifare_classic) {
         uint16_t blocks = tag.total_pages;
+        uint8_t sector_key[6];
+        uint8_t sector_type = MIFARE_CMD_AUTH_A;
         for (uint16_t block = 0; block < blocks; block++) {
             uint8_t data[16];
             UINT count;
@@ -1175,9 +1376,11 @@ static void restore_handler(struct command_result *res) {
 
             uint8_t sector = (block < 128) ? (uint8_t)(block / 4) : (uint8_t)(32 + ((block - 128) / 16));
             uint8_t first_block = (sector < 32) ? (uint8_t)(sector * 4) : (uint8_t)(128 + (sector - 32) * 16);
-            uint8_t key[6];
-            if (block == first_block && pn532_mifare_auth_auto((uint8_t)block, tag.uid, tag.uid_len, key) != PN532_OK) {
-                printf("Authentication failed at sector %u; restore stopped.\r\n", sector);
+            if (block == first_block &&
+                rfid_auth_sector((uint8_t)block, tag.uid, tag.uid_len, custom_key, has_custom,
+                                 custom_type, sector_key, &sector_type) != PN532_OK) {
+                printf("Authentication failed at sector %u (Key %c tried); restore stopped.\r\n",
+                       sector, has_custom ? ((custom_type == MIFARE_CMD_AUTH_B) ? 'B' : 'A') : 'A');
                 break;
             }
             if (block == 0 && !write_manufacturer) continue;
@@ -1213,6 +1416,8 @@ static const bp_command_opt_t write_opts[] = {
     { "block", 'b', BP_ARG_REQUIRED, "index", (uint32_t)(uintptr_t)"Block or page index to write" },
     { "data",  'd', BP_ARG_REQUIRED, "hex",   (uint32_t)(uintptr_t)"Hex data bytes (4B for Ultralight, 16B for Classic)" },
     { "uid",   'u', BP_ARG_REQUIRED, "hex",   (uint32_t)(uintptr_t)"Magic UID hex (4 bytes, e.g. 12345678)" },
+    { "key",   'k', BP_ARG_REQUIRED, "hex",   (uint32_t)(uintptr_t)"Custom 6-byte Classic key (12 hex digits)" },
+    { "key-b", 'B', BP_ARG_NONE, NULL,        (uint32_t)(uintptr_t)"Custom/dictionary key is Key B (default Key A)" },
     { 0 }
 };
 static const char *const write_usage[] = {
@@ -1220,6 +1425,7 @@ static const char *const write_usage[] = {
     "Write 16 bytes to MIFARE block 4:%s write -b 4 -d 00112233445566778899AABBCCDDEEFF",
     "Write 4 bytes to Ultralight page 4:%s write -b 4 -d 01020304",
     "Write magic UID (4 bytes):%s write -u 12345678",
+    "Write with custom Key B:%s write -b 4 -d 00112233445566778899AABBCCDDEEFF -k A0A1A2A3A4A5 -B",
 };
 static const bp_command_def_t write_def = {
     .name = "write",
@@ -1293,15 +1499,34 @@ static void write_handler(struct command_result *res) {
     }
 
     if (data_len == 16 && tag.is_mifare_classic) {
+        if (rfid_is_trailer((uint8_t)block_idx, tag.sak)) {
+            printf("WARNING: block %u is a sector trailer (keys/access bits). Overwriting it can brick the card.\r\n",
+                   (unsigned int)block_idx);
+        }
         uint8_t key[6];
-        if (pn532_mifare_auth_auto((uint8_t)block_idx, tag.uid, tag.uid_len, key) != PN532_OK) {
-            printf("Error: Authentication failed for block %u.\r\n", (unsigned int)block_idx);
+        uint8_t key_type = MIFARE_CMD_AUTH_A;
+        uint8_t custom_key[6] = { 0 };
+        uint8_t custom_type = MIFARE_CMD_AUTH_A;
+        bool has_custom = rfid_parse_custom_key(&write_def, custom_key, &custom_type);
+        if (!has_custom) {
+            char key_probe[32] = { 0 };
+            if (bp_cmd_get_string(&write_def, 'k', key_probe, sizeof(key_probe))) return;
+        }
+        uint8_t sector = (block_idx < 128) ? (uint8_t)(block_idx / 4) : (uint8_t)(32 + ((block_idx - 128) / 16));
+        uint8_t first_block = (sector < 32) ? (uint8_t)(sector * 4) : (uint8_t)(128 + (sector - 32) * 16);
+        if (rfid_auth_sector(first_block, tag.uid, tag.uid_len, custom_key, has_custom, custom_type,
+                             key, &key_type) != PN532_OK) {
+            printf("Error: Authentication failed for block %u (Key %c).\r\n",
+                   (unsigned int)block_idx, (key_type == MIFARE_CMD_AUTH_B) ? 'B' : 'A');
             return;
         }
+        printf("Authenticated sector %u with Key %c %02X%02X%02X%02X%02X%02X.\r\n", sector,
+               (key_type == MIFARE_CMD_AUTH_B) ? 'B' : 'A',
+               key[0], key[1], key[2], key[3], key[4], key[5]);
         pn532_status_t st = pn532_mifare_write_block((uint8_t)block_idx, payload);
         if (st == PN532_OK) {
             printf("%s[+] Successfully wrote 16 bytes to Block %u.%s\r\n",
-                   ui_term_color_prompt(), ui_term_color_reset(), (unsigned int)block_idx);
+                   ui_term_color_prompt(), (unsigned int)block_idx, ui_term_color_reset());
         } else {
             printf("[-] Failed to write Block %u (%s).\r\n", (unsigned int)block_idx, pn532_status_str(st));
         }
@@ -1309,7 +1534,7 @@ static void write_handler(struct command_result *res) {
         pn532_status_t st = pn532_ultralight_write_page((uint8_t)block_idx, payload);
         if (st == PN532_OK) {
             printf("%s[+] Successfully wrote 4 bytes to Page %u.%s\r\n",
-                   ui_term_color_prompt(), ui_term_color_reset(), (unsigned int)block_idx);
+                   ui_term_color_prompt(), (unsigned int)block_idx, ui_term_color_reset());
         } else {
             printf("[-] Failed to write Page %u (%s).\r\n", (unsigned int)block_idx, pn532_status_str(st));
         }
@@ -1332,6 +1557,9 @@ static void clone_handler(struct command_result *res) {
     if (!command_ready()) return;
 
     printf("\r\n=== RFID UID Cloning Tool ===\r\n");
+    printf("Gen2 magic: direct Block 0 write (supported here).\r\n");
+    printf("Gen1A magic: needs backdoor unlock 50 00 57 CD first (like nfc-mfsetuid);\r\n");
+    printf("  not implemented -- use a Gen2/CUID card, or raw transceive -c for the backdoor.\r\n");
     printf("[Step 1] Place SOURCE card on the reader... Press any key to cancel.\r\n");
 
     pn532_tag_info_t src_tag;
@@ -1382,9 +1610,22 @@ static void clone_handler(struct command_result *res) {
 // -----------------------------------------------------------------------------
 // Command: erase
 // -----------------------------------------------------------------------------
+static const bp_command_opt_t erase_opts[] = {
+    { "key", 'k', BP_ARG_REQUIRED, "hex", (uint32_t)(uintptr_t)"Custom 6-byte Classic key first (12 hex digits)" },
+    { "key-b", 'B', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Custom/dictionary key is Key B (default Key A)" },
+    { 0 }
+};
+static const char *const erase_usage[] = {
+    "erase [-k key] [-B]",
+    "Erase user data (trailers + lock/config preserved):%s erase",
+    "Erase with custom Key B:%s erase -k A0A1A2A3A4A5 -B",
+};
 static const bp_command_def_t erase_def = {
     .name = "erase",
     .description = (uint32_t)(uintptr_t)"Erase tag user memory blocks to zero",
+    .opts = erase_opts,
+    .usage = erase_usage,
+    .usage_count = count_of(erase_usage),
 };
 
 static void erase_handler(struct command_result *res) {
@@ -1392,6 +1633,7 @@ static void erase_handler(struct command_result *res) {
     if (!command_ready()) return;
 
     printf("WARNING: This will overwrite user data blocks with 0x00.\r\n");
+    printf("Sector trailers (keys/access) and NTAG lock/config are preserved.\r\n");
     printf("Continue? (y/n): ");
     char c = 0;
     while (true) {
@@ -1418,7 +1660,14 @@ static void erase_handler(struct command_result *res) {
     print_tag_header(&tag);
     printf("Erasing tag data blocks...\r\n");
 
-    pn532_status_t st = pn532_erase_tag(&tag);
+    uint8_t custom_key[6] = { 0 };
+    uint8_t custom_type = MIFARE_CMD_AUTH_A;
+    bool has_custom = rfid_parse_custom_key(&erase_def, custom_key, &custom_type);
+    if (!has_custom) {
+        char key_probe[32] = { 0 };
+        if (bp_cmd_get_string(&erase_def, 'k', key_probe, sizeof(key_probe))) return;
+    }
+    pn532_status_t st = pn532_erase_tag_ex(&tag, custom_key, has_custom, custom_type);
     if (st == PN532_OK) {
         printf("%s[+] Tag data blocks erased successfully.%s\r\n",
                ui_term_color_prompt(), ui_term_color_reset());
@@ -1498,6 +1747,222 @@ static void ndef_handler(struct command_result *res) {
     }
 }
 
+// -----------------------------------------------------------------------------
+// Command: pwauth (NTAG EV1 / NTAG21x password authentication, like --pw)
+// -----------------------------------------------------------------------------
+static const bp_command_opt_t pwauth_opts[] = {
+    { "password", 'p', BP_ARG_REQUIRED, "hex", (uint32_t)(uintptr_t)"4-byte password in hex (e.g. FFFFFFFF)" },
+    { 0 }
+};
+static const char *const pwauth_usage[] = {
+    "pwauth -p password-hex",
+    "Try default NTAG password:%s pwauth -p FFFFFFFF",
+    "Try custom password:%s pwauth -p 12345678",
+};
+static const bp_command_def_t pwauth_def = {
+    .name = "pwauth",
+    .description = (uint32_t)(uintptr_t)"NTAG/Ultralight-EV1 PWD_AUTH and GET_VERSION",
+    .opts = pwauth_opts,
+    .usage = pwauth_usage,
+    .usage_count = count_of(pwauth_usage),
+};
+
+static void pwauth_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&pwauth_def, res->help_flag)) return;
+    if (!command_ready()) return;
+
+    char pwd_str[32] = { 0 };
+    if (!bp_cmd_get_string(&pwauth_def, 'p', pwd_str, sizeof(pwd_str))) {
+        bp_cmd_help_show(&pwauth_def);
+        return;
+    }
+    uint8_t pwd[4];
+    if (parse_hex_bytes(pwd_str, pwd, sizeof(pwd)) != sizeof(pwd)) {
+        printf("Invalid password: need exactly 4 bytes (8 hex digits, e.g. FFFFFFFF).\r\n");
+        return;
+    }
+
+    printf("Place Ultralight-EV1/NTAG tag on reader... Press any key to cancel.\r\n");
+    pn532_tag_info_t tag;
+    while (true) {
+        char c;
+        if (rx_fifo_try_get(&c)) { printf("Cancelled.\r\n"); return; }
+        if (pn532_detect_tag(&tag, 150) == PN532_OK) break;
+        sleep_ms(50);
+    }
+    print_tag_header(&tag);
+    if (!tag.is_ultralight_or_ntag) {
+        printf("PWD_AUTH applies to Ultralight-EV1/NTAG21x (SAK 0x00), not %s.\r\n", tag.type_name);
+    }
+
+    uint8_t version[8];
+    if (pn532_ntag_get_version(version) == PN532_OK) {
+        printf("GET_VERSION: ");
+        print_hex_line(version, sizeof(version));
+        // Bytes 6..7 decode storage size per NXP NTAG datasheet.
+        printf("  (vendor/product/subtype/major/minor/size/protocol -- see NTAG datasheet)\r\n");
+    } else {
+        printf("GET_VERSION not answered (plain Ultralight, not EV1/NTAG).\r\n");
+    }
+
+    uint8_t pack[2];
+    pn532_status_t st = pn532_ntag_pwd_auth(pwd, pack);
+    if (st == PN532_OK) {
+        printf("%s[+] PWD_AUTH success! PACK: %02X %02X%s\r\n",
+               ui_term_color_prompt(), pack[0], pack[1], ui_term_color_reset());
+        printf("Tag now allows protected reads/writes until it leaves the RF field.\r\n");
+    } else {
+        printf("[-] PWD_AUTH failed (%s). Wrong password or tag not password-protected.\r\n",
+               pn532_status_str(st));
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Command: nonce (Mifare nested-auth nonce collector for offline mfkey tools)
+// @details Real PN532 cannot sniff or crack keys on-chip: nonce collection is
+//          slow and cracking needs a PC. This command performs repeated raw
+//          AUTH attempts via InCommunicateThru (transparent RF exchange) and
+//          logs (UID, NT, NR, AR, AT) samples. Students then run mfkey32v2 /
+//          mfkey64 / hardnested on a PC, Killer-style workflow but honest about
+//          PN532 limits: expect minutes, not seconds, and keep the tag still.
+// -----------------------------------------------------------------------------
+static const bp_command_opt_t nonce_opts[] = {
+    { "block", 'b', BP_ARG_REQUIRED, "index", (uint32_t)(uintptr_t)"Target Classic block (auth applies to its sector)" },
+    { "keytype", 'B', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Authenticate with Key B (default Key A)" },
+    { "samples", 'n', BP_ARG_REQUIRED, "num", (uint32_t)(uintptr_t)"Number of nonce samples (default 8, max 64)" },
+    { "file", 'f', BP_ARG_REQUIRED, "filename", (uint32_t)(uintptr_t)"Save samples as CSV for mfkey tools" },
+    { 0 }
+};
+static const char *const nonce_usage[] = {
+    "nonce -b block [-B] [-n num] [-f nonces.csv]",
+    "Collect 8 nonces for block 4 Key A:%s nonce -b 4",
+    "Collect 20 for Key B and save:%s nonce -b 4 -B -n 20 -f nonces.csv",
+};
+static const bp_command_def_t nonce_def = {
+    .name = "nonce",
+    .description = (uint32_t)(uintptr_t)"Collect Mifare auth nonces for offline key recovery",
+    .opts = nonce_opts,
+    .usage = nonce_usage,
+    .usage_count = count_of(nonce_usage),
+};
+
+static void nonce_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&nonce_def, res->help_flag)) return;
+    if (!command_ready()) return;
+
+    uint32_t block_idx = 0;
+    if (!bp_cmd_flag(&nonce_def, 'b', &block_idx) || block_idx > 255) {
+        printf("Missing/invalid target block (-b 0..255). See 'nonce -h'.\r\n");
+        return;
+    }
+    uint8_t key_type = bp_cmd_find_flag(&nonce_def, 'B') ? MIFARE_CMD_AUTH_B : MIFARE_CMD_AUTH_A;
+    uint32_t samples = 8;
+    (void)bp_cmd_flag(&nonce_def, 'n', &samples);
+    if (samples < 2) samples = 2;
+    if (samples > 64) samples = 64;
+    char file_name[32] = { 0 };
+    bool save_file = bp_cmd_get_string(&nonce_def, 'f', file_name, sizeof(file_name));
+
+    printf("Place MIFARE Classic tag on reader (keep it still!)... Press any key to cancel.\r\n");
+    pn532_tag_info_t tag;
+    while (true) {
+        char c;
+        if (rx_fifo_try_get(&c)) { printf("Cancelled.\r\n"); return; }
+        if (pn532_detect_tag(&tag, 150) == PN532_OK) break;
+        sleep_ms(50);
+    }
+    if (!tag.is_mifare_classic) {
+        printf("Nonce collection needs MIFARE Classic, not %s.\r\n", tag.type_name);
+        return;
+    }
+    print_tag_header(&tag);
+    printf("Target block %u (Key %c). PN532 is slow at this: ~2-4 samples/sec. Keep tag still.\r\n",
+           (unsigned int)block_idx, (key_type == MIFARE_CMD_AUTH_B) ? 'B' : 'A');
+
+    FIL fil;
+    bool fil_open = false;
+    if (save_file) {
+        if (f_open(&fil, file_name, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+            printf("Failed to create '%s'.\r\n", file_name);
+            return;
+        }
+        fil_open = true;
+        f_printf(&fil, "# mfkey nonce log: uid,block,key_type,nt,nr,ar,at\r\n");
+        f_printf(&fil, "# UID: ");
+        for (uint8_t i = 0; i < tag.uid_len; i++) f_printf(&fil, "%02X", tag.uid[i]);
+        f_printf(&fil, " block=%u key=%c\r\n", (unsigned int)block_idx,
+                 (key_type == MIFARE_CMD_AUTH_B) ? 'B' : 'A');
+        f_printf(&fil, "# PC usage: mfkey32v2 UID NT NR0 AR0 NR1 AR1 | mfkey64 UID NT NR AR AT\r\n");
+    }
+
+    uint32_t lcg = to_ms_since_boot(get_absolute_time()) ^ 0xA5A5A5A5u;
+    uint32_t collected = 0;
+    for (uint32_t s = 0; s < samples; s++) {
+        char c;
+        if (rx_fifo_try_get(&c)) { printf("Stopped by user after %u sample(s).\r\n", (unsigned int)collected); break; }
+
+        // Re-select every sample: a failed AUTH drops the tag, like Killer sniffers do.
+        if (pn532_detect_tag(&tag, 200) != PN532_OK) { sleep_ms(60); continue; }
+
+        uint8_t auth[2] = { key_type, (uint8_t)block_idx };
+        uint8_t nt[4] = { 0 };
+        uint8_t nt_len = sizeof(nt);
+        if (pn532_communicate_thru(auth, sizeof(auth), nt, &nt_len, 300) != PN532_OK || nt_len != 4) {
+            sleep_ms(60);
+            continue;
+        }
+        // Random reader nonce + (deliberately arbitrary) response. Even failed
+        // auths leak (NT, NR, AR) equations that mfkey32v2/mfkey64 can use.
+        uint8_t nr_ar[8];
+        for (int i = 0; i < 8; i++) {
+            lcg = lcg * 1664525u + 1013904223u;
+            nr_ar[i] = (uint8_t)(lcg >> 24);
+        }
+        uint8_t at[8] = { 0 };
+        uint8_t at_len = sizeof(at);
+        pn532_status_t ast = pn532_communicate_thru(nr_ar, sizeof(nr_ar), at, &at_len, 300);
+        (void)ast; // AT may be 4B success, 1B NACK, or timeout -- all get logged.
+
+        printf("[%u] NT: %02X%02X%02X%02X NR: ", (unsigned int)(collected + 1), nt[0], nt[1], nt[2], nt[3]);
+        for (int i = 0; i < 4; i++) printf("%02X", nr_ar[i]);
+        printf(" AR: ");
+        for (int i = 4; i < 8; i++) printf("%02X", nr_ar[i]);
+        printf(" AT: ");
+        if (at_len) {
+            for (uint8_t i = 0; i < at_len; i++) printf("%02X", at[i]);
+        } else {
+            printf("(timeout)");
+        }
+        printf("\r\n");
+
+        if (fil_open) {
+            f_printf(&fil, "%u,%c,", (unsigned int)block_idx,
+                     (key_type == MIFARE_CMD_AUTH_B) ? 'B' : 'A');
+            f_printf(&fil, "%02X%02X%02X%02X,", nt[0], nt[1], nt[2], nt[3]);
+            for (int i = 0; i < 4; i++) f_printf(&fil, "%02X", nr_ar[i]);
+            f_printf(&fil, ",");
+            for (int i = 4; i < 8; i++) f_printf(&fil, "%02X", nr_ar[i]);
+            f_printf(&fil, ",");
+            if (at_len) {
+                for (uint8_t i = 0; i < at_len; i++) f_printf(&fil, "%02X", at[i]);
+            } else {
+                f_printf(&fil, "timeout");
+            }
+            f_printf(&fil, "\r\n");
+        }
+        collected++;
+        sleep_ms(120);
+    }
+    if (fil_open) {
+        f_close(&fil);
+        printf("Saved %u nonce sample(s) to '%s'. Crack on PC, e.g. mfkey32v2 / mfkey64.\r\n",
+               (unsigned int)collected, file_name);
+    } else {
+        printf("Collected %u nonce sample(s). Re-run with -f to save for mfkey tools.\r\n", (unsigned int)collected);
+    }
+    printf("Note: cracking runs on a PC (RP2040 is too slow); PN532 collection is minutes, not Killer-seconds.\r\n");
+}
+
 // Command table
 const struct _mode_command_struct rfid_commands[] = {
     { .func = scan_handler,  .def = &scan_def,  .supress_fala_capture = true },
@@ -1512,6 +1977,9 @@ const struct _mode_command_struct rfid_commands[] = {
     { .func = clone_handler, .def = &clone_def, .supress_fala_capture = true },
     { .func = erase_handler, .def = &erase_def, .supress_fala_capture = true },
     { .func = ndef_handler,  .def = &ndef_def,  .supress_fala_capture = true },
+    { .func = pwauth_handler, .def = &pwauth_def, .supress_fala_capture = true },
+    { .func = scanner_handler, .def = &scanner_def, .supress_fala_capture = true },
+    { .func = nonce_handler, .def = &nonce_def, .supress_fala_capture = true },
     { .func = info_handler,  .def = &info_def,  .supress_fala_capture = true },
     { .func = tools_handler, .def = &tools_def, .supress_fala_capture = true },
 };
@@ -1550,6 +2018,11 @@ uint32_t rfid_setup(void) {
         st = bp_cmd_flag(&rfid_setup_def, 'b', &temp);
         if (st == BP_CMD_INVALID) return 0;
         if (st == BP_CMD_OK) {
+            if (!rfid_baud_supported(temp)) {
+                printf("Unsupported baud %u. Use 9600, 115200, 230400, 460800, or 921600.\r\n",
+                       (unsigned int)temp);
+                return 0;
+            }
             rfid_config.baudrate = temp;
         } else {
             rfid_config.baudrate = 115200;
@@ -1588,6 +2061,10 @@ uint32_t rfid_setup_exc(void) {
            (unsigned int)rfid_config.tx_pin, (unsigned int)rfid_config.rx_pin);
     printf(" Baud: %u 8N1 | DIP switches: %sSEL0 = 0 (OFF), SEL1 = 0 (OFF)%s\r\n",
            (unsigned int)rfid_config.baudrate, ui_term_color_prompt(), ui_term_color_reset());
+    if (rfid_config.baudrate != 115200 && rfid_config.baudrate != 9600) {
+        printf(" High baud: handshake starts at 115200, then SetSerialBaudrate switches.\r\n");
+        printf(" Keep wires short (<10cm) at 460800+.\r\n");
+    }
     printf("\r\n%sNOTE:%s VREG power is OFF by default.\r\n", ui_term_color_warning(), ui_term_color_reset());
     printf(" Type %sW 3.3%s to power the PN532 module.\r\n\r\n", ui_term_color_prompt(), ui_term_color_reset());
 

@@ -65,6 +65,8 @@
 #define NRF_STATUS_RX_P_NO_MASK   (7u << 1)
 #define NRF_FIFO_RX_EMPTY         (1u << 0)
 #define NRF_FEATURE_EN_DPL        (1u << 2)
+#define NRF_RF_SETUP_CONT_WAVE    (1u << 7)
+#define NRF_RF_SETUP_PLL_LOCK     (1u << 4)
 
 /* The nRF24L01+ needs up to 1.5ms to transition from power-down to standby-I.
  * Use a little margin so the first packet/sample after configuration is not
@@ -410,6 +412,8 @@ bool nrf24_tx_start(uint8_t channel, const uint8_t *data, uint8_t length) {
 void nrf24_tx_stop(void) {
     if (!nrf_initialized) return;
     bio_put(nrf_ce_pin, false);
+    uint8_t rf_setup = read_register(NRF_REG_RF_SETUP) & (uint8_t)~(NRF_RF_SETUP_CONT_WAVE | NRF_RF_SETUP_PLL_LOCK);
+    write_register(NRF_REG_RF_SETUP, rf_setup);
     clear_irqs();
     nrf24_flush_tx();
 }
@@ -432,9 +436,29 @@ bool nrf24_jam_start(uint8_t data_rate) {
     write_register(NRF_REG_SETUP_RETR, 0u);
     set_data_rate((nrf24_data_rate_t)data_rate);
     nrf24_set_power_max();
-    uint8_t config = (read_register(NRF_REG_CONFIG) | NRF_CONFIG_PWR_UP) & (uint8_t)~NRF_CONFIG_PRIM_RX;
-    write_register(NRF_REG_CONFIG, config);
+
+    /* Enable Continuous Carrier (CONT_WAVE) and lock PLL as specified by Nordic Appendix C */
+    uint8_t rf_setup = read_register(NRF_REG_RF_SETUP);
+    rf_setup |= NRF_RF_SETUP_CONT_WAVE | NRF_RF_SETUP_PLL_LOCK;
+    write_register(NRF_REG_RF_SETUP, rf_setup);
+
+    /* Set TX address to 5 bytes of 0xFF for continuous carrier test */
+    static const uint8_t ff_addr[5] = { 0xff, 0xff, 0xff, 0xff, 0xff };
+    write_register_bytes(NRF_REG_TX_ADDR, ff_addr, 5u);
+
+    /* Power up in TX mode with CRC disabled */
+    write_register(NRF_REG_CONFIG, NRF_CONFIG_PWR_UP);
     clear_irqs();
+
+    /* Load 32 bytes of 0xFF into the TX FIFO */
+    nrf24_flush_tx();
+    hwspi_select();
+    transfer(NRF_CMD_W_TX_PAYLOAD);
+    for (uint8_t i = 0; i < 32u; i++) {
+        transfer(0xffu);
+    }
+    hwspi_deselect();
+
     sleep_us(NRF_POWER_UP_DELAY_US);
     bio_put(nrf_ce_pin, true);
     return true;

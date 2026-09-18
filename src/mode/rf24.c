@@ -640,6 +640,7 @@ static void jam_handler(struct command_result *res) {
     while (true) {
         for (uint32_t i = 0; i < channel_count; i++) {
             nrf24_jam_channel(channels[i]);
+            sleep_us(500); // 130us PLL lock time + 370us continuous carrier emission
             char c;
             if (rx_fifo_try_get(&c)) {
                 nrf24_tx_stop();

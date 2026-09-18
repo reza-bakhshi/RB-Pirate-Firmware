@@ -709,6 +709,9 @@ pn532_status_t pn532_detect_tag(pn532_tag_info_t *tag, uint32_t timeout_ms) {
     if (tag->uid_len > sizeof(tag->uid)) {
         tag->uid_len = sizeof(tag->uid);
     }
+    if (tag->uid_len > (resp_len - 6)) {
+        tag->uid_len = resp_len - 6;
+    }
     memcpy(tag->uid, &resp[6], tag->uid_len);
 
     pn532_identify_tag_type(tag);
@@ -722,7 +725,10 @@ pn532_status_t pn532_mifare_auth(uint8_t block, uint8_t key_type, const uint8_t 
     auth_payload[0] = key_type;
     auth_payload[1] = block;
     memcpy(&auth_payload[2], key, 6);
-    memcpy(&auth_payload[8], uid, 4);
+    // For 7-byte or 10-byte UIDs in MIFARE Classic, Crypto1 authentication
+    // uses the last 4 bytes of the UID (UID3..UID6 per ISO14443-3 / NXP AN10833).
+    const uint8_t *auth_uid = (uid_len > 4) ? &uid[uid_len - 4] : uid;
+    memcpy(&auth_payload[8], auth_uid, 4);
 
     return pn532_data_exchange(auth_payload, sizeof(auth_payload), NULL, NULL, 200);
 }
@@ -931,7 +937,7 @@ pn532_status_t pn532_read_ndef(char *buf, size_t max_len, char *type_out, size_t
     } else {
         ndef_len = raw[offset++];
     }
-    if (ndef_len == 0 || (uint32_t)offset + ndef_len > sizeof(raw)) {
+    if (ndef_len < 4 || (uint32_t)offset + ndef_len > sizeof(raw)) {
         return PN532_ERR_COMM;
     }
 
@@ -944,6 +950,7 @@ pn532_status_t pn532_read_ndef(char *buf, size_t max_len, char *type_out, size_t
 
     if (rec_type == 0x55) { // URI ('U')
         if (type_out) snprintf(type_out, type_out_len, "URI");
+        if (offset >= sizeof(raw)) return PN532_ERR_COMM;
         uint8_t prefix = raw[offset++];
         const char *pfx_str = "";
         switch (prefix) {
@@ -957,17 +964,21 @@ pn532_status_t pn532_read_ndef(char *buf, size_t max_len, char *type_out, size_t
         uint8_t str_len = (payload_len > 1) ? (payload_len - 1) : 0;
         char body[64];
         if (str_len >= sizeof(body)) str_len = sizeof(body) - 1;
+        if (offset + str_len > sizeof(raw)) str_len = (sizeof(raw) > offset) ? (sizeof(raw) - offset) : 0;
         memcpy(body, &raw[offset], str_len);
         body[str_len] = '\0';
         snprintf(buf, max_len, "%s%s", pfx_str, body);
         return PN532_OK;
     } else if (rec_type == 0x54) { // Text ('T')
         if (type_out) snprintf(type_out, type_out_len, "Text");
+        if (offset >= sizeof(raw)) return PN532_ERR_COMM;
         uint8_t status = raw[offset++];
         uint8_t lang_len = status & 0x1F;
         offset += lang_len;
+        if (offset >= sizeof(raw)) return PN532_ERR_COMM;
         uint8_t txt_len = (payload_len > (1 + lang_len)) ? (payload_len - (1 + lang_len)) : 0;
         if (txt_len >= max_len) txt_len = max_len - 1;
+        if (offset + txt_len > sizeof(raw)) txt_len = (sizeof(raw) > offset) ? (sizeof(raw) - offset) : 0;
         memcpy(buf, &raw[offset], txt_len);
         buf[txt_len] = '\0';
         return PN532_OK;
@@ -987,10 +998,11 @@ pn532_status_t pn532_write_ndef_uri(const char *uri) {
     else if (strncmp(uri, "http://", 7) == 0) { prefix = 0x03; body = uri + 7; }
 
     uint8_t body_len = (uint8_t)strlen(body);
+    if (body_len > 110) return PN532_ERR_UNSUPPORTED;
     uint8_t payload_len = 1 + body_len;
     uint8_t ndef_len = 4 + payload_len;
 
-    uint8_t buffer[64];
+    uint8_t buffer[128];
     memset(buffer, 0, sizeof(buffer));
 
     uint8_t idx = 0;
@@ -1017,14 +1029,15 @@ pn532_status_t pn532_write_ndef_text(const char *text) {
     if (!text || strlen(text) == 0) return PN532_ERR_COMM;
 
     uint8_t text_len = (uint8_t)strlen(text);
+    if (text_len > 110) return PN532_ERR_UNSUPPORTED;
     uint8_t payload_len = 1 + 2 + text_len;
     uint8_t ndef_len = 4 + payload_len;
 
-    uint8_t buffer[64];
+    uint8_t buffer[128];
     memset(buffer, 0, sizeof(buffer));
 
     uint8_t idx = 0;
-    buffer[idx++] = 0x03;
+    buffer[idx++] = 0x03; // NDEF TLV
     buffer[idx++] = ndef_len;
     buffer[idx++] = 0xD1;
     buffer[idx++] = 0x01;

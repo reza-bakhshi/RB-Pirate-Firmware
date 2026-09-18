@@ -205,9 +205,15 @@ static bool command_ready(void) {
 // -----------------------------------------------------------------------------
 // Command: info
 // -----------------------------------------------------------------------------
+static const char *const info_usage[] = {
+    "info",
+    "Display controller details and RF modes:%s info",
+};
 static const bp_command_def_t info_def = {
     .name = "info",
     .description = (uint32_t)(uintptr_t)"Show PN532 firmware version and connection status",
+    .usage = info_usage,
+    .usage_count = count_of(info_usage),
 };
 
 static void info_handler(struct command_result *res) {
@@ -858,14 +864,14 @@ static void forum4_handler(struct command_result *res) {
         if (rx_fifo_try_get(&c)) { printf("Emulation stopped.\r\n"); break; }
         uint8_t apdu[62];
         uint8_t apdu_len = sizeof(apdu);
-        st = pn532_target_get_data(apdu, &apdu_len, 1000);
+        st = pn532_target_get_data(apdu, &apdu_len, 2000);
         if (st != PN532_OK) { printf("Reader disconnected.\r\n"); break; }
         printf("C-APDU: "); print_hex_line(apdu, apdu_len);
         uint8_t response[62];
         uint8_t response_len = forum4_apdu(apdu, apdu_len, &selected,
                                            ndef_file, sizeof(ndef_file), v1, response);
         printf("R-APDU: "); print_hex_line(response, response_len);
-        st = pn532_target_set_data(response, response_len, 1000);
+        st = pn532_target_set_data(response, response_len, 2000);
         if (st != PN532_OK) { printf("Failed to return APDU response.\r\n"); break; }
     }
 
@@ -886,9 +892,15 @@ static void forum4_handler(struct command_result *res) {
 // -----------------------------------------------------------------------------
 // Command: tools (capability map for users familiar with libnfc utilities)
 // -----------------------------------------------------------------------------
+static const char *const tools_usage[] = {
+    "tools",
+    "Display libnfc workflow equivalents:%s tools",
+};
 static const bp_command_def_t tools_def = {
     .name = "tools",
     .description = (uint32_t)(uintptr_t)"Show libnfc utility equivalents and hardware limits",
+    .usage = tools_usage,
+    .usage_count = count_of(tools_usage),
 };
 
 static void tools_handler(struct command_result *res) {
@@ -1029,7 +1041,7 @@ static void scanner_handler(struct command_result *res) {
     char file_name[32] = { 0 };
     bool save_file = bp_cmd_get_string(&scanner_def, 'f', file_name, sizeof(file_name));
     uint32_t max_unique = 0;
-    (void)bp_cmd_flag(&scanner_def, 'n', &max_unique);
+    (void)bp_cmd_get_uint32(&scanner_def, 'n', &max_unique);
 
     FIL fil;
     bool fil_open = false;
@@ -1471,7 +1483,7 @@ static void write_handler(struct command_result *res) {
     }
 
     uint32_t block_idx = 0;
-    if (!bp_cmd_flag(&write_def, 'b', &block_idx)) {
+    if (!bp_cmd_get_uint32(&write_def, 'b', &block_idx)) {
         printf("Missing block/page index (-b) or UID flag (-u). See 'write -h'.\r\n");
         return;
     }
@@ -1547,9 +1559,15 @@ static void write_handler(struct command_result *res) {
 // -----------------------------------------------------------------------------
 // Command: clone
 // -----------------------------------------------------------------------------
+static const char *const clone_usage[] = {
+    "clone",
+    "Interactive 2-step UID copy to Gen2 Magic tag:%s clone",
+};
 static const bp_command_def_t clone_def = {
     .name = "clone",
     .description = (uint32_t)(uintptr_t)"Clone UID to Magic Card (Gen1A / Gen2 UID changeable tag)",
+    .usage = clone_usage,
+    .usage_count = count_of(clone_usage),
 };
 
 static void clone_handler(struct command_result *res) {
@@ -1851,13 +1869,13 @@ static void nonce_handler(struct command_result *res) {
     if (!command_ready()) return;
 
     uint32_t block_idx = 0;
-    if (!bp_cmd_flag(&nonce_def, 'b', &block_idx) || block_idx > 255) {
+    if (!bp_cmd_get_uint32(&nonce_def, 'b', &block_idx) || block_idx > 255) {
         printf("Missing/invalid target block (-b 0..255). See 'nonce -h'.\r\n");
         return;
     }
     uint8_t key_type = bp_cmd_find_flag(&nonce_def, 'B') ? MIFARE_CMD_AUTH_B : MIFARE_CMD_AUTH_A;
     uint32_t samples = 8;
-    (void)bp_cmd_flag(&nonce_def, 'n', &samples);
+    (void)bp_cmd_get_uint32(&nonce_def, 'n', &samples);
     if (samples < 2) samples = 2;
     if (samples > 64) samples = 64;
     char file_name[32] = { 0 };

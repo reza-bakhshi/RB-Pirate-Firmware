@@ -38,8 +38,15 @@
 #define PN532_CMD_RFCONFIGURATION       0x32
 #define PN532_CMD_INLISTPASSIVETARGET   0x4A
 #define PN532_CMD_INDATAEXCHANGE        0x40
+#define PN532_CMD_INCOMMUNICATETHRU     0x42
 #define PN532_CMD_INDESELECT            0x44
 #define PN532_CMD_INRELEASE             0x52
+#define PN532_CMD_INAUTOPOLL             0x60
+#define PN532_CMD_TGINITASTARGET         0x8C
+#define PN532_CMD_TGGETDATA              0x86
+#define PN532_CMD_TGSETDATA              0x8E
+#define PN532_CMD_TGGETINITIATORCOMMAND  0x88
+#define PN532_CMD_TGRESPONSETOINITIATOR  0x90
 
 // MIFARE Commands
 #define MIFARE_CMD_AUTH_A               0x60
@@ -53,6 +60,7 @@
 #define PN532_BAUDRATE_212KBPS_FELICA   0x01
 #define PN532_BAUDRATE_424KBPS_FELICA   0x02
 #define PN532_BAUDRATE_106KBPS_ISO14443B 0x03
+#define PN532_BAUDRATE_106KBPS_JEWEL     0x04
 
 typedef struct {
     uint8_t uid[10];
@@ -125,6 +133,50 @@ bool pn532_sam_config(void);
  * @brief Set passive activation retry limit
  */
 bool pn532_set_passive_activation_retries(uint8_t max_retries);
+
+/**
+ * @brief Execute a raw PN532 host command
+ * @details The command byte is the first byte in cmd. PN532 framing, ACK, and
+ *          response validation are handled by the driver.
+ */
+pn532_status_t pn532_command(const uint8_t *cmd, uint8_t cmd_len,
+                            uint8_t *response, uint8_t *response_len,
+                            uint32_t timeout_ms);
+
+/**
+ * @brief Select one passive target using a PN532 BrTy value
+ * @details Returns the unmodified InListPassiveTarget response so callers can
+ *          decode Type A, Type B, FeliCa, or Jewel target information.
+ */
+pn532_status_t pn532_list_passive_target(uint8_t brty,
+                                        const uint8_t *initiator_data,
+                                        uint8_t initiator_data_len,
+                                        uint8_t *response,
+                                        uint8_t *response_len,
+                                        uint32_t timeout_ms);
+
+/** @brief Exchange bytes with the currently selected target (Tg=1). */
+pn532_status_t pn532_data_exchange(const uint8_t *tx, uint8_t tx_len,
+                                   uint8_t *rx, uint8_t *rx_len,
+                                   uint32_t timeout_ms);
+
+/** @brief Exchange a raw RF frame using InCommunicateThru. */
+pn532_status_t pn532_communicate_thru(const uint8_t *tx, uint8_t tx_len,
+                                     uint8_t *rx, uint8_t *rx_len,
+                                     uint32_t timeout_ms);
+
+/** @brief Enter PN532 target mode and wait for an initiator. */
+pn532_status_t pn532_target_init(const uint8_t *params, uint8_t params_len,
+                                uint8_t *activation, uint8_t *activation_len,
+                                uint32_t timeout_ms);
+
+/** @brief Receive an ISO14443-4/DEP payload while in target mode. */
+pn532_status_t pn532_target_get_data(uint8_t *data, uint8_t *data_len,
+                                    uint32_t timeout_ms);
+
+/** @brief Send an ISO14443-4/DEP payload while in target mode. */
+pn532_status_t pn532_target_set_data(const uint8_t *data, uint8_t data_len,
+                                    uint32_t timeout_ms);
 
 /**
  * @brief Detect passive ISO14443A tag in RF field

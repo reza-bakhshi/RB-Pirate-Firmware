@@ -193,6 +193,653 @@ static void print_tag_header(const pn532_tag_info_t *tag) {
     printf("  Type:  %s\r\n", tag->type_name);
 }
 
+static void print_hex_line(const uint8_t *data, uint8_t length) {
+    for (uint8_t i = 0; i < length; i++) printf("%02X%s", data[i], (i + 1 == length) ? "" : " ");
+    printf("\r\n");
+}
+
+// -----------------------------------------------------------------------------
+// Command: scan (multi-protocol equivalent of the target part of nfc-list)
+// -----------------------------------------------------------------------------
+static const bp_command_opt_t scan_opts[] = {
+    { "types", 't', BP_ARG_REQUIRED, "mask", (uint32_t)(uintptr_t)"libnfc type mask (default 783: A, F212, F424, B, Jewel, Barcode)" },
+    { "verbose", 'v', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Show the complete PN532 activation response" },
+    { 0 }
+};
+static const char *const scan_usage[] = {
+    "scan [-t mask] [-v]",
+    "Scan all PN532 passive protocols:%s scan",
+    "Scan ISO14443A only:%s scan -t 1",
+    "Mask bits: 1=A, 2=FeliCa212, 4=FeliCa424, 8=B, 256=Jewel, 512=Barcode",
+};
+static const bp_command_def_t scan_def = {
+    .name = "scan",
+    .description = (uint32_t)(uintptr_t)"Poll ISO14443A/B, FeliCa, and Jewel tags",
+    .opts = scan_opts,
+    .usage = scan_usage,
+    .usage_count = count_of(scan_usage),
+};
+
+typedef struct {
+    uint16_t mask;
+    uint8_t brty;
+    const char *name;
+    const uint8_t *init;
+    uint8_t init_len;
+} rfid_poll_type_t;
+
+static const uint8_t felica_poll_any[] = { 0x00, 0xFF, 0xFF, 0x01, 0x00 };
+static const uint8_t iso14443b_poll[] = { 0x00 };
+static const rfid_poll_type_t poll_types[] = {
+    { 1,   PN532_BAUDRATE_106KBPS_ISO14443A, "ISO14443A 106 kbps", NULL, 0 },
+    { 2,   PN532_BAUDRATE_212KBPS_FELICA,    "FeliCa 212 kbps", felica_poll_any, sizeof(felica_poll_any) },
+    { 4,   PN532_BAUDRATE_424KBPS_FELICA,    "FeliCa 424 kbps", felica_poll_any, sizeof(felica_poll_any) },
+    { 8,   PN532_BAUDRATE_106KBPS_ISO14443B, "ISO14443B 106 kbps", iso14443b_poll, sizeof(iso14443b_poll) },
+    { 256, PN532_BAUDRATE_106KBPS_JEWEL,     "Jewel / Topaz 106 kbps", NULL, 0 },
+};
+
+static void print_poll_result(const rfid_poll_type_t *type, const uint8_t *response,
+                              uint8_t response_len, bool verbose) {
+    printf("%s[+] %s target found%s\r\n", ui_term_color_prompt(), type->name, ui_term_color_reset());
+
+    if (type->brty == PN532_BAUDRATE_106KBPS_ISO14443A && response_len >= 6) {
+        uint8_t uid_len = response[5];
+        if (uid_len > response_len - 6) uid_len = response_len - 6;
+        printf("    ATQA: %02X%02X  SAK: %02X  UID: ", response[2], response[3], response[4]);
+        print_hex_line(&response[6], uid_len);
+    } else if ((type->brty == PN532_BAUDRATE_212KBPS_FELICA ||
+                type->brty == PN532_BAUDRATE_424KBPS_FELICA) && response_len >= 11) {
+        // POL_RES starts with response code 0x01 followed by the 8-byte NFCID2.
+        printf("    NFCID2: ");
+        print_hex_line(&response[3], 8);
+        if (response_len >= 21) {
+            printf("    System code: %02X%02X\r\n", response[19], response[20]);
+        }
+    } else if (type->brty == PN532_BAUDRATE_106KBPS_JEWEL && response_len >= 8) {
+        printf("    SENS_RES: %02X%02X  Jewel ID: ", response[2], response[3]);
+        print_hex_line(&response[4], 4);
+    } else {
+        printf("    Activation data: ");
+        print_hex_line(response, response_len);
+    }
+
+    if (verbose) {
+        printf("    Raw InListPassiveTarget response: ");
+        print_hex_line(response, response_len);
+    }
+}
+
+static void scan_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&scan_def, res->help_flag)) return;
+    if (!command_ready()) return;
+
+    uint32_t mask = 1 | 2 | 4 | 8 | 256 | 512;
+    (void)bp_cmd_get_uint32(&scan_def, 't', &mask);
+    bool verbose = bp_cmd_find_flag(&scan_def, 'v');
+    bool found = false;
+
+    printf("\r\nScanning NFC/RFID protocols...\r\n");
+    for (size_t i = 0; i < count_of(poll_types); i++) {
+        if (!(mask & poll_types[i].mask)) continue;
+
+        uint8_t response[64];
+        uint8_t response_len = sizeof(response);
+        pn532_status_t st = pn532_list_passive_target(poll_types[i].brty,
+                                                       poll_types[i].init,
+                                                       poll_types[i].init_len,
+                                                       response, &response_len, 350);
+        if (st == PN532_OK) {
+            found = true;
+            print_poll_result(&poll_types[i], response, response_len, verbose);
+        } else if (verbose) {
+            printf("[-] %-26s %s\r\n", poll_types[i].name,
+                   st == PN532_ERR_NO_TAG ? "no target" : pn532_status_str(st));
+        }
+    }
+
+    if (mask & 512) {
+        printf("[i] NFC Barcode needs manual ISO14443A-2 bit/parity capture; it is not\r\n"
+               "    available through PN532 InListPassiveTarget and is not implemented yet.\r\n");
+    }
+    if (!found) printf("No supported target found.\r\n");
+}
+
+// -----------------------------------------------------------------------------
+// Command: transceive (raw tag frames and ISO14443-4 APDUs)
+// -----------------------------------------------------------------------------
+static const bp_command_opt_t transceive_opts[] = {
+    { "protocol", 'p', BP_ARG_REQUIRED, "a|b|f212|f424|jewel", (uint32_t)(uintptr_t)"Protocol used to select the target" },
+    { "data", 'd', BP_ARG_REQUIRED, "hex", (uint32_t)(uintptr_t)"Frame or APDU bytes in hexadecimal" },
+    { "timeout", 't', BP_ARG_REQUIRED, "ms", (uint32_t)(uintptr_t)"Response timeout in milliseconds (default 1000)" },
+    { "thru", 'c', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Use InCommunicateThru instead of target-aware InDataExchange" },
+    { 0 }
+};
+static const char *const transceive_usage[] = {
+    "transceive -p a|b|f212|f424|jewel -d hex [-t ms] [-c]",
+    "Send an ISO14443-4 SELECT APDU:%s transceive -p a -d 00A4040000",
+    "Send a FeliCa frame:%s transceive -p f212 -d 0600FFFFFFFFFFFF",
+    "Use transparent RF exchange:%s transceive -p a -d 3004 -c",
+};
+static const bp_command_def_t transceive_def = {
+    .name = "transceive",
+    .description = (uint32_t)(uintptr_t)"Select a target and exchange raw frames or APDUs",
+    .opts = transceive_opts,
+    .usage = transceive_usage,
+    .usage_count = count_of(transceive_usage),
+};
+
+static bool protocol_from_name(const char *name, uint8_t *brty,
+                               const uint8_t **init, uint8_t *init_len) {
+    *init = NULL;
+    *init_len = 0;
+    if (!strcmp(name, "a")) *brty = PN532_BAUDRATE_106KBPS_ISO14443A;
+    else if (!strcmp(name, "b")) {
+        *brty = PN532_BAUDRATE_106KBPS_ISO14443B;
+        *init = iso14443b_poll;
+        *init_len = sizeof(iso14443b_poll);
+    } else if (!strcmp(name, "f212")) {
+        *brty = PN532_BAUDRATE_212KBPS_FELICA;
+        *init = felica_poll_any;
+        *init_len = sizeof(felica_poll_any);
+    } else if (!strcmp(name, "f424")) {
+        *brty = PN532_BAUDRATE_424KBPS_FELICA;
+        *init = felica_poll_any;
+        *init_len = sizeof(felica_poll_any);
+    } else if (!strcmp(name, "jewel")) *brty = PN532_BAUDRATE_106KBPS_JEWEL;
+    else return false;
+    return true;
+}
+
+static void transceive_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&transceive_def, res->help_flag)) return;
+    if (!command_ready()) return;
+
+    char protocol[12] = { 0 };
+    char data_text[160] = { 0 };
+    if (!bp_cmd_get_string(&transceive_def, 'p', protocol, sizeof(protocol)) ||
+        !bp_cmd_get_string(&transceive_def, 'd', data_text, sizeof(data_text))) {
+        bp_cmd_help_show(&transceive_def);
+        return;
+    }
+
+    uint8_t brty;
+    const uint8_t *init;
+    uint8_t init_len;
+    if (!protocol_from_name(protocol, &brty, &init, &init_len)) {
+        printf("Unknown protocol '%s'. Use a, b, f212, f424, or jewel.\r\n", protocol);
+        return;
+    }
+
+    uint8_t tx[60];
+    size_t tx_len = parse_hex_bytes(data_text, tx, sizeof(tx));
+    if (!tx_len) {
+        printf("No valid hexadecimal bytes supplied.\r\n");
+        return;
+    }
+
+    uint32_t timeout = 1000;
+    (void)bp_cmd_get_uint32(&transceive_def, 't', &timeout);
+    if (timeout < 10) timeout = 10;
+    if (timeout > 10000) timeout = 10000;
+
+    uint8_t activation[64];
+    uint8_t activation_len = sizeof(activation);
+    pn532_status_t st = pn532_list_passive_target(brty, init, init_len,
+                                                  activation, &activation_len, timeout);
+    if (st != PN532_OK) {
+        printf("Target selection failed: %s.\r\n", pn532_status_str(st));
+        return;
+    }
+
+    printf("TX (%u): ", (unsigned int)tx_len);
+    print_hex_line(tx, (uint8_t)tx_len);
+    uint8_t rx[64];
+    uint8_t rx_len = sizeof(rx);
+    if (bp_cmd_find_flag(&transceive_def, 'c')) {
+        st = pn532_communicate_thru(tx, (uint8_t)tx_len, rx, &rx_len, timeout);
+    } else {
+        st = pn532_data_exchange(tx, (uint8_t)tx_len, rx, &rx_len, timeout);
+    }
+
+    if (st != PN532_OK) {
+        printf("Exchange failed: %s.\r\n", pn532_status_str(st));
+        return;
+    }
+    printf("RX (%u): ", rx_len);
+    print_hex_line(rx, rx_len);
+}
+
+// -----------------------------------------------------------------------------
+// Command: jewel (libnfc-compatible 120-byte JWD backup/restore)
+// -----------------------------------------------------------------------------
+static const bp_command_opt_t jewel_opts[] = {
+    { "read", 'r', BP_ARG_REQUIRED, "dump.jwd", (uint32_t)(uintptr_t)"Read Jewel/Topaz memory to a 120-byte JWD file" },
+    { "write", 'w', BP_ARG_REQUIRED, "dump.jwd", (uint32_t)(uintptr_t)"Write a 120-byte JWD file to a Jewel/Topaz tag" },
+    { "lock", 'l', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Allow writing lock bytes (irreversible)" },
+    { "otp", 'o', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Allow writing one-time-programmable bytes" },
+    { 0 }
+};
+static const char *const jewel_usage[] = {
+    "jewel -r dump.jwd | -w dump.jwd [-l] [-o]",
+    "Read a libnfc-compatible Jewel dump:%s jewel -r card.jwd",
+    "Restore writable data:%s jewel -w card.jwd",
+};
+static const bp_command_def_t jewel_def = {
+    .name = "jewel",
+    .description = (uint32_t)(uintptr_t)"Read or write Jewel/Topaz static memory",
+    .opts = jewel_opts,
+    .usage = jewel_usage,
+    .usage_count = count_of(jewel_usage),
+};
+
+static pn532_status_t jewel_select(uint8_t id[4]) {
+    uint8_t activation[16];
+    uint8_t activation_len = sizeof(activation);
+    pn532_status_t st = pn532_list_passive_target(PN532_BAUDRATE_106KBPS_JEWEL,
+                                                   NULL, 0, activation,
+                                                   &activation_len, 1000);
+    if (st != PN532_OK) return st;
+    if (activation_len < 8) return PN532_ERR_COMM;
+    memcpy(id, &activation[4], 4);
+    return PN532_OK;
+}
+
+static void jewel_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&jewel_def, res->help_flag)) return;
+    if (!command_ready()) return;
+
+    char file_name[32] = { 0 };
+    bool read_action = bp_cmd_get_string(&jewel_def, 'r', file_name, sizeof(file_name));
+    bool write_action = bp_cmd_get_string(&jewel_def, 'w', file_name, sizeof(file_name));
+    if (read_action == write_action) { bp_cmd_help_show(&jewel_def); return; }
+
+    uint8_t jewel_id[4];
+    pn532_status_t st = jewel_select(jewel_id);
+    if (st != PN532_OK) { printf("No Jewel/Topaz tag found.\r\n"); return; }
+    printf("Jewel ID: "); print_hex_line(jewel_id, sizeof(jewel_id));
+
+    uint8_t image[120];
+    if (read_action) {
+        printf("Reading 120 bytes: ");
+        for (uint8_t address = 0; address < sizeof(image); address++) {
+            uint8_t cmd[] = { 0x01, address };
+            uint8_t response_len = 1;
+            st = pn532_data_exchange(cmd, sizeof(cmd), &image[address], &response_len, 300);
+            if (st != PN532_OK || response_len != 1) break;
+            if ((address & 7) == 7) printf(".");
+        }
+        printf("\r\n");
+        if (st != PN532_OK) { printf("Jewel read failed: %s.\r\n", pn532_status_str(st)); return; }
+        FIL fil;
+        if (f_open(&fil, file_name, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+            printf("Failed to create '%s'.\r\n", file_name); return;
+        }
+        UINT written;
+        FRESULT fr = f_write(&fil, image, sizeof(image), &written);
+        f_close(&fil);
+        if (fr == FR_OK && written == sizeof(image)) printf("Saved 120-byte JWD image to '%s'.\r\n", file_name);
+        else printf("Failed to save Jewel image.\r\n");
+        return;
+    }
+
+    FIL fil;
+    if (f_open(&fil, file_name, FA_READ) != FR_OK) {
+        printf("Failed to open '%s'.\r\n", file_name);
+        return;
+    }
+    if (f_size(&fil) != sizeof(image)) {
+        f_close(&fil);
+        printf("Jewel restore requires an exact 120-byte JWD file.\r\n");
+        return;
+    }
+    UINT count;
+    FRESULT fr = f_read(&fil, image, sizeof(image), &count);
+    f_close(&fil);
+    if (fr != FR_OK || count != sizeof(image)) { printf("Failed to read '%s'.\r\n", file_name); return; }
+
+    bool write_lock = bp_cmd_find_flag(&jewel_def, 'l');
+    bool write_otp = bp_cmd_find_flag(&jewel_def, 'o');
+    printf("Writing Jewel data (block 0 and reserved block 13 are always preserved)...\r\n");
+    uint8_t write_count = 0;
+    for (uint8_t address = 8; address < sizeof(image); address++) {
+        uint8_t block = address >> 3;
+        if (block == 0x0D) continue;
+        if (block == 0x0E) {
+            if (address < 114 && !write_lock) continue;
+            if (address >= 114 && !write_otp) continue;
+        }
+        uint8_t cmd[] = { 0x53, address, image[address] };
+        uint8_t response[2];
+        uint8_t response_len = sizeof(response);
+        st = pn532_data_exchange(cmd, sizeof(cmd), response, &response_len, 400);
+        if (st != PN532_OK) break;
+        write_count++;
+    }
+    if (st == PN532_OK) printf("Wrote %u Jewel bytes.\r\n", write_count);
+    else printf("Jewel write stopped after %u bytes: %s.\r\n", write_count, pn532_status_str(st));
+}
+
+// -----------------------------------------------------------------------------
+// Command: forum3 (NFC Forum Type 3 / FeliCa NDEF extraction)
+// -----------------------------------------------------------------------------
+static const bp_command_opt_t forum3_opts[] = {
+    { "file", 'f', BP_ARG_REQUIRED, "filename", (uint32_t)(uintptr_t)"Write the raw NDEF message to a file" },
+    { 0 }
+};
+static const char *const forum3_usage[] = {
+    "forum3 [-f ndef.bin]",
+    "Inspect the Type 3 attribute and print NDEF bytes:%s forum3",
+    "Extract the NDEF message:%s forum3 -f message.ndef",
+};
+static const bp_command_def_t forum3_def = {
+    .name = "forum3",
+    .description = (uint32_t)(uintptr_t)"Read an NFC Forum Type 3 (FeliCa) NDEF message",
+    .opts = forum3_opts,
+    .usage = forum3_usage,
+    .usage_count = count_of(forum3_usage),
+};
+
+static pn532_status_t felica_read_ndef_block(const uint8_t idm[8], uint8_t block,
+                                             uint8_t data[16]) {
+    // FeliCa CHECK: service 0x000B (little endian), one 2-byte block-list item.
+    uint8_t frame[16] = {
+        16, 0x06,
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0x01, 0x0B, 0x00, 0x01, 0x80, block,
+    };
+    memcpy(&frame[2], idm, 8);
+
+    uint8_t response[40];
+    uint8_t response_len = sizeof(response);
+    pn532_status_t st = pn532_data_exchange(frame, sizeof(frame), response, &response_len, 1000);
+    if (st != PN532_OK) return st;
+    if (response_len < 29 || response[0] != response_len || response[1] != 0x07 ||
+        memcmp(&response[2], idm, 8) || response[10] || response[11] || response[12] != 1) {
+        return PN532_ERR_COMM;
+    }
+    memcpy(data, &response[13], 16);
+    return PN532_OK;
+}
+
+static void forum3_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&forum3_def, res->help_flag)) return;
+    if (!command_ready()) return;
+
+    char file_name[32] = { 0 };
+    bool save_file = bp_cmd_get_string(&forum3_def, 'f', file_name, sizeof(file_name));
+    static const uint8_t forum3_poll[] = { 0x00, 0x12, 0xFC, 0x01, 0x00 };
+    uint8_t activation[32];
+    uint8_t activation_len = sizeof(activation);
+    pn532_status_t st = pn532_list_passive_target(PN532_BAUDRATE_212KBPS_FELICA,
+                                                   forum3_poll, sizeof(forum3_poll),
+                                                   activation, &activation_len, 1000);
+    if (st != PN532_OK || activation_len < 11 || activation[2] != 0x01) {
+        printf("No NFC Forum Type 3 / FeliCa target found.\r\n");
+        return;
+    }
+    uint8_t idm[8];
+    memcpy(idm, &activation[3], sizeof(idm));
+    printf("NFCID2: ");
+    print_hex_line(idm, sizeof(idm));
+
+    uint8_t attr[16];
+    st = felica_read_ndef_block(idm, 0, attr);
+    if (st != PN532_OK) {
+        printf("Failed to read the Type 3 NDEF attribute block: %s.\r\n", pn532_status_str(st));
+        return;
+    }
+
+    uint16_t calculated_checksum = 0;
+    for (uint8_t i = 0; i < 14; i++) calculated_checksum += attr[i];
+    uint16_t stored_checksum = ((uint16_t)attr[14] << 8) | attr[15];
+    uint16_t max_blocks = ((uint16_t)attr[3] << 8) | attr[4];
+    uint32_t ndef_len = ((uint32_t)attr[11] << 16) | ((uint32_t)attr[12] << 8) | attr[13];
+
+    printf("Mapping: %u.%u, Nbr: %u, Nbw: %u, capacity: %u bytes\r\n",
+           attr[0] >> 4, attr[0] & 0x0F, attr[1], attr[2], max_blocks * 16u);
+    printf("Access: %s, write state: %s, NDEF length: %lu bytes\r\n",
+           attr[10] == 1 ? "read/write" : "read-only",
+           attr[9] == 0 ? "finished" : "in progress",
+           (unsigned long)ndef_len);
+    if (calculated_checksum != stored_checksum || ndef_len > (uint32_t)max_blocks * 16u) {
+        printf("Invalid Type 3 attribute block (checksum/capacity mismatch).\r\n");
+        return;
+    }
+    if (!ndef_len) {
+        printf("The Type 3 tag contains an empty NDEF message.\r\n");
+        return;
+    }
+
+    FIL fil;
+    if (save_file && f_open(&fil, file_name, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+        printf("Failed to create '%s'.\r\n", file_name);
+        return;
+    }
+
+    uint32_t remaining = ndef_len;
+    uint16_t block = 1;
+    while (remaining) {
+        if (block > 255) { st = PN532_ERR_UNSUPPORTED; break; }
+        uint8_t data[16];
+        st = felica_read_ndef_block(idm, (uint8_t)block, data);
+        if (st != PN532_OK) break;
+        uint8_t chunk = remaining > sizeof(data) ? sizeof(data) : (uint8_t)remaining;
+        if (save_file) {
+            UINT written;
+            if (f_write(&fil, data, chunk, &written) != FR_OK || written != chunk) {
+                st = PN532_ERR_WRITE;
+                break;
+            }
+        } else {
+            printf("Block %03u: ", block);
+            print_hex_line(data, chunk);
+        }
+        remaining -= chunk;
+        block++;
+    }
+    if (save_file) f_close(&fil);
+    if (st == PN532_OK && remaining == 0) {
+        if (save_file) printf("Extracted %lu NDEF bytes to '%s'.\r\n", (unsigned long)ndef_len, file_name);
+    } else {
+        printf("Type 3 NDEF read stopped after %lu bytes: %s.\r\n",
+               (unsigned long)(ndef_len - remaining), pn532_status_str(st));
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Command: forum4 (NFC Forum Type 4 NDEF tag emulation)
+// -----------------------------------------------------------------------------
+#define FORUM4_NDEF_MAX 510
+static const bp_command_opt_t forum4_opts[] = {
+    { "input", 'f', BP_ARG_REQUIRED, "ndef-file", (uint32_t)(uintptr_t)"Raw NDEF message to emulate (maximum 510 bytes)" },
+    { "output", 'o', BP_ARG_REQUIRED, "ndef-file", (uint32_t)(uintptr_t)"Save NDEF content written by the reader" },
+    { "v1", '1', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Emulate NFC Forum Type 4 Tag v1.0 (default v2.0)" },
+    { 0 }
+};
+static const char *const forum4_usage[] = {
+    "forum4 [-f input.ndef] [-o written.ndef]",
+    "Emulate the built-in Bus Pirate NDEF tag:%s forum4",
+    "Emulate an NDEF file and save reader updates:%s forum4 -f tag.ndef -o updated.ndef",
+};
+static const bp_command_def_t forum4_def = {
+    .name = "forum4",
+    .description = (uint32_t)(uintptr_t)"Emulate an NFC Forum Type 4 NDEF tag",
+    .opts = forum4_opts,
+    .usage = forum4_usage,
+    .usage_count = count_of(forum4_usage),
+};
+
+typedef enum { FORUM4_FILE_NONE, FORUM4_FILE_CC, FORUM4_FILE_NDEF } forum4_file_t;
+
+static uint8_t forum4_apdu(const uint8_t *apdu, uint8_t apdu_len, forum4_file_t *selected,
+                           uint8_t *ndef_file, uint16_t ndef_capacity, bool v1,
+                           uint8_t *response) {
+    const uint8_t ndef_aid[] = { 0xD2, 0x76, 0x00, 0x00, 0x85, 0x01, v1 ? 0x00 : 0x01 };
+    const uint8_t cc_file[] = {
+        0x00, 0x0F, v1 ? 0x10 : 0x20, 0x00, 0x3B, 0x00, 0x34,
+        0x04, 0x06, 0xE1, 0x04, 0x02, 0x00, 0x00, 0x00,
+    };
+    if (apdu_len < 4) { response[0] = 0x67; response[1] = 0x00; return 2; }
+
+    // SELECT by NFC Forum NDEF application AID.
+    if (apdu[1] == 0xA4 && apdu[2] == 0x04 && apdu_len >= 12 && apdu[4] == sizeof(ndef_aid) &&
+        !memcmp(&apdu[5], ndef_aid, sizeof(ndef_aid))) {
+        *selected = FORUM4_FILE_NONE;
+        response[0] = 0x90; response[1] = 0x00; return 2;
+    }
+    // SELECT CC (E103) or NDEF (E104) file.
+    if (apdu[1] == 0xA4 && apdu_len >= 7 && apdu[4] == 2 && apdu[5] == 0xE1) {
+        if (apdu[6] == 0x03) *selected = FORUM4_FILE_CC;
+        else if (apdu[6] == 0x04) *selected = FORUM4_FILE_NDEF;
+        else { response[0] = 0x6A; response[1] = 0x82; return 2; }
+        response[0] = 0x90; response[1] = 0x00; return 2;
+    }
+    // READ BINARY. Limit one response to the PN532's normal-frame payload.
+    if (apdu[1] == 0xB0 && apdu_len >= 5) {
+        uint16_t offset = ((uint16_t)apdu[2] << 8) | apdu[3];
+        uint8_t requested = apdu[4] ? apdu[4] : 0xFF;
+        const uint8_t *source = NULL;
+        uint16_t source_len = 0;
+        if (*selected == FORUM4_FILE_CC) { source = cc_file; source_len = sizeof(cc_file); }
+        else if (*selected == FORUM4_FILE_NDEF) { source = ndef_file; source_len = ndef_capacity; }
+        else { response[0] = 0x69; response[1] = 0x86; return 2; }
+        if (offset >= source_len) { response[0] = 0x6B; response[1] = 0x00; return 2; }
+        uint16_t available = source_len - offset;
+        uint8_t count = requested > 60 ? 60 : requested;
+        if (count > available) count = (uint8_t)available;
+        memcpy(response, &source[offset], count);
+        response[count] = 0x90; response[count + 1] = 0x00;
+        return (uint8_t)(count + 2);
+    }
+    // UPDATE BINARY for the selected NDEF file.
+    if (apdu[1] == 0xD6 && apdu_len >= 5) {
+        uint16_t offset = ((uint16_t)apdu[2] << 8) | apdu[3];
+        uint8_t count = apdu[4];
+        if (*selected != FORUM4_FILE_NDEF) { response[0] = 0x69; response[1] = 0x86; return 2; }
+        if ((uint16_t)(5 + count) > apdu_len) { response[0] = 0x67; response[1] = 0x00; return 2; }
+        if ((uint32_t)offset + count > ndef_capacity) { response[0] = 0x6A; response[1] = 0x84; return 2; }
+        memcpy(&ndef_file[offset], &apdu[5], count);
+        response[0] = 0x90; response[1] = 0x00; return 2;
+    }
+    response[0] = 0x6D; response[1] = 0x00;
+    return 2;
+}
+
+static void forum4_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&forum4_def, res->help_flag)) return;
+    if (!command_ready()) return;
+
+    char input_name[32] = { 0 };
+    char output_name[32] = { 0 };
+    bool has_input = bp_cmd_get_string(&forum4_def, 'f', input_name, sizeof(input_name));
+    bool has_output = bp_cmd_get_string(&forum4_def, 'o', output_name, sizeof(output_name));
+    bool v1 = bp_cmd_find_flag(&forum4_def, '1');
+    uint8_t ndef_file[FORUM4_NDEF_MAX + 2];
+    memset(ndef_file, 0, sizeof(ndef_file));
+
+    if (has_input) {
+        FIL fil;
+        if (f_open(&fil, input_name, FA_READ) != FR_OK) {
+            printf("Failed to open '%s'.\r\n", input_name);
+            return;
+        }
+        if (f_size(&fil) > FORUM4_NDEF_MAX) {
+            f_close(&fil);
+            printf("Input must be a raw NDEF file of at most %u bytes.\r\n", FORUM4_NDEF_MAX);
+            return;
+        }
+        uint16_t input_len = (uint16_t)f_size(&fil);
+        UINT count;
+        FRESULT fr = f_read(&fil, &ndef_file[2], input_len, &count);
+        f_close(&fil);
+        if (fr != FR_OK || count != input_len) { printf("Failed to read '%s'.\r\n", input_name); return; }
+        ndef_file[0] = (uint8_t)(input_len >> 8);
+        ndef_file[1] = (uint8_t)input_len;
+    } else {
+        static const uint8_t default_ndef[] = {
+            0xD1, 0x01, 0x10, 0x54, 0x02, 0x65, 0x6E,
+            'B', 'u', 's', ' ', 'P', 'i', 'r', 'a', 't', 'e', ' ', 'N', 'F', 'C'
+        };
+        ndef_file[0] = 0;
+        ndef_file[1] = sizeof(default_ndef);
+        memcpy(&ndef_file[2], default_ndef, sizeof(default_ndef));
+    }
+
+    // Mode 0x05: passive-only and ISO14443-4 PICC-only. NFCID1 byte 0 is fixed
+    // by PN532; the host supplies the remaining three bytes.
+    static const uint8_t target_params[] = {
+        0x05,
+        0x04, 0x00, 0x12, 0x34, 0x56, 0x20,
+        0x01, 0xFE, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7,
+        0xC0, 0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xFF, 0xFF,
+        0xAA, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,
+        0x00, 0x00,
+    };
+    printf("Waiting for an NFC reader/phone... Press any key to stop.\r\n");
+    uint8_t activation[16];
+    uint8_t activation_len = sizeof(activation);
+    pn532_status_t st = pn532_target_init(target_params, sizeof(target_params),
+                                          activation, &activation_len, 30000);
+    if (st != PN532_OK) { printf("Target activation failed: %s.\r\n", pn532_status_str(st)); return; }
+    printf("Reader activated the PN532 Type 4 target.\r\n");
+
+    forum4_file_t selected = FORUM4_FILE_NONE;
+    while (true) {
+        char c;
+        if (rx_fifo_try_get(&c)) { printf("Emulation stopped.\r\n"); break; }
+        uint8_t apdu[62];
+        uint8_t apdu_len = sizeof(apdu);
+        st = pn532_target_get_data(apdu, &apdu_len, 1000);
+        if (st != PN532_OK) { printf("Reader disconnected.\r\n"); break; }
+        printf("C-APDU: "); print_hex_line(apdu, apdu_len);
+        uint8_t response[62];
+        uint8_t response_len = forum4_apdu(apdu, apdu_len, &selected,
+                                           ndef_file, sizeof(ndef_file), v1, response);
+        printf("R-APDU: "); print_hex_line(response, response_len);
+        st = pn532_target_set_data(response, response_len, 1000);
+        if (st != PN532_OK) { printf("Failed to return APDU response.\r\n"); break; }
+    }
+
+    if (has_output) {
+        uint16_t ndef_len = ((uint16_t)ndef_file[0] << 8) | ndef_file[1];
+        if (ndef_len > FORUM4_NDEF_MAX) ndef_len = FORUM4_NDEF_MAX;
+        FIL fil;
+        if (f_open(&fil, output_name, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
+            UINT written;
+            FRESULT fr = f_write(&fil, &ndef_file[2], ndef_len, &written);
+            f_close(&fil);
+            if (fr == FR_OK && written == ndef_len) printf("Saved %u NDEF bytes to '%s'.\r\n", ndef_len, output_name);
+            else printf("Failed to save updated NDEF data.\r\n");
+        } else printf("Failed to create '%s'.\r\n", output_name);
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Command: tools (capability map for users familiar with libnfc utilities)
+// -----------------------------------------------------------------------------
+static const bp_command_def_t tools_def = {
+    .name = "tools",
+    .description = (uint32_t)(uintptr_t)"Show libnfc utility equivalents and hardware limits",
+};
+
+static void tools_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&tools_def, res->help_flag)) return;
+    printf("\r\nlibnfc-style workflow                 Bus Pirate RFID command\r\n");
+    printf("nfc-list / target scan                scan [-t mask] [-v]\r\n");
+    printf("nfc-scan-device                       info (one attached PN532)\r\n");
+    printf("nfc-mfclassic                         dump -b / restore / write / clone\r\n");
+    printf("nfc-mfultralight                      dump -b / restore / write / ndef\r\n");
+    printf("NDEF Type 2 read/write                ndef [-u URI | -m text]\r\n");
+    printf("NFC Forum Type 3 NDEF                forum3 [-f message.ndef]\r\n");
+    printf("nfc-emulate-forum-tag4               forum4 [-f in.ndef] [-o out.ndef]\r\n");
+    printf("nfc-jewel                             jewel -r/-w dump.jwd\r\n");
+    printf("FeliCa and Type 4 APDU access         scan + transceive\r\n");
+    printf("UID copy to compatible magic card     clone\r\n");
+    printf("\r\nNot standalone on one PN532:\r\n");
+    printf("  PICC relay needs two NFC radios (reader-side target + tag-side initiator).\r\n");
+    printf("  NFC Barcode needs a manual bit/parity capture path not implemented yet.\r\n");
+}
+
 // -----------------------------------------------------------------------------
 // Command: read
 // -----------------------------------------------------------------------------
@@ -282,12 +929,14 @@ static void read_handler(struct command_result *res) {
 // -----------------------------------------------------------------------------
 static const bp_command_opt_t dump_opts[] = {
     { "file", 'f', BP_ARG_REQUIRED, "filename", (uint32_t)(uintptr_t)"Save dump to TF-card file" },
+    { "binary", 'b', BP_ARG_REQUIRED, "filename", (uint32_t)(uintptr_t)"Save raw binary memory image for restore" },
     { 0 }
 };
 static const char *const dump_usage[] = {
-    "dump [-f filename]",
+    "dump [-f text-file | -b binary-file]",
     "Dump memory to terminal:%s dump",
     "Dump memory to TF-card:%s dump -f card.txt",
+    "Save a restorable binary image:%s dump -b card.bin",
 };
 static const bp_command_def_t dump_def = {
     .name = "dump",
@@ -303,6 +952,12 @@ static void dump_handler(struct command_result *res) {
 
     char file_name[32] = { 0 };
     bool save_file = bp_cmd_get_string(&dump_def, 'f', file_name, sizeof(file_name));
+    bool binary_file = bp_cmd_get_string(&dump_def, 'b', file_name, sizeof(file_name));
+    if (save_file && binary_file) {
+        printf("Choose either a text dump (-f) or binary dump (-b), not both.\r\n");
+        return;
+    }
+    save_file |= binary_file;
 
     FIL fil;
     bool fil_open = false;
@@ -329,7 +984,7 @@ static void dump_handler(struct command_result *res) {
     }
 
     print_tag_header(&tag);
-    if (fil_open) {
+    if (fil_open && !binary_file) {
         f_printf(&fil, "# RFID/NFC Tag Dump\r\nUID: ");
         for (uint8_t i = 0; i < tag.uid_len; i++) f_printf(&fil, "%02X ", tag.uid[i]);
         f_printf(&fil, "\r\nATQA: 0x%04X\r\nSAK: 0x%02X\r\nType: %s\r\n\r\n", tag.atqa, tag.sak, tag.type_name);
@@ -346,13 +1001,21 @@ static void dump_handler(struct command_result *res) {
 
             if (pn532_mifare_auth_auto(first_block, tag.uid, tag.uid_len, key) != PN532_OK) {
                 printf("Sector %02u: [Authentication Failed]\r\n", s);
-                if (fil_open) f_printf(&fil, "Sector %02u: [Auth Failed]\r\n", s);
+                if (fil_open && !binary_file) f_printf(&fil, "Sector %02u: [Auth Failed]\r\n", s);
+                if (fil_open && binary_file) {
+                    uint8_t unread[16];
+                    memset(unread, 0xFF, sizeof(unread));
+                    for (uint8_t b = 0; b < num_blocks; b++) {
+                        UINT written;
+                        (void)f_write(&fil, unread, sizeof(unread), &written);
+                    }
+                }
                 continue;
             }
 
             printf("Sector %02u (Key: %02X%02X%02X%02X%02X%02X):\r\n",
                    s, key[0], key[1], key[2], key[3], key[4], key[5]);
-            if (fil_open) {
+            if (fil_open && !binary_file) {
                 f_printf(&fil, "Sector %02u (Key: %02X%02X%02X%02X%02X%02X):\r\n",
                          s, key[0], key[1], key[2], key[3], key[4], key[5]);
             }
@@ -361,21 +1024,34 @@ static void dump_handler(struct command_result *res) {
                 uint8_t blk = first_block + b;
                 uint8_t blk_data[16];
                 if (pn532_mifare_read_block(blk, blk_data) == PN532_OK) {
+                    if (fil_open && binary_file) {
+                        UINT written;
+                        if (f_write(&fil, blk_data, sizeof(blk_data), &written) != FR_OK || written != sizeof(blk_data)) {
+                            printf("Binary file write failed.\r\n");
+                            f_close(&fil);
+                            return;
+                        }
+                    }
                     printf("  Block %03u: ", blk);
-                    if (fil_open) f_printf(&fil, "  Block %03u: ", blk);
+                    if (fil_open && !binary_file) f_printf(&fil, "  Block %03u: ", blk);
                     for (int i = 0; i < 16; i++) {
                         printf("%02X ", blk_data[i]);
-                        if (fil_open) f_printf(&fil, "%02X ", blk_data[i]);
+                        if (fil_open && !binary_file) f_printf(&fil, "%02X ", blk_data[i]);
                     }
                     printf(" |");
-                    if (fil_open) f_printf(&fil, " |");
+                    if (fil_open && !binary_file) f_printf(&fil, " |");
                     for (int i = 0; i < 16; i++) {
                         char ch = (blk_data[i] >= 32 && blk_data[i] <= 126) ? (char)blk_data[i] : '.';
                         printf("%c", ch);
-                        if (fil_open) f_printf(&fil, "%c", ch);
+                        if (fil_open && !binary_file) f_printf(&fil, "%c", ch);
                     }
                     printf("|\r\n");
-                    if (fil_open) f_printf(&fil, "|\r\n");
+                    if (fil_open && !binary_file) f_printf(&fil, "|\r\n");
+                } else if (fil_open && binary_file) {
+                    // Preserve block offsets in the binary image when a read fails.
+                    memset(blk_data, 0xFF, sizeof(blk_data));
+                    UINT written;
+                    (void)f_write(&fil, blk_data, sizeof(blk_data), &written);
                 }
             }
         }
@@ -386,22 +1062,30 @@ static void dump_handler(struct command_result *res) {
         for (uint16_t p = 0; p < pages; p++) {
             uint8_t page_data[4];
             if (pn532_ultralight_read_page((uint8_t)p, page_data) == PN532_OK) {
+                if (fil_open && binary_file) {
+                    UINT written;
+                    if (f_write(&fil, page_data, sizeof(page_data), &written) != FR_OK || written != sizeof(page_data)) {
+                        printf("Binary file write failed.\r\n");
+                        f_close(&fil);
+                        return;
+                    }
+                }
                 printf("Page %03u: %02X %02X %02X %02X  |", p,
                        page_data[0], page_data[1], page_data[2], page_data[3]);
-                if (fil_open) {
+                if (fil_open && !binary_file) {
                     f_printf(&fil, "Page %03u: %02X %02X %02X %02X  |", p,
                              page_data[0], page_data[1], page_data[2], page_data[3]);
                 }
                 for (int i = 0; i < 4; i++) {
                     char ch = (page_data[i] >= 32 && page_data[i] <= 126) ? (char)page_data[i] : '.';
                     printf("%c", ch);
-                    if (fil_open) f_printf(&fil, "%c", ch);
+                    if (fil_open && !binary_file) f_printf(&fil, "%c", ch);
                 }
                 printf("|\r\n");
-                if (fil_open) f_printf(&fil, "|\r\n");
+                if (fil_open && !binary_file) f_printf(&fil, "|\r\n");
             } else {
                 printf("Page %03u: [Read Error]\r\n", p);
-                if (fil_open) f_printf(&fil, "Page %03u: [Read Error]\r\n", p);
+                if (fil_open && !binary_file) f_printf(&fil, "Page %03u: [Read Error]\r\n", p);
                 break;
             }
         }
@@ -413,6 +1097,113 @@ static void dump_handler(struct command_result *res) {
         f_close(&fil);
         printf("\r\nDump saved successfully to '%s'.\r\n", file_name);
     }
+}
+
+// -----------------------------------------------------------------------------
+// Command: restore (write a raw image produced by dump -b)
+// -----------------------------------------------------------------------------
+static const bp_command_opt_t restore_opts[] = {
+    { "file", 'f', BP_ARG_REQUIRED, "filename", (uint32_t)(uintptr_t)"Raw binary image created by dump -b" },
+    { "manufacturer", 'm', BP_ARG_NONE, NULL, (uint32_t)(uintptr_t)"Also write block/page 0 (magic tags only; dangerous)" },
+    { 0 }
+};
+static const char *const restore_usage[] = {
+    "restore -f image.bin [-m]",
+    "Restore writable data while preserving UID:%s restore -f card.bin",
+    "Restore block/page 0 on a compatible magic tag:%s restore -f card.bin -m",
+};
+static const bp_command_def_t restore_def = {
+    .name = "restore",
+    .description = (uint32_t)(uintptr_t)"Restore a binary MIFARE Classic or Ultralight/NTAG image",
+    .opts = restore_opts,
+    .usage = restore_usage,
+    .usage_count = count_of(restore_usage),
+};
+
+static void restore_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&restore_def, res->help_flag)) return;
+    if (!command_ready()) return;
+
+    char file_name[32] = { 0 };
+    if (!bp_cmd_get_string(&restore_def, 'f', file_name, sizeof(file_name))) {
+        bp_cmd_help_show(&restore_def);
+        return;
+    }
+    bool write_manufacturer = bp_cmd_find_flag(&restore_def, 'm');
+
+    FIL fil;
+    if (f_open(&fil, file_name, FA_READ) != FR_OK) {
+        printf("Failed to open '%s'.\r\n", file_name);
+        return;
+    }
+
+    printf("Place destination tag on reader... Press any key to cancel.\r\n");
+    pn532_tag_info_t tag;
+    while (true) {
+        char c;
+        if (rx_fifo_try_get(&c)) { printf("Restore cancelled.\r\n"); f_close(&fil); return; }
+        if (pn532_detect_tag(&tag, 150) == PN532_OK) break;
+        sleep_ms(50);
+    }
+    print_tag_header(&tag);
+
+    uint32_t expected_size;
+    if (tag.is_mifare_classic) expected_size = (uint32_t)tag.total_pages * 16u;
+    else if (tag.is_ultralight_or_ntag) expected_size = (uint32_t)tag.total_pages * 4u;
+    else {
+        printf("Restore is not supported for %s.\r\n", tag.type_name);
+        f_close(&fil);
+        return;
+    }
+    if (f_size(&fil) != expected_size) {
+        printf("Image size is %lu bytes; this tag requires exactly %lu bytes.\r\n",
+               (unsigned long)f_size(&fil), (unsigned long)expected_size);
+        f_close(&fil);
+        return;
+    }
+
+    printf("Writing %lu-byte image%s...\r\n", (unsigned long)expected_size,
+           write_manufacturer ? " including manufacturer data" : " (preserving manufacturer data)");
+
+    uint32_t written_units = 0;
+    if (tag.is_mifare_classic) {
+        uint16_t blocks = tag.total_pages;
+        for (uint16_t block = 0; block < blocks; block++) {
+            uint8_t data[16];
+            UINT count;
+            if (f_read(&fil, data, sizeof(data), &count) != FR_OK || count != sizeof(data)) break;
+
+            uint8_t sector = (block < 128) ? (uint8_t)(block / 4) : (uint8_t)(32 + ((block - 128) / 16));
+            uint8_t first_block = (sector < 32) ? (uint8_t)(sector * 4) : (uint8_t)(128 + (sector - 32) * 16);
+            uint8_t key[6];
+            if (block == first_block && pn532_mifare_auth_auto((uint8_t)block, tag.uid, tag.uid_len, key) != PN532_OK) {
+                printf("Authentication failed at sector %u; restore stopped.\r\n", sector);
+                break;
+            }
+            if (block == 0 && !write_manufacturer) continue;
+            if (pn532_mifare_write_block((uint8_t)block, data) != PN532_OK) {
+                printf("Write failed at block %u; restore stopped.\r\n", block);
+                break;
+            }
+            written_units++;
+        }
+    } else {
+        for (uint16_t page = 0; page < tag.total_pages; page++) {
+            uint8_t data[4];
+            UINT count;
+            if (f_read(&fil, data, sizeof(data), &count) != FR_OK || count != sizeof(data)) break;
+            if (page < 4 && !write_manufacturer) continue;
+            if (!write_manufacturer && page >= (uint16_t)(4 + tag.data_pages)) continue;
+            if (pn532_ultralight_write_page((uint8_t)page, data) != PN532_OK) {
+                printf("Write failed at page %u; restore stopped.\r\n", page);
+                break;
+            }
+            written_units++;
+        }
+    }
+    f_close(&fil);
+    printf("Restore wrote %lu %s. Verify with 'dump -b verify.bin'.\r\n",
+           (unsigned long)written_units, tag.is_mifare_classic ? "blocks" : "pages");
 }
 
 // -----------------------------------------------------------------------------
@@ -709,13 +1500,20 @@ static void ndef_handler(struct command_result *res) {
 
 // Command table
 const struct _mode_command_struct rfid_commands[] = {
+    { .func = scan_handler,  .def = &scan_def,  .supress_fala_capture = true },
+    { .func = transceive_handler, .def = &transceive_def, .supress_fala_capture = true },
+    { .func = jewel_handler, .def = &jewel_def, .supress_fala_capture = true },
+    { .func = forum3_handler, .def = &forum3_def, .supress_fala_capture = true },
+    { .func = forum4_handler, .def = &forum4_def, .supress_fala_capture = true },
     { .func = read_handler,  .def = &read_def,  .supress_fala_capture = true },
     { .func = dump_handler,  .def = &dump_def,  .supress_fala_capture = true },
+    { .func = restore_handler, .def = &restore_def, .supress_fala_capture = true },
     { .func = write_handler, .def = &write_def, .supress_fala_capture = true },
     { .func = clone_handler, .def = &clone_def, .supress_fala_capture = true },
     { .func = erase_handler, .def = &erase_def, .supress_fala_capture = true },
     { .func = ndef_handler,  .def = &ndef_def,  .supress_fala_capture = true },
     { .func = info_handler,  .def = &info_def,  .supress_fala_capture = true },
+    { .func = tools_handler, .def = &tools_def, .supress_fala_capture = true },
 };
 const uint32_t rfid_commands_count = count_of(rfid_commands);
 

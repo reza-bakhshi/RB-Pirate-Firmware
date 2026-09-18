@@ -282,7 +282,7 @@ static bool pn532_transceive_wakeup(const uint8_t *cmd, uint8_t cmd_len, uint8_t
 }
 
 // Low-level InDataExchange command
-static pn532_status_t pn532_in_data_exchange(const uint8_t *tx, uint8_t tx_len, uint8_t *rx, uint8_t *rx_len, uint32_t timeout_ms) {
+pn532_status_t pn532_data_exchange(const uint8_t *tx, uint8_t tx_len, uint8_t *rx, uint8_t *rx_len, uint32_t timeout_ms) {
     uint8_t cmd[2 + 64];
     if (tx_len > 60) return PN532_ERR_UNSUPPORTED;
 
@@ -310,6 +310,115 @@ static pn532_status_t pn532_in_data_exchange(const uint8_t *tx, uint8_t tx_len, 
         memcpy(rx, &resp[1], data_len);
         *rx_len = data_len;
     }
+    return PN532_OK;
+}
+
+pn532_status_t pn532_command(const uint8_t *cmd, uint8_t cmd_len,
+                            uint8_t *response, uint8_t *response_len,
+                            uint32_t timeout_ms) {
+    if (!cmd || cmd_len == 0 || cmd_len > 64) return PN532_ERR_UNSUPPORTED;
+    if (!pn532_transceive(cmd, cmd_len, response, response_len, timeout_ms)) {
+        return PN532_ERR_COMM;
+    }
+    return PN532_OK;
+}
+
+pn532_status_t pn532_list_passive_target(uint8_t brty,
+                                        const uint8_t *initiator_data,
+                                        uint8_t initiator_data_len,
+                                        uint8_t *response,
+                                        uint8_t *response_len,
+                                        uint32_t timeout_ms) {
+    if (!response || !response_len || initiator_data_len > 60) return PN532_ERR_COMM;
+
+    uint8_t cmd[3 + 60];
+    cmd[0] = PN532_CMD_INLISTPASSIVETARGET;
+    cmd[1] = 0x01;
+    cmd[2] = brty;
+    if (initiator_data_len) {
+        if (!initiator_data) return PN532_ERR_COMM;
+        memcpy(&cmd[3], initiator_data, initiator_data_len);
+    }
+
+    if (!pn532_transceive(cmd, (uint8_t)(3 + initiator_data_len), response,
+                          response_len, timeout_ms)) {
+        return PN532_ERR_COMM;
+    }
+    if (*response_len == 0 || response[0] == 0) return PN532_ERR_NO_TAG;
+    return PN532_OK;
+}
+
+pn532_status_t pn532_communicate_thru(const uint8_t *tx, uint8_t tx_len,
+                                     uint8_t *rx, uint8_t *rx_len,
+                                     uint32_t timeout_ms) {
+    if ((!tx && tx_len) || tx_len > 62) return PN532_ERR_UNSUPPORTED;
+
+    uint8_t cmd[1 + 62];
+    cmd[0] = PN532_CMD_INCOMMUNICATETHRU;
+    if (tx_len) memcpy(&cmd[1], tx, tx_len);
+
+    uint8_t resp[64];
+    uint8_t resp_len = sizeof(resp);
+    if (!pn532_transceive(cmd, (uint8_t)(1 + tx_len), resp, &resp_len, timeout_ms)) {
+        return PN532_ERR_COMM;
+    }
+    if (resp_len < 1) return PN532_ERR_COMM;
+    if ((resp[0] & 0x3F) != 0) return PN532_ERR_COMM;
+
+    uint8_t data_len = (uint8_t)(resp_len - 1);
+    if (rx && rx_len) {
+        if (data_len > *rx_len) data_len = *rx_len;
+        memcpy(rx, &resp[1], data_len);
+        *rx_len = data_len;
+    }
+    return PN532_OK;
+}
+
+pn532_status_t pn532_target_init(const uint8_t *params, uint8_t params_len,
+                                uint8_t *activation, uint8_t *activation_len,
+                                uint32_t timeout_ms) {
+    if (!params || params_len > 63) return PN532_ERR_UNSUPPORTED;
+    // Keep automatic ATR_RES and RATS handling enabled and add the PN532's
+    // ISO14443-4 PICC mode required by TgGetData/TgSetData.
+    uint8_t set_parameters[] = { PN532_CMD_SETPARAMETERS, 0x34 };
+    uint8_t parameter_response[2];
+    uint8_t parameter_response_len = sizeof(parameter_response);
+    if (!pn532_transceive(set_parameters, sizeof(set_parameters), parameter_response,
+                          &parameter_response_len, 250)) return PN532_ERR_COMM;
+    uint8_t cmd[64];
+    cmd[0] = PN532_CMD_TGINITASTARGET;
+    memcpy(&cmd[1], params, params_len);
+    return pn532_command(cmd, (uint8_t)(params_len + 1), activation, activation_len, timeout_ms);
+}
+
+pn532_status_t pn532_target_get_data(uint8_t *data, uint8_t *data_len,
+                                    uint32_t timeout_ms) {
+    uint8_t cmd[] = { PN532_CMD_TGGETDATA };
+    uint8_t response[64];
+    uint8_t response_len = sizeof(response);
+    pn532_status_t st = pn532_command(cmd, sizeof(cmd), response, &response_len, timeout_ms);
+    if (st != PN532_OK) return st;
+    if (response_len < 1 || (response[0] & 0x3F) != 0) return PN532_ERR_COMM;
+    uint8_t payload_len = (uint8_t)(response_len - 1);
+    if (data && data_len) {
+        if (payload_len > *data_len) payload_len = *data_len;
+        memcpy(data, &response[1], payload_len);
+        *data_len = payload_len;
+    }
+    return PN532_OK;
+}
+
+pn532_status_t pn532_target_set_data(const uint8_t *data, uint8_t data_len,
+                                    uint32_t timeout_ms) {
+    if ((!data && data_len) || data_len > 62) return PN532_ERR_UNSUPPORTED;
+    uint8_t cmd[63];
+    cmd[0] = PN532_CMD_TGSETDATA;
+    if (data_len) memcpy(&cmd[1], data, data_len);
+    uint8_t response[4];
+    uint8_t response_len = sizeof(response);
+    pn532_status_t st = pn532_command(cmd, (uint8_t)(data_len + 1), response, &response_len, timeout_ms);
+    if (st != PN532_OK) return st;
+    if (response_len < 1 || (response[0] & 0x3F) != 0) return PN532_ERR_COMM;
     return PN532_OK;
 }
 
@@ -551,7 +660,7 @@ pn532_status_t pn532_mifare_auth(uint8_t block, uint8_t key_type, const uint8_t 
     memcpy(&auth_payload[2], key, 6);
     memcpy(&auth_payload[8], uid, 4);
 
-    return pn532_in_data_exchange(auth_payload, sizeof(auth_payload), NULL, NULL, 200);
+    return pn532_data_exchange(auth_payload, sizeof(auth_payload), NULL, NULL, 200);
 }
 
 pn532_status_t pn532_mifare_auth_auto(uint8_t block, const uint8_t *uid, uint8_t uid_len, uint8_t *found_key) {
@@ -568,7 +677,7 @@ pn532_status_t pn532_mifare_read_block(uint8_t block, uint8_t *data16) {
     if (!data16) return PN532_ERR_COMM;
     uint8_t cmd[] = { MIFARE_CMD_READ, block };
     uint8_t rx_len = 16;
-    return pn532_in_data_exchange(cmd, sizeof(cmd), data16, &rx_len, 200);
+    return pn532_data_exchange(cmd, sizeof(cmd), data16, &rx_len, 200);
 }
 
 pn532_status_t pn532_mifare_write_block(uint8_t block, const uint8_t *data16) {
@@ -577,7 +686,7 @@ pn532_status_t pn532_mifare_write_block(uint8_t block, const uint8_t *data16) {
     cmd[0] = MIFARE_CMD_WRITE;
     cmd[1] = block;
     memcpy(&cmd[2], data16, 16);
-    return pn532_in_data_exchange(cmd, sizeof(cmd), NULL, NULL, 300);
+    return pn532_data_exchange(cmd, sizeof(cmd), NULL, NULL, 300);
 }
 
 pn532_status_t pn532_ultralight_read_page(uint8_t page, uint8_t *data4) {
@@ -586,7 +695,7 @@ pn532_status_t pn532_ultralight_read_page(uint8_t page, uint8_t *data4) {
     uint8_t rx[16];
     uint8_t rx_len = sizeof(rx);
 
-    pn532_status_t st = pn532_in_data_exchange(cmd, sizeof(cmd), rx, &rx_len, 200);
+    pn532_status_t st = pn532_data_exchange(cmd, sizeof(cmd), rx, &rx_len, 200);
     if (st == PN532_OK && rx_len >= 4) {
         memcpy(data4, rx, 4);
         return PN532_OK;
@@ -600,7 +709,7 @@ pn532_status_t pn532_ultralight_write_page(uint8_t page, const uint8_t *data4) {
     cmd[0] = MIFARE_ULTRALIGHT_CMD_WRITE;
     cmd[1] = page;
     memcpy(&cmd[2], data4, 4);
-    return pn532_in_data_exchange(cmd, sizeof(cmd), NULL, NULL, 300);
+    return pn532_data_exchange(cmd, sizeof(cmd), NULL, NULL, 300);
 }
 
 pn532_status_t pn532_write_magic_block0(const uint8_t *uid, uint8_t uid_len, uint8_t sak, uint16_t atqa) {

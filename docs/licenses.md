@@ -33,6 +33,14 @@ All the people listed below hold copyrights to code in this project:
 * Copyright (c) 2021 Jaroslav Kysela <perex@perex.cz>
 * Copyright (c) 2014-2019 Marco Paland (info@paland.com), PALANDesign Hannover, Germany
 * Copyright (c) 2017,2019 Two Blue Cubes Ltd. All rights reserved.
+* Copyright (c) 2026 Shapoco (LcdTap)
+
+## MIT: LcdTap
+
+The LCD traffic decoder and RP2350 SPI/I2C capture helpers in `src/lib/lcdtap/`
+come from [Shapoco's LcdTap project](https://github.com/shapoco/lcdtap). The
+library is distributed under the MIT license. Its complete license notice is
+included in `docs/third_party_licenses/lcdtap.txt`.
 
 
 ## LGPL3
@@ -79,7 +87,6 @@ This license is completely compatible with our MIT license. So BSD components ha
     - `hwi2c.pio`
     - `hwuart.pio`
     - `ws2812.pio`
-
 
 
 

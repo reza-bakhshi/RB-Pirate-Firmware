@@ -15,6 +15,7 @@ docs/
 │   ├── new_toolbar_guide.md      — Creating a bottom-of-screen toolbar
 │   ├── binary_mode_guide.md      — Implementing a binary (USB) mode
 │   ├── display_mode_guide.md     — Adding a display mode
+│   ├── lcdtap_guide.md           — Capturing and exporting LCD traffic
 │   ├── bio_pin_guide.md          — Buffered I/O pin subsystem
 │   ├── storage_guide.md          — Flash/SD storage and config persistence
 │   ├── system_monitor_guide.md   — Voltage, ADC, PSU monitoring
@@ -70,5 +71,7 @@ LLM agent prompts live in [`.github/prompts/`](../.github/prompts/) (not human d
 3. [New Command Guide](guides/new_command_guide.md)
 
 **Working on commands?** See the [bp_cmd API](api/bp_cmd_parsing_api.md) and [patterns cookbook](api/bp_cmd_patterns.md).
+
+**Capturing an LCD?** See the [LCDTap user manual](guides/lcdtap_guide.md) for wiring, setup, commands, memory limits, and troubleshooting.
 
 **Running tests?** See [Testing Guide](testing/testing_guide.md) and [HIL Test Rig](testing/hil_test_rig.md).

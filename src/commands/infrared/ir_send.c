@@ -45,6 +45,9 @@ static const bp_val_choice_t ir_proto_choices[] = {
     { "rc6", NULL, T_IR_PROTO_RC6, 7 },
     { "dish", NULL, T_IR_PROTO_DISH, 8 },
     { "sharp", NULL, T_IR_PROTO_SHARP, 9 },
+    { "denon", NULL, T_IR_PROTO_DENON, 10 },
+    { "mitsubishi", NULL, T_IR_PROTO_MITSUBISHI, 11 },
+    { "sharpk", NULL, T_IR_PROTO_SHARPK, 12 },
 };
 // keep in sync with the engine table
 typedef char _ir_proto_choice_check[(count_of(ir_proto_choices) == IR_PROTOCOL_COUNT) ? 1 : -1];

@@ -116,6 +116,10 @@ int main(void) {
     round_trip(8, 0x01, 0, 0x10);
     // SHARP
     round_trip(9, 0x02, 0, 0x40);
+    // Kaseikyo vendor variants (Bit-Pirate devicebgone codes)
+    round_trip(10, 4, 0, 8);     // DENON
+    round_trip(11, 71, 0, 2);    // MITSUBISHI
+    round_trip(12, 1, 0, 233);   // SHARP (Kaseikyo)
     // noise rejection
     noise_reject("NEC");
     noise_reject("SAMSUNG");

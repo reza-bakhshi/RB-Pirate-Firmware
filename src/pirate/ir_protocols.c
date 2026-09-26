@@ -636,9 +636,11 @@ static bool jvc_decode(const uint32_t *pairs, uint16_t count, uint32_t *dev, uin
 }
 
 // ---------------------------------------------------------------------------
-// PANASONIC / Kaseikyo (48 bits, LSB first) - Arduino IRremote compatible
+// PANASONIC / Kaseikyo family (48 bits, LSB first) - Arduino IRremote compatible
 // [0:16) vendor ID, [16:20) vendor parity nibble, [20:32) 12 bit address,
 // [32:40) function, [40:48) parity = function ^ byte2 ^ byte3
+// Panasonic, Denon, Mitsubishi and Sharp(Kaseikyo) share this layout with
+// different vendor IDs (same mapping as the Bit-Pirate InfraredService)
 // ---------------------------------------------------------------------------
 
 #define PANASONIC_HDR_MARK 3456u
@@ -647,10 +649,12 @@ static bool jvc_decode(const uint32_t *pairs, uint16_t count, uint32_t *dev, uin
 #define PANASONIC_ZERO_SPACE 432u
 #define PANASONIC_ONE_SPACE 1296u
 #define PANASONIC_VENDOR_CODE 0x4004ul
+#define DENON_K_VENDOR_CODE 0x2A4Cul
+#define MITSUBISHI_K_VENDOR_CODE 0xC4D3ul
+#define SHARP_K_VENDOR_CODE 0x555Aul
 
-static bool panasonic_encode(uint32_t dev, uint32_t sub, uint32_t cmd, uint32_t *pairs, uint16_t *count) {
+static bool kaseikyo_encode(uint16_t vendor, uint32_t dev, uint32_t sub, uint32_t cmd, uint32_t *pairs, uint16_t *count) {
     *count = 0;
-    uint16_t vendor = (uint16_t)PANASONIC_VENDOR_CODE;
     // 12 bit address, Bit-Pirate packAddress() compatible: (sub << 8) | device
     uint16_t address = (uint16_t)((((sub & 0x0f) << 8) | (dev & 0xff)) & 0x0fff);
     uint8_t vendor_parity = (uint8_t)((vendor ^ (vendor >> 8)) & 0xff);
@@ -673,7 +677,7 @@ static bool panasonic_encode(uint32_t dev, uint32_t sub, uint32_t cmd, uint32_t 
     return ir_push(PANASONIC_BIT_MARK, 15000, pairs, count);
 }
 
-static bool panasonic_decode(const uint32_t *pairs, uint16_t count, uint32_t *dev, uint32_t *sub, uint32_t *cmd) {
+static bool kaseikyo_decode(uint16_t vendor_expected, const uint32_t *pairs, uint16_t count, uint32_t *dev, uint32_t *sub, uint32_t *cmd) {
     if (count < 50) {
         return false;
     }
@@ -694,6 +698,9 @@ static bool panasonic_decode(const uint32_t *pairs, uint16_t count, uint32_t *de
         }
     }
     uint16_t vendor = (uint16_t)(value & 0xffff);
+    if (vendor != vendor_expected) {
+        return false;
+    }
     uint8_t b3 = (uint8_t)((value >> 16) & 0xff);
     uint8_t b4 = (uint8_t)((value >> 24) & 0xff);
     uint8_t b5 = (uint8_t)((value >> 32) & 0xff);
@@ -701,12 +708,43 @@ static bool panasonic_decode(const uint32_t *pairs, uint16_t count, uint32_t *de
     if (b6 != (uint8_t)(b5 ^ b3 ^ b4)) {
         return false;
     }
-    (void)vendor;
     uint16_t address = (uint16_t)(((b4 << 4) | (b3 >> 4)) & 0x0fff);
     *dev = address & 0xff;            // device
     *sub = (address >> 8) & 0x0f;     // sub-device
     *cmd = b5;                        // function
     return true;
+}
+
+static bool panasonic_encode(uint32_t dev, uint32_t sub, uint32_t cmd, uint32_t *pairs, uint16_t *count) {
+    return kaseikyo_encode((uint16_t)PANASONIC_VENDOR_CODE, dev, sub, cmd, pairs, count);
+}
+
+static bool panasonic_decode(const uint32_t *pairs, uint16_t count, uint32_t *dev, uint32_t *sub, uint32_t *cmd) {
+    return kaseikyo_decode((uint16_t)PANASONIC_VENDOR_CODE, pairs, count, dev, sub, cmd);
+}
+
+static bool denon_k_encode(uint32_t dev, uint32_t sub, uint32_t cmd, uint32_t *pairs, uint16_t *count) {
+    return kaseikyo_encode((uint16_t)DENON_K_VENDOR_CODE, dev, sub, cmd, pairs, count);
+}
+
+static bool denon_k_decode(const uint32_t *pairs, uint16_t count, uint32_t *dev, uint32_t *sub, uint32_t *cmd) {
+    return kaseikyo_decode((uint16_t)DENON_K_VENDOR_CODE, pairs, count, dev, sub, cmd);
+}
+
+static bool mitsubishi_k_encode(uint32_t dev, uint32_t sub, uint32_t cmd, uint32_t *pairs, uint16_t *count) {
+    return kaseikyo_encode((uint16_t)MITSUBISHI_K_VENDOR_CODE, dev, sub, cmd, pairs, count);
+}
+
+static bool mitsubishi_k_decode(const uint32_t *pairs, uint16_t count, uint32_t *dev, uint32_t *sub, uint32_t *cmd) {
+    return kaseikyo_decode((uint16_t)MITSUBISHI_K_VENDOR_CODE, pairs, count, dev, sub, cmd);
+}
+
+static bool sharp_k_encode(uint32_t dev, uint32_t sub, uint32_t cmd, uint32_t *pairs, uint16_t *count) {
+    return kaseikyo_encode((uint16_t)SHARP_K_VENDOR_CODE, dev, sub, cmd, pairs, count);
+}
+
+static bool sharp_k_decode(const uint32_t *pairs, uint16_t count, uint32_t *dev, uint32_t *sub, uint32_t *cmd) {
+    return kaseikyo_decode((uint16_t)SHARP_K_VENDOR_CODE, pairs, count, dev, sub, cmd);
 }
 
 // ---------------------------------------------------------------------------
@@ -858,6 +896,12 @@ static const ir_protocol_def_t ir_protocol_table[] = {
         .encode = dish_encode, .decode = dish_decode },
     { .display = "SHARP", .arg_name = "sharp", .carrier_hz = 38000, .bits = 15, .default_repeats = 3,
         .encode = sharp_encode, .decode = sharp_decode },
+    { .display = "DENON", .arg_name = "denon", .carrier_hz = 37000, .bits = 48, .default_repeats = 3,
+        .encode = denon_k_encode, .decode = denon_k_decode },
+    { .display = "MITSUBISHI", .arg_name = "mitsubishi", .carrier_hz = 37000, .bits = 48, .default_repeats = 3,
+        .encode = mitsubishi_k_encode, .decode = mitsubishi_k_decode },
+    { .display = "SHARPK", .arg_name = "sharpk", .carrier_hz = 37000, .bits = 48, .default_repeats = 3,
+        .encode = sharp_k_encode, .decode = sharp_k_decode },
 };
 
 uint8_t ir_protocols_count(void) {

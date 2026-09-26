@@ -70,8 +70,11 @@ static const struct _off_code {
     { 1,  7,  0, 2,      "Samsung TV" },          // {SAMSUNG32, 7, 7, 2}
     { 2,  4,  0, 8,      "LG TV" },               // LG power (addr 4, cmd 8)
     { 5,  8,  0, 61,     "Panasonic TV" },        // {_PANASONIC, 8, 0, 61}
+    { 10, 4,  0, 8,      "Denon device" },        // {_DENON, 4, -1, 8} (Kaseikyo)
+    { 11, 71, 0, 2,      "Mitsubishi device" },   // {_MITSUBISHI, 71, -1, 2} (Kaseikyo)
+    { 12, 1,  0, 233,    "Sharp device" },        // {_SHARP, 1, -1, 233} (Kaseikyo)
     { 8,  1,  0, 0x10,   "DISH satellite" },      // DISH power
-    { 9,  1,  0, 233,    "Sharp device" },        // {_SHARP, 1, -1, 233}
+    { 9,  1,  0, 233,    "Sharp AQUOS" },         // raw Sharp (AQUOS) power
 };
 
 void ir_devicebgone_handler(struct command_result *res) {

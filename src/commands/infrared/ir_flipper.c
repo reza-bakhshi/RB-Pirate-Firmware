@@ -32,6 +32,9 @@ static const char *flipper_name(int8_t proto, uint32_t sub) {
         case 7: return "RC6";
         case 8: return "DISH";
         case 9: return "Sharp";
+        case 10: return "Denon";
+        case 11: return "Mitsubishi";
+        case 12: return "Kaseikyo_Sharp";
         default: return "UNKNOWN";
     }
 }
@@ -57,6 +60,9 @@ static int8_t flipper_to_engine(const char *name, uint32_t *sub) {
     if (!strcasecmp(name, "Kaseikyo") || !strcasecmp(name, "Panasonic")) return 5;
     if (!strcasecmp(name, "Sharp")) return 9;
     if (!strcasecmp(name, "DISH")) return 8;
+    if (!strcasecmp(name, "Denon") || !strcasecmp(name, "Kaseikyo_Denon")) return 10;
+    if (!strcasecmp(name, "Mitsubishi") || !strcasecmp(name, "Kaseikyo_Mitsubishi")) return 11;
+    if (!strcasecmp(name, "Kaseikyo_Sharp")) return 12;
     // fall back to our own table names
     return ir_protocols_find(name);
 }

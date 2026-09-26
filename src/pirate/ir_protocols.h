@@ -22,6 +22,8 @@
  *               cmd=function (8 bit); vendor ID fixed to 0x4004 (Bit-Pirate compatible)
  *  - SHARP:     dev=address (5 bit), sub unused, cmd=command (8 bit)
  *  - DISH:      dev=device (4 bit), sub unused, cmd=function (10 bit)
+ *  - DENON/MITSUBISHI/SHARPK: Kaseikyo variants like PANASONIC (vendor ID
+ *               fixed per protocol: 0x2A4C / 0xC4D3 / 0x555A)
  */
 
 #ifndef _IR_PROTOCOLS_H
@@ -34,7 +36,7 @@
 #define IR_MAX_PAIRS 96u
 
 /** Number of supported protocols in the table (must match ir_protocol_table[]). */
-#define IR_PROTOCOL_COUNT 10u
+#define IR_PROTOCOL_COUNT 13u
 
 /** Decode sentinel: NEC-style repeat frame (holding a button). */
 #define IR_REPEAT_FRAME 0xFFFFFFFEul

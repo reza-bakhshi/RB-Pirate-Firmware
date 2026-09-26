@@ -68,18 +68,9 @@ void ir_setprotocol_handler(struct command_result *res) {
         for (uint8_t i = 0; i < count; i++) {
             printf(" %d. %s\r\n", i + 1, ir_protocols_get(i)->display);
         }
-        printf("Choice 1-%d, x to exit > ", count);
-        char c = ir_cmd_wait_key();
-        printf("%c\r\n", c);
-        if (c == 'x') {
-            return;
-        }
-        uint8_t choice = c - '1';
-        if (c >= '0' && c <= '9' && choice < count) {
-            proto = (int8_t)choice;
-        } else {
-            printf("Invalid choice\r\n");
-        }
+        printf("Choice 1-%d then ENTER, x to exit > ", count);
+        proto = (int8_t)ir_cmd_read_choice(count);
+        if (proto < 0) return;
     }
 
     if (proto < 0) {

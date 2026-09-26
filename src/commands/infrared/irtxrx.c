@@ -169,7 +169,7 @@ void irtx_handler(struct command_result *res){
 	char buffer[512];
 
 	//if -f flag, transmit from file
-	char file[13];
+	char file[64];
 	if(bp_cmd_get_string(&irtx_def, 'f', file, sizeof(file))){
 		//get the filename
 		printf("Transmitting from file %s\r\n", file);
@@ -256,7 +256,7 @@ void irrx_handler(struct command_result *res){
 	FIL file_handle;
 	FRESULT result;
 	bool save_file=false;
-	char file[13];
+	char file[64];
 	if(bp_cmd_get_string(&irrx_def, 'f', file, sizeof(file))){
 		printf("Saving to file %s\r\n", file);
 		save_file=true;
@@ -320,7 +320,7 @@ void irrx_handler(struct command_result *res){
 		irio_pio_rxtx_drain_fifo();
 		//display captured packet
 		while(true){
-			if(irio_pio_rx_frame_buf(&mod_freq, &us, &pairs, buffer)) break;
+			if(irio_pio_rx_frame_buf(&mod_freq, &us, &pairs, buffer, count_of(buffer))) break;
 			// any key to exit
 			char c;
 		    if (rx_fifo_try_get(&c)) {

@@ -61,7 +61,7 @@ void ir_record_handler(struct command_result *res) {
         return;
     }
 
-    char file[16];
+    char file[64];
     char name[33];
 
     if (!bp_cmd_get_positional_string(&ir_record_def, 1, file, sizeof(file))) {

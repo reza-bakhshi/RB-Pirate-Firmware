@@ -80,7 +80,7 @@ bool ir_cmd_capture(uint32_t *pairs, uint16_t *count, float *mod_freq) {
     uint16_t us;
     uint16_t pairs_read;
     uint32_t buffer[IR_CMD_MAX_PAIRS];
-    if (!irio_pio_rx_frame_buf(mod_freq, &us, &pairs_read, buffer)) {
+    if (!irio_pio_rx_frame_buf(mod_freq, &us, &pairs_read, buffer, IR_CMD_MAX_PAIRS)) {
         return false;
     }
     if (pairs_read > IR_CMD_MAX_PAIRS) {
@@ -101,4 +101,29 @@ char ir_cmd_wait_key(void) {
         tight_loop_contents();
     }
     return c;
+}
+
+int16_t ir_cmd_read_choice(uint16_t max) {
+    uint16_t choice = 0;
+    bool have_digit = false;
+    while (true) {
+        char c = ir_cmd_wait_key();
+        if (c == 'x' || c == 'X') {
+            printf("%c\r\n", c);
+            return -1;
+        }
+        if (c == '\r' || c == '\n') {
+            printf("\r\n");
+            return (have_digit && choice >= 1 && choice <= max) ? (int16_t)(choice - 1) : -1;
+        }
+        if (c == '\b' || c == 0x7f) {
+            printf("\b \b");
+            choice /= 10;
+            have_digit = choice != 0;
+        } else if (c >= '0' && c <= '9' && choice < 1000) {
+            printf("%c", c);
+            choice = choice * 10 + (c - '0');
+            have_digit = true;
+        }
+    }
 }

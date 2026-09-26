@@ -63,4 +63,7 @@ bool ir_cmd_key_available(char *c);
 /** @brief Block until a console key is pressed and return it. */
 char ir_cmd_wait_key(void);
 
+/** @brief Read a numbered menu choice (1 to max), returning -1 for cancel/invalid. */
+int16_t ir_cmd_read_choice(uint16_t max);
+
 #endif

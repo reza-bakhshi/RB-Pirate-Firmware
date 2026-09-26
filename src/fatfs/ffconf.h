@@ -86,7 +86,12 @@
 /     0 - Include all code pages above and configured by f_setcp()
 */
 
-#define FF_USE_LFN 0
+#define FF_USE_LFN 3
+/* LFN enabled with dynamic working buffer on the HEAP (ff_memalloc in
+/  ffsystem.c) so the INFRARED 'load' command can open Flipper IRDB files,
+/  which usually have long names like "Samsung_BN59-01178A.ir".
+/  Static (mode 1) is not allowed because FF_FS_REENTRANT is enabled, and
+/  mode 2 would add a 512 byte working buffer to every file call stack. */
 #define FF_MAX_LFN 255
 /* The FF_USE_LFN switches the support for LFN (long file name).
 /

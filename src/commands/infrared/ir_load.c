@@ -65,7 +65,7 @@ static bool has_ir_extension(const char *name) {
 }
 
 // list .ir files in the current directory, returns the count
-static uint16_t list_ir_files(char files[][16], uint16_t max) {
+static uint16_t list_ir_files(char files[][64], uint16_t max) {
     DIR dir;
     FILINFO fno;
     uint16_t count = 0;
@@ -82,8 +82,9 @@ static uint16_t list_ir_files(char files[][16], uint16_t max) {
         if (!has_ir_extension(fno.fname)) {
             continue;
         }
-        strncpy(files[count], fno.fname, 15);
-        files[count][15] = 0;
+        if (strlen(fno.fname) >= 64) continue; // skip names too long for the list
+        strncpy(files[count], fno.fname, 63);
+        files[count][63] = 0;
         count++;
     }
     f_closedir(&dir);
@@ -121,14 +122,14 @@ void ir_load_handler(struct command_result *res) {
         return;
     }
 
-    char file[16];
-    char chosen[16];
+    char file[64];
+    char chosen[64];
     bool have_file = false;
 
     if (bp_cmd_get_positional_string(&ir_load_def, 1, chosen, sizeof(chosen))) {
         have_file = true;
     } else {
-        static char files[16][16];
+        static char files[16][64];
         uint16_t count = list_ir_files(files, 16);
         if (count == 0) {
             printf("No .ir files found on the flash file system\r\n");
@@ -139,18 +140,10 @@ void ir_load_handler(struct command_result *res) {
         for (uint16_t i = 0; i < count; i++) {
             printf(" %d. %s\r\n", i + 1, files[i]);
         }
-        printf("Choice 1-%d, x to exit > ", count);
-        char c = ir_cmd_wait_key();
-        printf("%c\r\n", c);
-        if (c == 'x') {
-            return;
-        }
-        if (c < '1' || c > '9' || (uint8_t)(c - '1') >= count) {
-            printf("Invalid choice\r\n");
-            res->error = true;
-            return;
-        }
-        strncpy(chosen, files[c - '1'], sizeof(chosen));
+        printf("Choice 1-%d then ENTER, x to exit > ", count);
+        int16_t choice = ir_cmd_read_choice(count);
+        if (choice < 0) return;
+        strncpy(chosen, files[choice], sizeof(chosen));
         have_file = true;
     }
 
@@ -181,18 +174,11 @@ void ir_load_handler(struct command_result *res) {
         for (uint16_t i = 0; i < count; i++) {
             printf(" %d. %s\r\n", i + 1, names[i]);
         }
-        printf("Send signal 1-%d, x to exit > ", count);
-        char c = ir_cmd_wait_key();
-        printf("%c\r\n", c);
-        if (c == 'x') {
-            break;
-        }
-        if (c < '1' || c > '9' || (uint8_t)(c - '1') >= count) {
-            printf("Invalid choice\r\n");
-            continue;
-        }
+        printf("Send signal 1-%d then ENTER, x to exit > ", count);
+        int16_t choice = ir_cmd_read_choice(count);
+        if (choice < 0) break;
         ir_signal_t signal;
-        if (!ir_flipper_read_signal(&file_handle, offsets[c - '1'], &signal)) {
+        if (!ir_flipper_read_signal(&file_handle, offsets[choice], &signal)) {
             printf("Error reading signal\r\n");
             continue;
         }

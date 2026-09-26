@@ -230,7 +230,7 @@ bool irio_pio_get_freq_mod(float *mod_freq, uint16_t *us){
 //however there is no such issue during a normal transition
 //so only reincrement on timeout
 // returns true if a frame is ready, false if no frame is ready
-bool irio_pio_rx_frame_buf(float *mod_freq, uint16_t *us, uint16_t *pairs, uint32_t *buffer) {
+bool irio_pio_rx_frame_buf(float *mod_freq, uint16_t *us, uint16_t *pairs, uint32_t *buffer, uint16_t capacity) {
     enum {
         AIR_RESET,
         AIR_IDLE,
@@ -239,11 +239,15 @@ bool irio_pio_rx_frame_buf(float *mod_freq, uint16_t *us, uint16_t *pairs, uint3
     };
     
     static uint8_t state = AIR_RESET;
+    static uint16_t captured;
+    static bool overflow;
     uint16_t temp;
 
     switch(state){
         case AIR_RESET:
             irio_pio_rx_reset_mod_freq();
+            captured = 0;
+            overflow = false;
             state = AIR_IDLE;
             break;
         case AIR_IDLE:
@@ -255,8 +259,8 @@ bool irio_pio_rx_frame_buf(float *mod_freq, uint16_t *us, uint16_t *pairs, uint3
             if(!pio_sm_is_rx_fifo_empty(pio_config_rx_mark.pio, pio_config_rx_mark.sm)){
                 temp = (uint16_t)pio_sm_get(pio_config_rx_mark.pio, pio_config_rx_mark.sm);
                 if(temp!=0xffff) temp=(uint16_t)(0xffff-temp);
-                *pairs=0;
-                buffer[*pairs] = temp<<16; 
+                if (capacity == 0) return false;
+                buffer[captured] = temp<<16;
                 //*mod_freq=36000.0f; //todo: actual frequency measurement
                 state = AIR_SPACE;
             }
@@ -266,15 +270,20 @@ bool irio_pio_rx_frame_buf(float *mod_freq, uint16_t *us, uint16_t *pairs, uint3
                 temp = (uint16_t)pio_sm_get(pio_config_rx_space.pio, pio_config_rx_space.sm);
                 if(temp!=0xffff){
                     temp=(uint16_t)(0xffff-temp); 
-                    buffer[*pairs] |= temp;
-                    (*pairs)++;
+                    if (!overflow) {
+                        buffer[captured] |= temp;
+                        captured++;
+                    }
                     state = AIR_MARK;
                 }else{
-                    buffer[*pairs] |= temp;
-                    (*pairs)++;
+                    if (!overflow) {
+                        buffer[captured] |= temp;
+                        captured++;
+                    }
                     irio_pio_get_freq_mod(mod_freq, us);
                     state = AIR_RESET; //timeout, note final space and go to idle
-                    return true;
+                    *pairs = overflow ? 0 : captured;
+                    return !overflow;
                 } 
             }          
             break;
@@ -284,12 +293,17 @@ bool irio_pio_rx_frame_buf(float *mod_freq, uint16_t *us, uint16_t *pairs, uint3
                 temp = (uint16_t)pio_sm_get(pio_config_rx_space.pio, pio_config_rx_space.sm);
                 irio_pio_get_freq_mod(mod_freq, us);
                 state = AIR_RESET;
-                return true;
+                *pairs = overflow ? 0 : captured;
+                return !overflow;
             }
             if(!pio_sm_is_rx_fifo_empty(pio_config_rx_mark.pio, pio_config_rx_mark.sm)){
                 temp = (uint16_t)pio_sm_get(pio_config_rx_mark.pio, pio_config_rx_mark.sm);
                 if(temp!=0xffff) temp=(uint16_t)(0xffff-temp); 
-                buffer[*pairs] = temp<<16;
+                if (captured >= capacity) {
+                    overflow = true;
+                } else {
+                    buffer[captured] = temp<<16;
+                }
                 state = AIR_SPACE;
             }
             break;

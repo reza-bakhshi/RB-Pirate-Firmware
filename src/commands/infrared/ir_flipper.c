@@ -20,18 +20,18 @@
 static const char *flipper_name(int8_t proto, uint32_t sub) {
     switch (proto) {
         case 0: return "NEC";
-        case 1: // SONY
+        case 1: return "Samsung32";
+        case 2: return "LG";
+        case 3: // SONY
             if (sub == 15) return "SIRC15";
             if (sub == 20) return "SIRC20";
             return "SIRC";
-        case 2: return "RC5";
-        case 3: return "RC6";
-        case 4: return "Samsung32";
-        case 5: return "LG";
-        case 6: return "JVC";
-        case 7: return "Kaseikyo";
-        case 8: return "Sharp";
-        case 9: return "DISH";
+        case 4: return "JVC";
+        case 5: return "Kaseikyo";
+        case 6: return "RC5";
+        case 7: return "RC6";
+        case 8: return "DISH";
+        case 9: return "Sharp";
         default: return "UNKNOWN";
     }
 }
@@ -41,28 +41,32 @@ static int8_t flipper_to_engine(const char *name, uint32_t *sub) {
     *sub = 0;
     if (!strcasecmp(name, "SIRC15")) {
         *sub = 15;
-        return 1;
+        return 3;
     }
     if (!strcasecmp(name, "SIRC20")) {
         *sub = 20;
-        return 1;
+        return 3;
     }
     if (!strcasecmp(name, "NEC") || !strcasecmp(name, "NECext") || !strcasecmp(name, "NEC42")) return 0;
-    if (!strcasecmp(name, "SIRC")) return 1;
-    if (!strcasecmp(name, "RC5") || !strcasecmp(name, "RC5X")) return 2;
-    if (!strcasecmp(name, "RC6")) return 3;
-    if (!strcasecmp(name, "Samsung32")) return 4;
-    if (!strcasecmp(name, "LG")) return 5;
-    if (!strcasecmp(name, "JVC")) return 6;
-    if (!strcasecmp(name, "Kaseikyo") || !strcasecmp(name, "Panasonic")) return 7;
-    if (!strcasecmp(name, "Sharp")) return 8;
-    if (!strcasecmp(name, "DISH")) return 9;
+    if (!strcasecmp(name, "SIRC")) return 3;
+    if (!strcasecmp(name, "RC5") || !strcasecmp(name, "RC5X")) return 6;
+    if (!strcasecmp(name, "RC6")) return 7;
+    if (!strcasecmp(name, "Samsung32")) return 1;
+    if (!strcasecmp(name, "LG")) return 2;
+    if (!strcasecmp(name, "JVC")) return 4;
+    if (!strcasecmp(name, "Kaseikyo") || !strcasecmp(name, "Panasonic")) return 5;
+    if (!strcasecmp(name, "Sharp")) return 9;
+    if (!strcasecmp(name, "DISH")) return 8;
     // fall back to our own table names
     return ir_protocols_find(name);
 }
 
 static bool write_hex64(FIL *fil, uint32_t value) {
-    return (f_printf(fil, "%02lx 00 00 00 00 00 00 00", (unsigned long)value) > 0);
+    return (f_printf(fil, "%02lx %02lx %02lx %02lx 00 00 00 00",
+                     (unsigned long)(value & 0xff),
+                     (unsigned long)((value >> 8) & 0xff),
+                     (unsigned long)((value >> 16) & 0xff),
+                     (unsigned long)((value >> 24) & 0xff)) > 0);
 }
 
 bool ir_flipper_write_header_if_needed(FIL *fil) {
@@ -84,7 +88,7 @@ bool ir_flipper_write_signal(FIL *fil, const ir_signal_t *signal) {
             return false;
         }
     } else {
-        if (f_printf(fil, "type: raw\nfrequency: %lu\nduty_cycle: 0.330000\ndata: ", (unsigned long)signal->freq_khz) <= 0) {
+        if (f_printf(fil, "type: raw\nfrequency: %lu\nduty_cycle: 0.330000\ndata: ", (unsigned long)(signal->freq_khz * 1000)) <= 0) {
             return false;
         }
         for (uint16_t i = 0; i < signal->pairs; i++) {
@@ -122,16 +126,6 @@ static bool line_value(const char *line, const char *key, char *out, uint16_t ou
     }
     out[n] = 0;
     return true;
-}
-
-static bool is_data_continuation(const char *line) {
-    while (*line == ' ') {
-        line++;
-    }
-    if (*line == 0 || *line == '\r' || *line == '\n') {
-        return false;
-    }
-    return (*line >= '0' && *line <= '9');
 }
 
 // parse a "hex byte byte byte..." list into a little endian value
@@ -189,54 +183,60 @@ bool ir_flipper_read_signal(FIL *fil, uint32_t offset, ir_signal_t *signal) {
         } else if (line_value(line, "command:", value, sizeof(value))) {
             signal->cmd = parse_hex_bytes(value);
         } else if (line_value(line, "frequency:", value, sizeof(value))) {
-            signal->freq_khz = (uint32_t)atoi(value);
-        } else if (line_value(line, "data:", value, sizeof(value))) {
+            signal->freq_khz = (uint32_t)strtoul(value, NULL, 10) / 1000;
+        } else if (strncasecmp(line, "data:", 5) == 0) {
             have_raw = true;
-            // parse "m s m s ..." into pairs, the final mark closes the frame
-            char *s = value;
+            // FatFS can split a long data line across several f_gets calls.
+            // Keep the current number and mark across those chunks.
+            char *s = line + 5;
             bool want_mark = true;
             uint32_t mark = 0;
-            uint32_t num;
-            char *end;
-            while (*s) {
-                num = strtoul(s, &end, 10);
-                if (end == s) {
-                    break;
-                }
-                s = end;
-                if (want_mark) {
-                    mark = num;
-                    want_mark = false;
-                } else {
-                    if (signal->pairs < IR_CMD_MAX_PAIRS) {
-                        signal->data[signal->pairs++] = (mark << 16) | (num & 0xffff);
+            uint32_t number = 0;
+            bool in_number = false;
+            bool too_long = false;
+            while (true) {
+                while (*s) {
+                    if (*s >= '0' && *s <= '9') {
+                        in_number = true;
+                        number = number * 10 + (*s - '0');
+                    } else if (in_number) {
+                        if (number > 0xffff) return false;
+                        if (want_mark) {
+                            mark = number;
+                        } else if (signal->pairs < IR_CMD_MAX_PAIRS) {
+                            signal->data[signal->pairs++] = (mark << 16) | number;
+                        } else {
+                            too_long = true;
+                        }
+                        want_mark = !want_mark;
+                        number = 0;
+                        in_number = false;
                     }
-                    want_mark = true;
-                }
-                while (*s == ' ') {
                     s++;
                 }
-            }
-            // Flipper wraps long data lines: keep reading continuation lines
-            while (want_mark && f_gets(line, sizeof(line), fil) && is_data_continuation(line)) {
-                s = line;
-                while (*s) {
-                    while (*s == ' ') {
-                        s++;
-                    }
-                    if (*s < '0' || *s > '9') {
-                        break;
-                    }
-                    num = strtoul(s, &end, 10);
-                    if (end == s) {
-                        break;
-                    }
-                    s = end;
-                    if (signal->pairs < IR_CMD_MAX_PAIRS) {
-                        signal->data[signal->pairs++] = ((mark << 16) | (num & 0xffff));
-                    }
+                if (strchr(line, '\n') == NULL) {
+                    if (!f_gets(line, sizeof(line), fil)) break;
+                    s = line;
+                    continue;
                 }
+                if (!f_gets(line, sizeof(line), fil)) break;
+                s = line;
+                while (*s == ' ' || *s == '\t') s++;
+                if (*s < '0' || *s > '9') break;
             }
+            if (in_number) {
+                if (number > 0xffff) return false;
+                if (want_mark) mark = number;
+                else if (signal->pairs < IR_CMD_MAX_PAIRS) signal->data[signal->pairs++] = (mark << 16) | number;
+                else too_long = true;
+                want_mark = !want_mark;
+            }
+            if (!want_mark && signal->pairs < IR_CMD_MAX_PAIRS) {
+                signal->data[signal->pairs++] = mark << 16;
+            } else if (!want_mark) {
+                too_long = true;
+            }
+            if (too_long || signal->pairs == 0) return false;
             break; // data is the last field of a raw block
         } else if (line[0] == '#') {
             break; // end of block

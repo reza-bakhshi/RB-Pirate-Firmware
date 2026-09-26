@@ -35,20 +35,24 @@
 /** Maximum mark/space pairs in one encoded frame. */
 #define IR_MAX_PAIRS 96u
 
-/** Number of supported protocols in the table (must match ir_protocol_table[]). */
-#define IR_PROTOCOL_COUNT 13u
+/** Number of hand-written protocols at the top of the table (with decoders). */
+#define IR_PROTOCOL_HAND_COUNT 13u
 
 /** Decode sentinel: NEC-style repeat frame (holding a button). */
 #define IR_REPEAT_FRAME 0xFFFFFFFEul
 
+/** Send sentinel: sub-device not specified (protocol default is used). */
+#define IR_SUB_UNSPECIFIED 0xFFFFFFFFul
+
 typedef struct _ir_protocol_def {
     const char *display;  ///< display name, e.g. "NEC"
     const char *arg_name; ///< lowercase command line name, e.g. "nec"
-    uint32_t carrier_hz;  ///< TX carrier frequency in Hz
+    uint32_t carrier_hz;  ///< TX carrier frequency in Hz (0 = from MakeHex definition)
     uint8_t bits;         ///< nominal frame length in bits (display only)
     uint8_t default_repeats; ///< default number of frames per send
-    bool (*encode)(uint32_t dev, uint32_t sub, uint32_t cmd, uint32_t *pairs, uint16_t *count);
-    bool (*decode)(const uint32_t *pairs, uint16_t count, uint32_t *dev, uint32_t *sub, uint32_t *cmd);
+    bool (*encode)(uint32_t dev, uint32_t sub, uint32_t cmd, uint32_t *pairs, uint16_t *count); ///< NULL = MakeHex entry
+    bool (*decode)(const uint32_t *pairs, uint16_t count, uint32_t *dev, uint32_t *sub, uint32_t *cmd); ///< NULL = not auto-detected
+    const char *makehex_name; ///< MakeHex/IRP definition name (see lib/makehex), NULL if unused
 } ir_protocol_def_t;
 
 /** @brief Number of protocols in the table. */

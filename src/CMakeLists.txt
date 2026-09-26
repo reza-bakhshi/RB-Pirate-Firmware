@@ -432,6 +432,10 @@ set(buspirate_common
         commands/infrared/ir_config.h
         pirate/ir_protocols.c
         pirate/ir_protocols.h
+        lib/makehex/MakeHex.cpp
+        lib/makehex/MakeHex.h
+        lib/makehex/irp_definitions.c
+        lib/makehex/irp_definitions.h
         lib/picofreq/picofreq.c
         lib/picofreq/picofreq.h
         commands/infrared/irtxrx.c

@@ -23,6 +23,7 @@
 #include "mode/infrared-struct.h"
 #include "pirate/irio_pio.h"
 #include "pirate/ir_protocols.h"
+#include "lib/makehex/MakeHex.h"
 
 // ---------------------------------------------------------------------------
 // pair helpers
@@ -877,31 +878,157 @@ static bool dish_decode(const uint32_t *pairs, uint16_t count, uint32_t *dev, ui
 
 static const ir_protocol_def_t ir_protocol_table[] = {
     { .display = "NEC", .arg_name = "nec", .carrier_hz = 38000, .bits = 32, .default_repeats = 3,
-        .encode = nec_encode, .decode = nec_decode },
+        .encode = nec_encode, .decode = nec_decode, .makehex_name = NULL },
     { .display = "SAMSUNG", .arg_name = "samsung", .carrier_hz = 38000, .bits = 32, .default_repeats = 3,
-        .encode = samsung_encode, .decode = samsung_decode },
+        .encode = samsung_encode, .decode = samsung_decode, .makehex_name = NULL },
     { .display = "LG", .arg_name = "lg", .carrier_hz = 38000, .bits = 28, .default_repeats = 3,
-        .encode = lg_encode, .decode = lg_decode },
+        .encode = lg_encode, .decode = lg_decode, .makehex_name = NULL },
     { .display = "SONY", .arg_name = "sony", .carrier_hz = 40000, .bits = 12, .default_repeats = 3,
-        .encode = sony_encode, .decode = sony_decode },
+        .encode = sony_encode, .decode = sony_decode, .makehex_name = NULL },
     { .display = "JVC", .arg_name = "jvc", .carrier_hz = 38000, .bits = 16, .default_repeats = 3,
-        .encode = jvc_encode, .decode = jvc_decode },
+        .encode = jvc_encode, .decode = jvc_decode, .makehex_name = NULL },
     { .display = "PANASONIC", .arg_name = "panasonic", .carrier_hz = 37000, .bits = 48, .default_repeats = 3,
-        .encode = panasonic_encode, .decode = panasonic_decode },
+        .encode = panasonic_encode, .decode = panasonic_decode, .makehex_name = NULL },
     { .display = "RC5", .arg_name = "rc5", .carrier_hz = 36000, .bits = 14, .default_repeats = 3,
-        .encode = rc5_encode, .decode = rc5_decode },
+        .encode = rc5_encode, .decode = rc5_decode, .makehex_name = NULL },
     { .display = "RC6", .arg_name = "rc6", .carrier_hz = 36000, .bits = 16, .default_repeats = 3,
-        .encode = rc6_encode, .decode = rc6_decode },
+        .encode = rc6_encode, .decode = rc6_decode, .makehex_name = NULL },
     { .display = "DISH", .arg_name = "dish", .carrier_hz = 57600, .bits = 16, .default_repeats = 3,
-        .encode = dish_encode, .decode = dish_decode },
+        .encode = dish_encode, .decode = dish_decode, .makehex_name = NULL },
     { .display = "SHARP", .arg_name = "sharp", .carrier_hz = 38000, .bits = 15, .default_repeats = 3,
-        .encode = sharp_encode, .decode = sharp_decode },
+        .encode = sharp_encode, .decode = sharp_decode, .makehex_name = NULL },
     { .display = "DENON", .arg_name = "denon", .carrier_hz = 37000, .bits = 48, .default_repeats = 3,
-        .encode = denon_k_encode, .decode = denon_k_decode },
+        .encode = denon_k_encode, .decode = denon_k_decode, .makehex_name = NULL },
     { .display = "MITSUBISHI", .arg_name = "mitsubishi", .carrier_hz = 37000, .bits = 48, .default_repeats = 3,
-        .encode = mitsubishi_k_encode, .decode = mitsubishi_k_decode },
+        .encode = mitsubishi_k_encode, .decode = mitsubishi_k_decode, .makehex_name = NULL },
     { .display = "SHARPK", .arg_name = "sharpk", .carrier_hz = 37000, .bits = 48, .default_repeats = 3,
-        .encode = sharp_k_encode, .decode = sharp_k_decode },
+        .encode = sharp_k_encode, .decode = sharp_k_decode, .makehex_name = NULL },
+    // MakeHex/IRP protocol definitions (send only, ported from the IRDB
+    // MakeHex tools via the ESP32-Bit-Pirate project)
+    { .display = "DAC4", .arg_name = "dac4", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "DAC4" },
+    { .display = "Dell", .arg_name = "dell", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Dell" },
+    { .display = "Denon-K", .arg_name = "denon-k", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Denon-K" },
+    { .display = "Dgtec", .arg_name = "dgtec", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Dgtec" },
+    { .display = "DishPlayer_Network", .arg_name = "dishplayer_network", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "DishPlayer_Network" },
+    { .display = "Dreambox", .arg_name = "dreambox", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Dreambox" },
+    { .display = "Furby", .arg_name = "furby", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Furby" },
+    { .display = "GI4dtv", .arg_name = "gi4dtv", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "GI4dtv" },
+    { .display = "GI_cable", .arg_name = "gi_cable", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "GI_cable" },
+    { .display = "Jerrold", .arg_name = "jerrold", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Jerrold" },
+    { .display = "Kaseikyo", .arg_name = "kaseikyo", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Kaseikyo" },
+    { .display = "Kramer", .arg_name = "kramer", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Kramer" },
+    { .display = "Mitsubishi", .arg_name = "mitsubishi", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Mitsubishi" },
+    { .display = "NECx1", .arg_name = "necx1", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "NECx1" },
+    { .display = "NECx2", .arg_name = "necx2", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "NECx2" },
+    { .display = "Nokia32", .arg_name = "nokia32", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Nokia32" },
+    { .display = "Nokia32single", .arg_name = "nokia32single", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Nokia32single" },
+    { .display = "Polycom", .arg_name = "polycom", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Polycom" },
+    { .display = "Proton", .arg_name = "proton", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Proton" },
+    { .display = "Samsung20", .arg_name = "samsung20", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Samsung20" },
+    { .display = "Samsung36", .arg_name = "samsung36", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Samsung36" },
+    { .display = "TViX", .arg_name = "tvix", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "TViX" },
+    { .display = "Teac-K", .arg_name = "teac-k", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Teac-K" },
+    { .display = "Thomson", .arg_name = "thomson", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Thomson" },
+    { .display = "Tivo-Nec1", .arg_name = "tivo-nec1", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "Tivo-Nec1" },
+    { .display = "XMP", .arg_name = "xmp", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "XMP" },
+    { .display = "aiwa", .arg_name = "aiwa", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "aiwa" },
+    { .display = "async", .arg_name = "async", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "async" },
+    { .display = "blaupunkt", .arg_name = "blaupunkt", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "blaupunkt" },
+    { .display = "denon", .arg_name = "denon", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "denon" },
+    { .display = "emerson", .arg_name = "emerson", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "emerson" },
+    { .display = "f12", .arg_name = "f12", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "f12" },
+    { .display = "fujitsu", .arg_name = "fujitsu", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "fujitsu" },
+    { .display = "iPod", .arg_name = "ipod", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "iPod" },
+    { .display = "imonpc", .arg_name = "imonpc", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "imonpc" },
+    { .display = "jvc", .arg_name = "jvc", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "jvc" },
+    { .display = "jvc_two_frames", .arg_name = "jvc_two_frames", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "jvc_two_frames" },
+    { .display = "lumagen", .arg_name = "lumagen", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "lumagen" },
+    { .display = "mce", .arg_name = "mce", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "mce" },
+    { .display = "nec1", .arg_name = "nec1", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "nec1" },
+    { .display = "nec2", .arg_name = "nec2", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "nec2" },
+    { .display = "panasonic", .arg_name = "panasonic", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "panasonic" },
+    { .display = "panasonic_old", .arg_name = "panasonic_old", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "panasonic_old" },
+    { .display = "panasonic2", .arg_name = "panasonic2", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "panasonic2" },
+    { .display = "pioneer", .arg_name = "pioneer", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "pioneer" },
+    { .display = "pioneer2", .arg_name = "pioneer2", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "pioneer2" },
+    { .display = "rc5", .arg_name = "rc5", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "rc5" },
+    { .display = "rc5odd", .arg_name = "rc5odd", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "rc5odd" },
+    { .display = "rc5x", .arg_name = "rc5x", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "rc5x" },
+    { .display = "rc6-M-L", .arg_name = "rc6-m-l", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "rc6-M-L" },
+    { .display = "rc6", .arg_name = "rc6", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "rc6" },
+    { .display = "rca", .arg_name = "rca", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "rca" },
+    { .display = "recs80_45", .arg_name = "recs80_45", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "recs80_45" },
+    { .display = "recs80_68", .arg_name = "recs80_68", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "recs80_68" },
+    { .display = "russound", .arg_name = "russound", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "russound" },
+    { .display = "sagem", .arg_name = "sagem", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "sagem" },
+    { .display = "sharp", .arg_name = "sharp", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "sharp" },
+    { .display = "sony20", .arg_name = "sony20", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "sony20" },
+    { .display = "sony15", .arg_name = "sony15", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "sony15" },
+    { .display = "sony12", .arg_name = "sony12", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "sony12" },
+    { .display = "streamzap", .arg_name = "streamzap", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "streamzap" },
+    { .display = "x10ir", .arg_name = "x10ir", .carrier_hz = 0, .bits = 0, .default_repeats = 1,
+        .encode = NULL, .decode = NULL, .makehex_name = "x10ir" },
 };
 
 uint8_t ir_protocols_count(void) {
@@ -936,10 +1063,22 @@ bool ir_protocols_send(uint8_t idx, uint32_t dev, uint32_t sub, uint32_t cmd, ui
     uint16_t count;
     for (uint8_t r = 0; r < repeats; r++) {
         count = 0;
-        if (!proto->encode(dev, sub, cmd, pairs, &count)) {
+        uint32_t carrier_hz = proto->carrier_hz;
+        if (proto->encode != NULL) {
+            if (!proto->encode(dev, sub, cmd, pairs, &count)) {
+                return false;
+            }
+        } else if (proto->makehex_name != NULL) {
+            // MakeHex/IRP definition: generates the pairs and the carrier
+            int32_t sub_val = (sub == IR_SUB_UNSPECIFIED) ? -1 : (int32_t)sub;
+            if (!makehex_generate(proto->makehex_name, (int32_t)dev, sub_val, (int32_t)cmd,
+                                  pairs, &count, IR_MAX_PAIRS, &carrier_hz)) {
+                return false;
+            }
+        } else {
             return false;
         }
-        irio_pio_tx_frame_write((float)proto->carrier_hz, count, pairs);
+        irio_pio_tx_frame_write((float)carrier_hz, count, pairs);
         if (r < (repeats - 1)) {
             busy_wait_us(30000); // inter-frame gap on top of the encoded tail
         }
@@ -950,6 +1089,9 @@ bool ir_protocols_send(uint8_t idx, uint32_t dev, uint32_t sub, uint32_t cmd, ui
 bool ir_protocols_decode(const uint32_t *pairs, uint16_t count, int8_t *idx, uint32_t *dev, uint32_t *sub, uint32_t *cmd) {
     *idx = -1;
     for (uint8_t i = 0; i < count_of(ir_protocol_table); i++) {
+        if (ir_protocol_table[i].decode == NULL) {
+            continue; // send-only (MakeHex) protocol
+        }
         if (ir_protocol_table[i].decode(pairs, count, dev, sub, cmd)) {
             *idx = (int8_t)i;
             return true;

@@ -25,9 +25,21 @@
 #include "pirate/storage.h"
 #include "ui/ui_term.h"
 #include "pirate/rc5_pio.h"
+#include "pirate/ir_protocols.h"
 #include "commands/infrared/tvbgone.h"
 #include "pirate/irio_pio.h"
 #include "commands/infrared/irtxrx.h"
+#include "commands/infrared/ir_send.h"
+#include "commands/infrared/ir_receive.h"
+#include "commands/infrared/ir_setprotocol.h"
+#include "commands/infrared/ir_devicebgone.h"
+#include "commands/infrared/ir_remote.h"
+#include "commands/infrared/ir_record.h"
+#include "commands/infrared/ir_load.h"
+#include "commands/infrared/ir_replay.h"
+#include "commands/infrared/ir_jam.h"
+#include "commands/infrared/ir_config.h"
+#include "commands/infrared/ir_common.h"
 #include "lib/bp_args/bp_cmd.h"
 
 static const char* const irtoy_test_usage[] = {
@@ -187,7 +199,57 @@ const struct _mode_command_struct infrared_commands[] = {
         .func=&irrx_handler,
         .def=&irrx_def,
         .supress_fala_capture=false
-    }    
+    },
+    {
+        .func=&ir_send_handler,
+        .def=&ir_send_def,
+        .supress_fala_capture=false
+    },
+    {
+        .func=&ir_receive_handler,
+        .def=&ir_receive_def,
+        .supress_fala_capture=false
+    },
+    {
+        .func=&ir_setprotocol_handler,
+        .def=&ir_setprotocol_def,
+        .supress_fala_capture=false
+    },
+    {
+        .func=&ir_devicebgone_handler,
+        .def=&ir_devicebgone_def,
+        .supress_fala_capture=true
+    },
+    {
+        .func=&ir_remote_handler,
+        .def=&ir_remote_def,
+        .supress_fala_capture=true
+    },
+    {
+        .func=&ir_record_handler,
+        .def=&ir_record_def,
+        .supress_fala_capture=false
+    },
+    {
+        .func=&ir_load_handler,
+        .def=&ir_load_def,
+        .supress_fala_capture=false
+    },
+    {
+        .func=&ir_replay_handler,
+        .def=&ir_replay_def,
+        .supress_fala_capture=false
+    },
+    {
+        .func=&ir_jam_handler,
+        .def=&ir_jam_def,
+        .supress_fala_capture=true
+    },
+    {
+        .func=&ir_config_handler,
+        .def=&ir_config_def,
+        .supress_fala_capture=false
+    }
 };
 const uint32_t infrared_commands_count = count_of(infrared_commands);
 
@@ -198,10 +260,30 @@ static const char pin_labels[][5]={
     "BARR",
     "IRTX",
     "38k",
-    "56k"
+    "56k",
+    "IRRX"
 };
 
 static const uint8_t ir_rx_pins[] = {BIO3, BIO5, BIO7};
+
+static const char infrared_config_file[] = "bpirrxtx.bp";
+
+// mode configuration descriptors for load/save
+static const mode_config_t infrared_config[] = {
+    // clang-format off
+    { "$.protocol", &mode_config.protocol, MODE_CONFIG_FORMAT_DECIMAL },
+    { "$.sensor", &mode_config.rx_sensor, MODE_CONFIG_FORMAT_DECIMAL },
+    { "$.freq", &mode_config.tx_freq, MODE_CONFIG_FORMAT_DECIMAL },
+    { "$.txpin", &mode_config.tx_pin, MODE_CONFIG_FORMAT_DECIMAL },
+    { "$.rxpin", &mode_config.rx_pin, MODE_CONFIG_FORMAT_DECIMAL },
+    { "$.engine", &mode_config.engine_protocol, MODE_CONFIG_FORMAT_DECIMAL },
+    // clang-format on
+};
+
+// save the mode configuration to flash
+static void infrared_save_config(void) {
+    storage_save_mode(infrared_config_file, infrared_config, count_of(infrared_config));
+}
 
 // Protocol — flag -p / --protocol
 static const bp_val_choice_t infrared_protocol_choices[] = {
@@ -248,7 +330,6 @@ const bp_command_def_t infrared_setup_def = {
     .opts = infrared_setup_opts,
 };
 
-static struct _infrared_mode_config mode_config;
 // Pre-setup step. Show user menus for any configuration options.
 // The Bus Pirate hardware is not "clean" and reset at this point.
 // Any previous mode may still be running. This is only a configuration step,
@@ -257,14 +338,10 @@ static struct _infrared_mode_config mode_config;
 uint32_t infrared_setup(void) {
     uint32_t temp;
 
-    const char config_file[] = "bpirrxtx.bp";
-    const mode_config_t config_t[] = {
-        // clang-format off
-        { "$.protocol", &mode_config.protocol, MODE_CONFIG_FORMAT_DECIMAL },
-        { "$.sensor", &mode_config.rx_sensor, MODE_CONFIG_FORMAT_DECIMAL },
-        { "$.freq", &mode_config.tx_freq, MODE_CONFIG_FORMAT_DECIMAL },
-        // clang-format on
-    };
+    // defaults for settings that may be missing in older configuration files
+    mode_config.tx_pin = BIO4;
+    mode_config.rx_pin = BIO5;
+    mode_config.engine_protocol = 0; // NEC
 
     // Detect interactive vs CLI mode by checking the primary flag
     bp_cmd_status_t st = bp_cmd_flag(&infrared_setup_def, 'p', &temp);
@@ -272,7 +349,7 @@ uint32_t infrared_setup(void) {
     bool interactive = (st == BP_CMD_MISSING);
 
     if (interactive) {
-        if (storage_load_mode(config_file, config_t, count_of(config_t))) {
+        if (storage_load_mode(infrared_config_file, infrared_config, count_of(infrared_config))) {
             printf("\r\n\r\n%s%s%s\r\n", ui_term_color_info(), GET_T(T_USE_PREVIOUS_SETTINGS), ui_term_color_reset());
             infrared_settings();
             int r = bp_cmd_yes_no_exit("");
@@ -309,7 +386,10 @@ uint32_t infrared_setup(void) {
         mode_config.rx_sensor = temp;
     }
 
-    storage_save_mode(config_file, config_t, count_of(config_t));
+    // resolve the RX preset to the actual RX pin
+    mode_config.rx_pin = ir_rx_pins[mode_config.rx_sensor];
+
+    infrared_save_config();
 
     return 1;
 }
@@ -320,27 +400,29 @@ uint32_t infrared_setup_exc(void) {
     bio_input(BIO3); // 38kHz barrier
     bio_input(BIO5); // 36-40kHz demodulator
     bio_input(BIO7); // 56kHz modulator
-    bio_buf_output(BIO4); // IR TX
+    bio_input(mode_config.rx_pin); // configured RX sensor
+    bio_buf_output(mode_config.tx_pin); // IR TX
 
     //claim and label pins
     system_bio_update_purpose_and_label(true, BIO1, BP_PIN_IO, pin_labels[0]);
     system_bio_update_purpose_and_label(true, BIO3, BP_PIN_IO, pin_labels[1]);
-    system_bio_update_purpose_and_label(true, BIO4, BP_PIN_IO, pin_labels[2]);
+    system_bio_update_purpose_and_label(true, mode_config.tx_pin, BP_PIN_IO, pin_labels[2]);
     system_bio_update_purpose_and_label(true, BIO5, BP_PIN_IO, pin_labels[3]);
     system_bio_update_purpose_and_label(true, BIO7, BP_PIN_IO, pin_labels[4]);
-
+    if (mode_config.rx_pin != BIO1 && mode_config.rx_pin != BIO3 && mode_config.rx_pin != BIO5 && mode_config.rx_pin != BIO7) {
+        system_bio_update_purpose_and_label(true, mode_config.rx_pin, BP_PIN_IO, pin_labels[5]);
+    }
 
     // configure and enable the state machines
-    int status = ir_protocol[mode_config.protocol].irtx_init(bio2bufiopin[BIO4], mode_config.tx_freq); // uses two state machines, 16 instructions and one IRQ
+    int status = ir_protocol[mode_config.protocol].irtx_init(bio2bufiopin[mode_config.tx_pin], mode_config.tx_freq); // uses two state machines, 16 instructions and one IRQ
     if (status < 0) {
         printf("Failed to initialize TX PIO\r\n");
     }
-    status = ir_protocol[mode_config.protocol].irrx_init(bio2bufiopin[ir_rx_pins[mode_config.rx_sensor]]);
+    status = ir_protocol[mode_config.protocol].irrx_init(bio2bufiopin[mode_config.rx_pin]);
     if (status < 0) {
         printf("Failed to initialize RX PIO\r\n");
     }
     device_cleanup = mode_config.protocol;
-    //system_config.subprotocol_name = ir_protocol_type[mode_config.protocol];
     system_config.subprotocol_name = ir_protocol[mode_config.protocol].display_name;
     system_config.num_bits=ir_protocol[mode_config.protocol].num_bits;
     return 1;
@@ -351,32 +433,37 @@ bool infrared_preflight_sanity_check(void){
 }
 
 void infrared_setup_resume(void){
+    bio_input(mode_config.rx_pin); // configured RX sensor
+    bio_buf_output(mode_config.tx_pin); // IR TX
     // configure and enable the state machines
-    int status = ir_protocol[mode_config.protocol].irtx_init(bio2bufiopin[BIO4], mode_config.tx_freq); // uses two state machines, 16 instructions and one IRQ
+    int status = ir_protocol[mode_config.protocol].irtx_init(bio2bufiopin[mode_config.tx_pin], mode_config.tx_freq); // uses two state machines, 16 instructions and one IRQ
     if (status < 0) {
         printf("Failed to initialize TX PIO\r\n");
     }
-    status = ir_protocol[mode_config.protocol].irrx_init(bio2bufiopin[ir_rx_pins[mode_config.rx_sensor]]);
+    status = ir_protocol[mode_config.protocol].irrx_init(bio2bufiopin[mode_config.rx_pin]);
     if (status < 0) {
         printf("Failed to initialize RX PIO\r\n");
     }
 }
 
 void infrared_cleanup_temp(void) {
-    ir_protocol[device_cleanup].irtx_deinit(bio2bufiopin[BIO4]);
-    ir_protocol[device_cleanup].irrx_deinit(bio2bufiopin[ir_rx_pins[mode_config.rx_sensor]]);
+    ir_protocol[device_cleanup].irtx_deinit(bio2bufiopin[mode_config.tx_pin]);
+    ir_protocol[device_cleanup].irrx_deinit(bio2bufiopin[mode_config.rx_pin]);
 }
 
 // Cleanup any configuration on exit.
 void infrared_cleanup(void) {
-    ir_protocol[device_cleanup].irtx_deinit(bio2bufiopin[BIO4]);
-    ir_protocol[device_cleanup].irrx_deinit(bio2bufiopin[ir_rx_pins[mode_config.rx_sensor]]);
+    ir_protocol[device_cleanup].irtx_deinit(bio2bufiopin[mode_config.tx_pin]);
+    ir_protocol[device_cleanup].irrx_deinit(bio2bufiopin[mode_config.rx_pin]);
     // unclaim pins
     system_bio_update_purpose_and_label(false, BIO1, BP_PIN_IO, pin_labels[0]);
     system_bio_update_purpose_and_label(false, BIO3, BP_PIN_IO, pin_labels[1]);
-    system_bio_update_purpose_and_label(false, BIO4, BP_PIN_IO, pin_labels[2]);
+    system_bio_update_purpose_and_label(false, mode_config.tx_pin, BP_PIN_IO, pin_labels[2]);
     system_bio_update_purpose_and_label(false, BIO5, BP_PIN_IO, pin_labels[3]);
     system_bio_update_purpose_and_label(false, BIO7, BP_PIN_IO, pin_labels[4]);
+    if (mode_config.rx_pin != BIO1 && mode_config.rx_pin != BIO3 && mode_config.rx_pin != BIO5 && mode_config.rx_pin != BIO7) {
+        system_bio_update_purpose_and_label(false, mode_config.rx_pin, BP_PIN_IO, pin_labels[5]);
+    }
     // 1. Disable any hardware you used
     bio_init();
     system_config.subprotocol_name = 0x00;
@@ -436,11 +523,72 @@ void infrared_help(void) {
 }
 
 uint32_t infrared_get_speed(void) {
-    return mode_config.tx_freq * 1000;
+    return mode_config.tx_freq;
+}
+
+// shared configuration accessors used by the INFRARED mode commands
+uint8_t infrared_get_tx_pin(void) {
+    return (uint8_t)mode_config.tx_pin;
+}
+
+uint8_t infrared_get_rx_pin(void) {
+    return (uint8_t)mode_config.rx_pin;
+}
+
+uint8_t infrared_get_engine_protocol(void) {
+    return (uint8_t)mode_config.engine_protocol;
+}
+
+bool infrared_set_engine_protocol(uint8_t idx) {
+    if (idx >= ir_protocols_count()) {
+        return false;
+    }
+    mode_config.engine_protocol = idx;
+    infrared_save_config();
+    return true;
+}
+
+bool infrared_set_pins(uint8_t tx_bio, uint8_t rx_bio) {
+    if (tx_bio > 7 || rx_bio > 7) {
+        return false;
+    }
+    // tear down the mode PIO programs (they run on the old pins)
+    if (!ir_cmd_hw_active()) {
+        infrared_cleanup_temp();
+    }
+    // release the pin labels of the previous pins
+    if (tx_bio != mode_config.tx_pin) {
+        system_bio_update_purpose_and_label(false, mode_config.tx_pin, BP_PIN_IO, pin_labels[2]);
+    }
+    if (rx_bio != mode_config.rx_pin && rx_bio != BIO1 && rx_bio != BIO3 && rx_bio != BIO5 && rx_bio != BIO7) {
+        system_bio_update_purpose_and_label(false, mode_config.rx_pin, BP_PIN_IO, pin_labels[5]);
+    }
+    mode_config.tx_pin = tx_bio;
+    mode_config.rx_pin = rx_bio;
+    // keep the RX sensor preset in sync when the pin is a known sensor
+    for (uint8_t i = 0; i < count_of(ir_rx_pins); i++) {
+        if (ir_rx_pins[i] == rx_bio) {
+            mode_config.rx_sensor = i;
+            break;
+        }
+    }
+    infrared_save_config();
+    if (!ir_cmd_hw_active()) {
+        // update labels and restart the mode PIO programs on the new pins
+        system_bio_update_purpose_and_label(true, tx_bio, BP_PIN_IO, pin_labels[2]);
+        if (rx_bio != BIO1 && rx_bio != BIO3 && rx_bio != BIO5 && rx_bio != BIO7) {
+            system_bio_update_purpose_and_label(true, rx_bio, BP_PIN_IO, pin_labels[5]);
+        }
+        infrared_setup_resume();
+    }
+    return true;
 }
 
 void infrared_settings(void) {
     ui_help_setting_string(GET_T(T_IR_PROTOCOL_MENU), GET_T(infrared_protocol_choices[mode_config.protocol].label), 0x00);
     ui_help_setting_string(GET_T(T_IR_RX_SENSOR_MENU), GET_T(infrared_rxsensor_choices[mode_config.rx_sensor].label), 0x00);
     ui_help_setting_int(GET_T(T_IR_TX_SPEED_MENU), mode_config.tx_freq/1000, GET_T(T_KHZ));
+    ui_help_setting_string(GET_T(T_IR_CMD_SETPROTOCOL), ir_protocols_get(mode_config.engine_protocol)->display, 0x00);
+    ui_help_setting_int(GET_T(T_IR_PIN_TX), mode_config.tx_pin, 0x00);
+    ui_help_setting_int(GET_T(T_IR_PIN_RX), mode_config.rx_pin, 0x00);
 }

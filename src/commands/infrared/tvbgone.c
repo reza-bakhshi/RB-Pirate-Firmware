@@ -137,10 +137,10 @@ void tvbgone_player(struct command_result *res){
 	//clean up the PIO stuff:
 	infrared_cleanup_temp();
 
-	uint slice_num = pwm_gpio_to_slice_num(bio2bufiopin[BIO4]); 
-	uint chan_num = pwm_gpio_to_channel(bio2bufiopin[BIO4]);
+	uint slice_num = pwm_gpio_to_slice_num(bio2bufiopin[infrared_get_tx_pin()]); 
+	uint chan_num = pwm_gpio_to_channel(bio2bufiopin[infrared_get_tx_pin()]);
 	pwm_set_enabled(slice_num, false);
-	gpio_set_function(bio2bufiopin[BIO4], GPIO_FUNC_PWM);
+	gpio_set_function(bio2bufiopin[infrared_get_tx_pin()], GPIO_FUNC_PWM);
 
 	printf("TVBGONE player\r\nPlaying %d TV off codes:\r\n", num_NAcodes);
 
@@ -172,7 +172,7 @@ void tvbgone_player(struct command_result *res){
 			pwm_set_wrap(slice_num, pwm_top);
 			pwm_set_chan_level(slice_num, chan_num, pwm_top>>1); //50%
 			// enable output
-			gpio_set_function(bio2bufiopin[BIO4], GPIO_FUNC_PWM);
+			gpio_set_function(bio2bufiopin[infrared_get_tx_pin()], GPIO_FUNC_PWM);
 			pwm_set_enabled(slice_num, true);
 		}else{//some don't use PWM, setup for direct on/off
 			//these don't exist in our dataset...

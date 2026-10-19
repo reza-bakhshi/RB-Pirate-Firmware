@@ -117,23 +117,24 @@ extern const uint8_t bio2bufdirpin[8];
 #define BP_SPI_CDO 35 //19
 
 // NAND flash is on the BP_SPI_PORT, define Chip Select
-#define FLASH_STORAGE_CS 30 //26 
+#define FLASH_STORAGE_CS 31 // CARD_CS (Pin 39)
+#define CARD_CS FLASH_STORAGE_CS
 
 
 //pull-up resistor control
-#define PULLUP_EN           42
+#define PULLUP_EN           37 // PULLUP_EN_3V3 (Pin 46)
 
 // Controller data out to SK6812 RGB LEDs
-#define RGB_CDO 36 //17
+#define RGB_CDO 42 // RGB_CDO (Pin 53, C2/ADC2)
 // The number of SK6812 LEDs in the string
 #define RGB_LEN 18 
 
 //PWM based PSU control pins
 #define PSU_PWM_CURRENT_ADJ 45 //10B
 #define PSU_PWM_VREG_ADJ 44 //10A
-#define CURRENT_EN          18
-#define CURRENT_RESET       16
-#define CURRENT_EN_OVERRIDE 19
+#define CURRENT_EN          19 // CURRENT_EN (Pin 19)
+#define CURRENT_RESET       16 // CURRENT_RESET (Pin 16)
+#define CURRENT_EN_OVERRIDE 18 // CURRENT_EN_OVERRIDE (Pin 18)
 #define CURRENT_FUSE_DETECT 17 
 
 //Look behind logic analyzer buffer
@@ -158,10 +159,10 @@ extern const uint8_t bio2bufdirpin[8];
 #define EXT1 43 //27
 
 // on bp6 AMUX is controlled directly by MCU pins
-#define AMUX_S0             38
-#define AMUX_S1             39
-#define AMUX_S2             40
-#define AMUX_S3             41
+#define AMUX_S0             40 // AMUX_S0_3V3 (Pin 49, C0/ADC0)
+#define AMUX_S1             41 // AMUX_S1_3V3 (Pin 52, C1/ADC1)
+#define AMUX_S2             39 // AMUX_S2_3V3 (Pin 48)
+#define AMUX_S3             38 // AMUX_S3_3V3 (Pin 47)
 
 // A 74HCT4067 selects one of 16 analog sources to measure 
 // (voltage is divided by 2 with a buffered resistor divider)

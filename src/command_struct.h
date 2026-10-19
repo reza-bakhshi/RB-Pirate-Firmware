@@ -4,6 +4,9 @@
  * @details Defines structures for global and mode-specific command handling.
  */
 
+#ifndef BP_COMMAND_STRUCT_H
+#define BP_COMMAND_STRUCT_H
+
 #define MAX_COMMAND_LENGTH 10
 
 /* Forward declare bp_command_def_t so we don't force-include bp_cmd.h everywhere */
@@ -79,3 +82,5 @@ struct command_attributes {
     uint32_t dot;           /**< Value after . */
     uint32_t colon;         /**< Value after : */
 };
+
+#endif

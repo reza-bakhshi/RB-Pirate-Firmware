@@ -670,6 +670,17 @@ enum T_translations{
     T_HDUART_LISTEN_MENU,
     T_HDUART_LISTEN_MENU_1,
     T_HDUART_LISTEN_MENU_2,
+    T_HELP_CELL_MODEM,
+    T_HELP_CELL_NETWORK,
+    T_HELP_CELL_OPERATOR,
+    T_HELP_CELL_SIM,
+    T_HELP_CELL_UNLOCK,
+    T_HELP_CELL_PHONEBOOK,
+    T_HELP_CELL_SMS,
+    T_HELP_CELL_CALL,
+    T_HELP_CELL_USSD,
+    T_HELP_CELL_SETMODE,
+    T_HELP_CELL_AT,
 
 	T_LAST_ITEM_ALWAYS_AT_THE_END //LEAVE THIS ITEM AT THE END!!! It helps the compiler report errors if there are missing translations
 };

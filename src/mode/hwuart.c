@@ -42,6 +42,7 @@
 #include "commands/uart/bridge.h"
 #include "commands/uart/monitor.h"
 #include "commands/uart/glitch.h"
+#include "commands/cell/cell.h"
 #include "lib/bp_args/bp_cmd.h"
 
 static struct _uart_mode_config mode_config;
@@ -82,6 +83,51 @@ const struct _mode_command_struct hwuart_commands[] = {
     {   .func=&uart_glitch_handler,
         .def=&uart_glitch_def,
         .supress_fala_capture=false
+    },
+    // CELL: SIMCom-style AT cellular modem commands
+    {   .func=&cell_modem_handler,
+        .def=&cell_modem_def,
+        .supress_fala_capture=true
+    },
+    {   .func=&cell_network_handler,
+        .def=&cell_network_def,
+        .supress_fala_capture=true
+    },
+    {   .func=&cell_operator_handler,
+        .def=&cell_operator_def,
+        .supress_fala_capture=true
+    },
+    {   .func=&cell_sim_handler,
+        .def=&cell_sim_def,
+        .supress_fala_capture=true
+    },
+    {   .func=&cell_unlock_handler,
+        .def=&cell_unlock_def,
+        .supress_fala_capture=true
+    },
+    {   .func=&cell_phonebook_handler,
+        .def=&cell_phonebook_def,
+        .supress_fala_capture=true
+    },
+    {   .func=&cell_sms_handler,
+        .def=&cell_sms_def,
+        .supress_fala_capture=true
+    },
+    {   .func=&cell_call_handler,
+        .def=&cell_call_def,
+        .supress_fala_capture=true
+    },
+    {   .func=&cell_ussd_handler,
+        .def=&cell_ussd_def,
+        .supress_fala_capture=true
+    },
+    {   .func=&cell_setmode_handler,
+        .def=&cell_setmode_def,
+        .supress_fala_capture=true
+    },
+    {   .func=&cell_at_handler,
+        .def=&cell_at_def,
+        .supress_fala_capture=true
     },
 };
 const uint32_t hwuart_commands_count = count_of(hwuart_commands);

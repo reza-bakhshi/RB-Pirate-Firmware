@@ -76,6 +76,7 @@ static const uint32_t legacy_spi_speeds[] = {
 #define LEGACY_SPI_ENTRY_SPEED 125000
 #define LEGACY_IDLE_RESYNC_US 100000
 #define LEGACY_PAYLOAD_TIMEOUT_MS 3000
+#define LEGACY_AVR_RESET_WAIT_MS 20
 
 static float psu_voltage = 0.0f; // PSU voltage in volts
 static float psu_current_limit = 0.0f; // PSU current limit in amps
@@ -342,7 +343,6 @@ void legacy_protocol(void) {
     uint8_t extended_info;
     uint8_t count_zero = 0;
     uint32_t spi_speed = 0;
-    uint8_t cs_init = 0x01;
     absolute_time_t last_op_time;
 
     legacy_abort = false;
@@ -471,7 +471,7 @@ void legacy_protocol(void) {
                     printf("\r\nSPI1->");
                 }
                 spi_speed = LEGACY_SPI_ENTRY_SPEED;
-                setup_spi_legacy(spi_speed, 8, 0, 0, cs_init);
+                setup_spi_legacy(spi_speed, 8, 0, 0, 1);
                 spi_mode_active = true;
                 CDC_SEND_STR(1, "SPI1");
             } break;
@@ -490,12 +490,16 @@ void legacy_protocol(void) {
                 if ((extended_info & 0b00001000) == 0) {
                     psu_started = false;
                     disable_psu_legacy();
-                } else {
+                } else if (!psu_started || !psu_status.enabled) {
+                    // Only switch it on when it is off, as the original Bus Pirate did:
+                    // psucmd_enable() switches the supply off and on again and then waits
+                    // 0.5s, so each 0x4x with the supply on cut the target's power for a moment.
                     uint32_t result = psucmd_enable(psu_voltage, psu_current_limit, false, 100);
                     if (result) {
                         psu_started = false;
                         psu_last_error = result;
-                        psu_failed = true;
+                        // Backflow: VOUT is already above the set voltage, so the target has its own power.
+                        psu_failed = (result != PSU_ERROR_BACKFLOW);
                         legacy_print("\r\nPSU ERROR: target is NOT powered by the Bus Pirate.\r\n");
                     } else {
                         psu_started = true;
@@ -529,20 +533,29 @@ void legacy_protocol(void) {
                     }
                 }
 
-                // CS
+                // CS, driven right away as on the original Bus Pirate. avrdude drives the
+                // AVR's RESET with this bit and sends Programming Enable right after the
+                // reply. The AVR datasheets want at least 20ms between RESET going low and
+                // Programming Enable; a Bus Pirate v3 took about 30ms there over its USB serial link.
                 if ((extended_info & 0b00000001) == 0) {
                     if (binmode_debug) {
                         printf("\r\ncs 0");
                     }
-                    cs_init = 0x00;
+                    if (spi_mode_active && spi_configured && bio_get(M_SPI_CS)) {
+                        hwspi_select();
+                        busy_wait_ms(LEGACY_AVR_RESET_WAIT_MS);
+                    }
                 } else {
                     if (binmode_debug) {
                         printf("\r\ncs 1");
                     }
-                    cs_init = 0x01;
+                    if (spi_mode_active && spi_configured) {
+                        hwspi_deselect();
+                    }
                 }
 
-                // 0x00 is failure in the binary protocol: the host stops instead of probing an unpowered chip.
+                // 0x00 is failure in the binary protocol: flashrom stops instead of probing an
+                // unpowered chip (avrdude ignores the reply).
                 if (psu_failed) {
                     CDC_SEND_STR(1, "\x00");
                 } else {
@@ -623,8 +636,7 @@ void legacy_protocol(void) {
                 }
                 uint8_t cpol = (extended_info & 0x4) ? 1 : 0;
                 uint8_t cpha = (extended_info & 0x2) ? 0 : 1;
-                setup_spi_legacy(spi_speed, 8, cpol, cpha, cs_init);
-                hwspi_select();
+                setup_spi_legacy(spi_speed, 8, cpol, cpha, 1);
                 CDC_SEND_STR(1, "\x01");
             } break;
 

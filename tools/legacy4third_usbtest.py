@@ -34,8 +34,11 @@ BEFORE RUNNING
   2. Pass the SECOND CDC port of the Bus Pirate with --port (use --list).
 
 SAFETY
-  The normal suites only use opcodes 0x05 and 0x10, which never assert CS#, and
-  leave the power supply off, so a flash chip on the bus is never selected.
+  The normal suites clock the bus only with 0x05, 0x10 and the AVR bulk read
+  (0x06 0x02), none of which touch CS#, and keep the power supply off. CS# goes
+  low only without clocks: 0x02 in the framing suite and the CS bit of the 0x4x
+  sweep. A flash chip on the bus is selected for a moment but never receives a
+  command.
   --use-cs and --fuzz are different: --use-cs drives real selected transactions,
   and the fuzzer sends random opcodes which can toggle the power supply, the
   pull-ups and the pin directions. Run those with nothing attached.
@@ -1141,7 +1144,7 @@ def main():
     print("  binary port    %s" % args.port)
     print("  terminal port  %s" % (args.terminal or "not given, exit prompt tests skipped"))
     print("  loopback       %s" % ("yes (IO7 -> IO4)" if args.loopback else "no (framing only)"))
-    print("  chip select    %s" % ("0x04, CS# asserted" if args.use_cs else "0x05, CS# never asserted"))
+    print("  chip select    %s" % ("0x04, CS# asserted" if args.use_cs else "0x05, no CS# during transfers"))
     print("  power supply   %s" % ("on" if args.psu else "off"))
     print("  spi speed idx  %d" % args.spispeed)
     if args.use_cs:

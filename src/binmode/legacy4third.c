@@ -486,6 +486,7 @@ void legacy_protocol(void) {
                     set_planks_auxpins(true);
                 }
 
+                bool psu_failed = false;
                 if ((extended_info & 0b00001000) == 0) {
                     psu_started = false;
                     disable_psu_legacy();
@@ -494,6 +495,7 @@ void legacy_protocol(void) {
                     if (result) {
                         psu_started = false;
                         psu_last_error = result;
+                        psu_failed = true;
                         legacy_print("\r\nPSU ERROR: target is NOT powered by the Bus Pirate.\r\n");
                     } else {
                         psu_started = true;
@@ -540,7 +542,12 @@ void legacy_protocol(void) {
                     cs_init = 0x01;
                 }
 
-                CDC_SEND_STR(1, "\x01");
+                // 0x00 is failure in the binary protocol: the host stops instead of probing an unpowered chip.
+                if (psu_failed) {
+                    CDC_SEND_STR(1, "\x00");
+                } else {
+                    CDC_SEND_STR(1, "\x01");
+                }
             } break;
 
             case 0x60: {

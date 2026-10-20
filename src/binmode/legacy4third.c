@@ -488,6 +488,8 @@ void legacy_protocol(void) {
 
                 bool psu_failed = false;
                 if ((extended_info & 0b00001000) == 0) {
+                    // Clear psu_started, or the PSU FAULT check at the top of the loop
+                    // would take this requested power off for a tripped fuse.
                     psu_started = false;
                     disable_psu_legacy();
                 } else if (!psu_started || !psu_status.enabled) {

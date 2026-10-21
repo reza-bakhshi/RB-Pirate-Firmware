@@ -45,6 +45,8 @@
 #include "commands/global/cmd_mcu.h"
 #include "hardware/spi.h"
 #include "hardware/sync.h"
+#include "hardware/pio.h"
+#include "hardware/clocks.h"
 #include "pirate/psu.h"
 
 const char legacy4third_mode_name[] = "Legacy Binary Mode for Flashrom and AVRdude";
@@ -78,6 +80,12 @@ static const uint32_t legacy_spi_speeds[] = {
 #define LEGACY_PAYLOAD_TIMEOUT_MS 3000
 #define LEGACY_AVR_RESET_WAIT_MS 20
 
+// avrdude -x cpufreq asks for a clock on the AUX pin of the original Bus Pirate,
+// which made it with its PWM. Here the clock goes out on IO0 (the AUX bit of
+// 0x4x still does nothing), made by a two instruction program on the PIO of
+// the modes: this mode runs on the SPI peripheral and leaves that PIO free.
+#define LEGACY_AUX_CLOCK_PIN BIO0
+
 static float psu_voltage = 0.0f; // PSU voltage in volts
 static float psu_current_limit = 0.0f; // PSU current limit in amps
 static uint8_t* tmpbuf;
@@ -91,6 +99,15 @@ static bool legacy_abort = false;
 static const char* legacy_exit_reason = "not set";
 static bool psu_started = false;
 static uint32_t psu_last_error = 0;
+static bool aux_clock_enabled = false;
+static int aux_clock_sm = -1;
+static uint aux_clock_offset;
+static uint16_t aux_clock_code[2];
+static const pio_program_t aux_clock_program = {
+    .instructions = aux_clock_code,
+    .length = count_of(aux_clock_code),
+    .origin = -1,
+};
 
 // For Atmel parts which have a flash size > 64Kbytes, an additional
 // command is needed - the "Extended High Byte" address write.  This
@@ -140,6 +157,28 @@ void disable_psu_legacy(void) {
     psucmd_disable();
 }
 
+// Hand IO0 to the clock. Mode changes reset every IO pin, so this runs again after them.
+static void aux_clock_pin_on(void) {
+    if (aux_clock_sm < 0) {
+        return;
+    }
+    pio_gpio_init(PIO_MODE_PIO, bio2bufiopin[LEGACY_AUX_CLOCK_PIN]);
+    bio_buf_output(LEGACY_AUX_CLOCK_PIN);
+}
+
+static void aux_clock_stop(void) {
+    if (aux_clock_sm < 0) {
+        return;
+    }
+    pio_sm_set_enabled(PIO_MODE_PIO, aux_clock_sm, false);
+    pio_remove_program(PIO_MODE_PIO, &aux_clock_program, aux_clock_offset);
+    pio_sm_unclaim(PIO_MODE_PIO, aux_clock_sm);
+    aux_clock_sm = -1;
+    bio_set_function(LEGACY_AUX_CLOCK_PIN, GPIO_FUNC_SIO);
+    bio_input(LEGACY_AUX_CLOCK_PIN);
+    system_bio_update_purpose_and_label(false, LEGACY_AUX_CLOCK_PIN, 0, 0);
+}
+
 void setup_spi_legacy(uint32_t spi_speed, uint8_t data_bits, uint8_t cpol, uint8_t cpah, uint8_t cs) {
     bpio_mode_configuration_t mode_config={
         .speed = spi_speed,
@@ -153,6 +192,7 @@ void setup_spi_legacy(uint32_t spi_speed, uint8_t data_bits, uint8_t cpol, uint8
     if (set_aux_pins) {
         set_planks_auxpins(true);
     }
+    aux_clock_pin_on();
     system_config.binmode_usb_rx_queue_enable = true;
     system_config.binmode_usb_tx_queue_enable = true;
 }
@@ -317,6 +357,88 @@ void spi_bus_sync(void) {
     spi_get_hw(M_SPI_PORT)->icr = SPI_SSPICR_RORIC_BITS;
 }
 
+// cfg is the payload of 0x12, the PWM setup of the original Bus Pirate for its
+// 16MHz timer: prescaler (1, 8, 64 or 256) in bits 0-1, then the duty and the
+// period registers, big endian, the period register being one less than the
+// period. Here one period is len PIO clocks, two set instructions of 1 to 32
+// clocks each, so len goes up to 33 and any duty fits. An integer divider keeps
+// every period the same length.
+static bool aux_clock_start(const uint8_t* cfg) {
+    static const uint32_t prescalers[] = { 1, 8, 64, 256 };
+    const uint64_t pic_hz = 16000000;
+    uint32_t duty = (cfg[1] << 8) | cfg[2];
+    uint32_t period = ((cfg[3] << 8) | cfg[4]) + 1;
+    uint32_t sys_hz = clock_get_hz(clk_sys);
+    // system clocks in one period, times pic_hz
+    uint64_t target = (uint64_t)sys_hz * prescalers[cfg[0] & 0x03] * period;
+    uint32_t best_len = 0;
+    uint32_t best_div = 0;
+    uint64_t best_err = UINT64_MAX;
+
+    if (!aux_clock_enabled) {
+        return false;
+    }
+
+    for (uint32_t len = 2; len <= 33; len++) {
+        uint64_t div = (target + pic_hz * len / 2) / (pic_hz * len);
+        if (div < 1 || div > 0xFFFF) {
+            continue;
+        }
+        uint64_t got = div * len * pic_hz;
+        uint64_t err = got > target ? got - target : target - got;
+        if (err <= best_err) {
+            best_err = err;
+            best_len = len;
+            best_div = (uint32_t)div;
+        }
+    }
+    // a new setup replaces a running clock, and a refused one leaves none
+    aux_clock_stop();
+    if (best_len == 0) {
+        return false;
+    }
+
+    uint32_t high = (best_len * duty + period / 2) / period;
+    if (high < 1) {
+        high = 1;
+    } else if (high > best_len - 1) {
+        high = best_len - 1;
+    }
+
+    int sm = pio_claim_unused_sm(PIO_MODE_PIO, false);
+    if (sm < 0) {
+        return false;
+    }
+    aux_clock_code[0] = pio_encode_set(pio_pins, 1) | pio_encode_delay(high - 1);
+    aux_clock_code[1] = pio_encode_set(pio_pins, 0) | pio_encode_delay(best_len - high - 1);
+    if (!pio_can_add_program(PIO_MODE_PIO, &aux_clock_program)) {
+        pio_sm_unclaim(PIO_MODE_PIO, sm);
+        return false;
+    }
+    aux_clock_offset = pio_add_program(PIO_MODE_PIO, &aux_clock_program);
+    aux_clock_sm = sm;
+
+    uint gpio = bio2bufiopin[LEGACY_AUX_CLOCK_PIN];
+    pio_sm_config c = pio_get_default_sm_config();
+    sm_config_set_set_pins(&c, gpio, 1);
+    sm_config_set_wrap(&c, aux_clock_offset, aux_clock_offset + 1);
+    sm_config_set_clkdiv_int_frac(&c, best_div, 0);
+    pio_sm_set_consecutive_pindirs(PIO_MODE_PIO, sm, gpio, 1, true);
+    pio_sm_init(PIO_MODE_PIO, sm, aux_clock_offset, &c);
+    aux_clock_pin_on();
+    pio_sm_set_enabled(PIO_MODE_PIO, sm, true);
+
+    uint32_t hz = sys_hz / (best_div * best_len);
+    system_config.freq_config[LEGACY_AUX_CLOCK_PIN].period = (float)hz;
+    system_bio_update_purpose_and_label(true, LEGACY_AUX_CLOCK_PIN, BP_PIN_PWM, "AUX");
+
+    char msg[40];
+    snprintf(msg, sizeof(msg), "\r\nAUX clock on IO0: %u.%u kHz\r\n", (unsigned)(hz / 1000),
+             (unsigned)(hz % 1000 / 100));
+    legacy_print(msg);
+    return true;
+}
+
 void set_pins_ui(void) {
     static const char pin_labels[][5] = { "CLK", "MOSI", "MISO", "CS" };
 
@@ -327,6 +449,7 @@ void set_pins_ui(void) {
 }
 
 void reset_legacy(void) {
+    aux_clock_stop();
     spi_configured = false;
     spi_mode_active = false;
     psu_started = false;
@@ -424,8 +547,11 @@ void legacy_protocol(void) {
         if (op_byte) {
             count_zero = 0; // ugly, but simple
             if (op_byte >= 0x10 && op_byte <= 0x1F) {
-                extended_info = op_byte;
-                op_byte = 0x10;
+                // outside SPI mode 0x12 and 0x13 are the PWM commands of the raw bitbang mode
+                if (spi_mode_active || (op_byte != 0x12 && op_byte != 0x13)) {
+                    extended_info = op_byte;
+                    op_byte = 0x10;
+                }
             } else if (op_byte >= 0x60 && op_byte <= 0x6F) // this must be the first
             {
                 extended_info = op_byte;
@@ -462,6 +588,8 @@ void legacy_protocol(void) {
                 if (binmode_debug) {
                     printf("\r\nBus Pirate CLI prompt");
                 }
+                // the original resets here, which also stops its PWM
+                aux_clock_stop();
                 // ugly hack for fixed baudarate (look flashrom src!):
                 CDC_SEND_STR(1, "Bus Pirate v2.5\r\nCommunity Firmware v7.1\r\nHiZ>");
             } break;
@@ -655,6 +783,33 @@ void legacy_protocol(void) {
                     printf("\r\nhwspi_select");
                 }
                 hwspi_select();
+                CDC_SEND_STR(1, "\x01");
+            } break;
+
+            case 0x12: {
+                // PWM setup, avrdude -x cpufreq starts the AUX clock with it
+                if (binmode_debug) {
+                    printf("\r\nPWM setup");
+                }
+                uint8_t pwm_config[5];
+                if (!read_payload(pwm_config, sizeof(pwm_config))) {
+                    if (legacy_abort) {
+                        return;
+                    }
+                    break;
+                }
+                if (aux_clock_start(pwm_config)) {
+                    CDC_SEND_STR(1, "\x01");
+                } else {
+                    CDC_SEND_STR(1, "\x00");
+                }
+            } break;
+
+            case 0x13: {
+                if (binmode_debug) {
+                    printf("\r\nPWM off");
+                }
+                aux_clock_stop();
                 CDC_SEND_STR(1, "\x01");
             } break;
 
@@ -1015,6 +1170,14 @@ void legacy4third_mode(void) {
         }
         if (set_aux_pins) {
             set_planks_auxpins(true);
+        }
+
+        // IO0 can be the TX pin of the terminal UART
+        aux_clock_enabled = false;
+        if (system_config.pin_func[LEGACY_AUX_CLOCK_PIN + 1] != BP_PIN_DEBUG) {
+            r = bp_cmd_yes_no_exit("\r\nClock on IO0 for avrdude -x cpufreq?");
+            if (r == BP_YN_EXIT) goto finish_legacy;
+            aux_clock_enabled = (r == BP_YN_YES);
         }
 
         static const bp_val_constraint_t psu_voltage_constraint = {

@@ -59,6 +59,9 @@
 #ifdef BP_USE_RF24
 #include "mode/rf24.h"
 #endif
+#ifdef BP_USE_RFID
+#include "mode/rfid.h"
+#endif
 #ifdef BP_USE_DUMMY1
 #include "mode/dummy1.h"
 #endif
@@ -579,6 +582,36 @@ struct _mode modes[] = {
         .protocol_get_speed = nullfunc7_no_error,
         .protocol_preflight_sanity_check = NULL,
         .setup_def = &rf24_setup_def,
+    },
+#endif
+#ifdef BP_USE_RFID
+    [RFID] = {
+        .protocol_name = "RFID",
+        .protocol_start = nullfunc1_temp,
+        .protocol_start_alt = nullfunc1_temp,
+        .protocol_stop = nullfunc1_temp,
+        .protocol_stop_alt = nullfunc1_temp,
+        .protocol_write = nullfunc1_temp,
+        .protocol_read = nullfunc1_temp,
+        .protocol_clkh = nullfunc1_temp,
+        .protocol_clkl = nullfunc1_temp,
+        .protocol_dath = nullfunc1_temp,
+        .protocol_datl = nullfunc1_temp,
+        .protocol_dats = nullfunc1_temp,
+        .protocol_tick_clock = nullfunc1_temp,
+        .protocol_bitr = nullfunc1_temp,
+        .protocol_periodic = noperiodic,
+        .protocol_macro = nullfunc4,
+        .protocol_setup = rfid_setup,
+        .protocol_setup_exc = rfid_setup_exc,
+        .protocol_cleanup = rfid_cleanup,
+        .protocol_settings = rfid_settings,
+        .protocol_help = rfid_help,
+        .mode_commands = rfid_commands,
+        .mode_commands_count = &rfid_commands_count,
+        .protocol_get_speed = nullfunc7_no_error,
+        .protocol_preflight_sanity_check = rfid_preflight_sanity_check,
+        .setup_def = &rfid_setup_def,
     },
 #endif
 #ifdef BP_USE_JTAG

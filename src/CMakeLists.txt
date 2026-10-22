@@ -440,6 +440,12 @@ set(buspirate_common
         pirate/nrf24l01.c
         pirate/nrf24l01.h
 
+        # PN532 RFID/NFC
+        mode/rfid.c
+        mode/rfid.h
+        pirate/pn532.c
+        pirate/pn532.h
+
         # JTAG
         mode/jtag.h
         mode/jtag.c

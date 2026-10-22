@@ -60,6 +60,9 @@ enum {
 #ifdef BP_USE_RF24
     RF24,     /**< nRF24L01 2.4GHz radio */
 #endif
+#ifdef BP_USE_RFID
+    RFID,     /**< PN532 RFID/NFC */
+#endif
 #ifdef BP_USE_JTAG
     JTAG,     /**< JTAG protocol */
 #endif

@@ -88,7 +88,7 @@ void ui_help_global_commands(void) {
             // Resolve description from def
             const char *desc;
             if (commands[i].def && commands[i].def->description) {
-                desc = GET_T(commands[i].def->description);
+                desc = (commands[i].def->description >= 0x10000000) ? (const char *)(uintptr_t)commands[i].def->description : GET_T(commands[i].def->description);
             } else {
                 desc = "No description. Try -h";
             }
@@ -171,7 +171,7 @@ void ui_help_mode_commands_exec(const struct _mode_command_struct* commands, uin
         pager_check();
         const char *desc = "Description not set. Try -h for command help";
         if (commands[i].def && commands[i].def->description) {
-            desc = GET_T(commands[i].def->description);
+            desc = (commands[i].def->description >= 0x10000000) ? (const char *)(uintptr_t)commands[i].def->description : GET_T(commands[i].def->description);
         }
         printf("%s%s%s\t%s%s\r\n",
                ui_term_color_prompt(),

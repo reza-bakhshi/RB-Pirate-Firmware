@@ -16,6 +16,12 @@
 #include <stdio.h>
 #include <string.h>
 
+static inline const char *bp_cmd_resolve_desc(uint32_t key) {
+    if (!key) return "";
+    if (key >= 0x10000000) return (const char *)(uintptr_t)key;
+    return GET_T(key);
+}
+
 /*
  * =============================================================================
  * Internal helpers
@@ -691,7 +697,7 @@ static bp_cmd_status_t val_prompt_loop(const bp_val_constraint_t *c, void *out) 
             printf("\r\n");
             for (uint32_t i = 0; i < c->choice.count; i++) {
                 const char *display = c->choice.choices[i].label
-                    ? GET_T(c->choice.choices[i].label)
+                    ? bp_cmd_resolve_desc(c->choice.choices[i].label)
                     : c->choice.choices[i].name;
                 printf(" %lu. %s%s%s%s\r\n",
                        (unsigned long)(i + 1),
@@ -707,7 +713,7 @@ static bp_cmd_status_t val_prompt_loop(const bp_val_constraint_t *c, void *out) 
         if (c->type != BP_VAL_CHOICE) {
             printf("\r\n");
             if (c->hint) {
-                printf(" %s%s%s\r\n", ui_term_color_info(), GET_T(c->hint), ui_term_color_reset());
+                printf(" %s%s%s\r\n", ui_term_color_info(), bp_cmd_resolve_desc(c->hint), ui_term_color_reset());
             }
         }
         printf("%sx to exit ", ui_term_color_prompt());
@@ -972,7 +978,7 @@ bp_cmd_status_t bp_cmd_prompt(const bp_val_constraint_t *con, void *out) {
 
     // Print description from constraint prompt key
     if (con->prompt) {
-        printf("%s%s%s", ui_term_color_info(), GET_T(con->prompt), ui_term_color_reset());
+        printf("%s%s%s\r\n", ui_term_color_info(), bp_cmd_resolve_desc(con->prompt), ui_term_color_reset());
     }
 
     return val_prompt_loop(con, out);
@@ -1072,7 +1078,7 @@ void bp_cmd_help_show(const bp_command_def_t *def) {
     if (def->description) {
         printf("\r\n%s%s%s\r\n",
                ui_term_color_info(),
-               GET_T(def->description),
+               bp_cmd_resolve_desc(def->description),
                ui_term_color_reset());
     }
 
@@ -1144,7 +1150,7 @@ void bp_cmd_help_show(const bp_command_def_t *def) {
             }
             printf("%s%s%s\r\n",
                    ui_term_color_info(),
-                   pa->description ? GET_T(pa->description) : "",
+                   pa->description ? bp_cmd_resolve_desc(pa->description) : "",
                    ui_term_color_reset());
         }
     }
@@ -1189,7 +1195,7 @@ void bp_cmd_help_show(const bp_command_def_t *def) {
                 }
                 printf("%s%s%s\r\n",
                        ui_term_color_info(),
-                       o->description ? GET_T(o->description) : "",
+                       o->description ? bp_cmd_resolve_desc(o->description) : "",
                        ui_term_color_reset());
             }
         }

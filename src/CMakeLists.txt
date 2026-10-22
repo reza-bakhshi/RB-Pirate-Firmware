@@ -449,6 +449,20 @@ set(buspirate_common
         # CC1101 Sub-GHz radio
         mode/subghz.c
         mode/subghz.h
+        mode/subghz_protocols.c
+        mode/subghz_protocols.h
+        mode/subghz_blocks.c
+        mode/subghz_blocks.h
+        mode/subghz_rx.c
+        mode/subghz_rx.h
+        mode/subghz_keystore.c
+        mode/subghz_keystore.h
+        mode/subghz_file.c
+        mode/subghz_file.h
+        mode/subghz_cap.c
+        mode/subghz_cap.h
+        mode/subghz_freqs.c
+        mode/subghz_freqs.h
         pirate/cc1101.c
         pirate/cc1101.h
 

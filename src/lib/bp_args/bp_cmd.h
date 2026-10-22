@@ -154,6 +154,7 @@ typedef struct {
     const char *arg_hint;     ///< Value placeholder for help/hints (bare word, auto-wrapped with <>/[]): "file", NULL if flag-only
     uint32_t    description;  ///< Translation key for help text
     const bp_val_constraint_t *constraint; ///< Optional value constraint, NULL = no validation
+    const char *description_text; ///< Plain string description fallback
 } bp_command_opt_t;
 
 /*
@@ -214,6 +215,7 @@ typedef struct {
     uint32_t    description;  ///< Translation key for help text
     bool        required;     ///< true if argument is required
     const bp_val_constraint_t *constraint; ///< Optional value constraint, NULL = no validation
+    const char *description_text; ///< Plain string description fallback
 } bp_command_positional_t;
 
 /*
@@ -242,6 +244,7 @@ typedef struct bp_command_def {
 
     const char *const *usage;               ///< Usage example strings
     uint32_t usage_count;                   ///< Number of usage lines
+    const char *description_text;           ///< Plain string description fallback
 } bp_command_def_t;
 
 /*

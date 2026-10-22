@@ -1075,7 +1075,12 @@ void bp_cmd_help_show(const bp_command_def_t *def) {
     }
 
     // Section heading from description
-    if (def->description) {
+    if (def->description_text) {
+        printf("\r\n%s%s%s\r\n",
+               ui_term_color_info(),
+               def->description_text,
+               ui_term_color_reset());
+    } else if (def->description) {
         printf("\r\n%s%s%s\r\n",
                ui_term_color_info(),
                bp_cmd_resolve_desc(def->description),
@@ -1148,9 +1153,11 @@ void bp_cmd_help_show(const bp_command_def_t *def) {
             } else {
                 printf(" ");
             }
+            const char *pdesc = pa->description_text ? pa->description_text :
+                                (pa->description ? GET_T(pa->description) : "");
             printf("%s%s%s\r\n",
                    ui_term_color_info(),
-                   pa->description ? bp_cmd_resolve_desc(pa->description) : "",
+                   pdesc,
                    ui_term_color_reset());
         }
     }
@@ -1193,9 +1200,11 @@ void bp_cmd_help_show(const bp_command_def_t *def) {
                 } else {
                     printf(" ");
                 }
+                const char *odesc = o->description_text ? o->description_text :
+                                    (o->description ? bp_cmd_resolve_desc(o->description) : "");
                 printf("%s%s%s\r\n",
                        ui_term_color_info(),
-                       o->description ? bp_cmd_resolve_desc(o->description) : "",
+                       odesc,
                        ui_term_color_reset());
             }
         }

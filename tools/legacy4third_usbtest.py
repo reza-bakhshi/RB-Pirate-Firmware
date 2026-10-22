@@ -34,11 +34,16 @@ BEFORE RUNNING
   2. Pass the SECOND CDC port of the Bus Pirate with --port (use --list).
 
 SAFETY
-  The normal suites only use opcodes 0x05 and 0x10, which never assert CS#, and
-  leave the power supply off, so a flash chip on the bus is never selected.
+  The normal suites clock the bus only with 0x05, 0x1x and the AVR bulk read
+  (0x06 0x02), none of which touch CS#, and keep the power supply off. CS# goes
+  low only without clocks: 0x02 in the framing suite and the CS bit of the 0x4x
+  sweep. A flash chip on the bus is selected for a moment but never receives a
+  command. With the IO0 clock enabled in the setup, the layers suite starts it
+  for a moment with 0x12.
   --use-cs and --fuzz are different: --use-cs drives real selected transactions,
   and the fuzzer sends random opcodes which can toggle the power supply, the
-  pull-ups and the pin directions. Run those with nothing attached.
+  pull-ups, the pin directions and the IO0 clock. Run those with nothing
+  attached.
 
 LOOPBACK
   Jumper IO7 (MOSI) to IO4 (MISO) and pass --loopback. Opcode 0x10 then becomes
@@ -471,12 +476,12 @@ def suite_framing(runner, args):
 
 def suite_layers(runner, args):
     link = runner.link
-    print("\n[layers] bitbang layer must not decode SPI submode opcodes")
+    print("\n[layers] the bitbang and SPI layers decode only their own opcodes")
 
     def spi_opcodes_before_enter():
         link.drain()
         bbio_reset(link)
-        for opcode in (0x04, 0x05, 0x10, 0x12, 0x13, 0x1F):
+        for opcode in (0x04, 0x05, 0x10, 0x11, 0x1F):
             link.write(bytes([opcode]))
             got = link.read_exact(1, "bitbang layer 0x%02x" % opcode)
             if got[0] != NAK:
@@ -488,7 +493,42 @@ def suite_layers(runner, args):
         configure(link, args)
         cmd_write_read(link, b"\x9f", 3, args.use_cs)
         runner.commands += 1
-        return "0x04/0x05/0x1x answer 0x00 and consume no payload"
+        return "0x04/0x05/0x10/0x11/0x1f answer 0x00 and consume no payload"
+
+    def pwm_commands():
+        link.drain()
+        bbio_reset(link)
+        # what avrdude -x cpufreq=1000 sends: prescaler 1, duty 7, period 15
+        link.write(b"\x12\x00\x00\x07\x00\x0f")
+        got = link.read_exact(1, "0x12 PWM setup")
+        if got[0] not in (ACK, NAK):
+            raise Failure("0x12 must answer 0x01, or 0x00 with the IO0 clock off, got 0x%02x" % got[0])
+        link.expect_silence(0.05, "after 0x12")
+        # 0.95 Hz is out of range: refused, but its 5 bytes are read all the same
+        link.write(b"\x12\x03\xff\xff\xff\xff")
+        refused = link.read_exact(1, "0x12 out of range")
+        if refused[0] != NAK:
+            raise Failure("0x12 for 0.95 Hz must answer 0x00, got 0x%02x" % refused[0])
+        link.expect_silence(0.05, "after the refused 0x12")
+        expect_ack(link, 0x13, "0x13 PWM off")
+        link.expect_silence(0.05, "after 0x13")
+        spi_enter(link)
+        configure(link, args)
+        cmd_write_read(link, b"\x9f", 3, args.use_cs)
+        runner.commands += 1
+        return "0x12 took its 5 bytes (IO0 clock %s), out of range refused, 0x13 acked" % (
+            "on" if got[0] == ACK else "off in the setup")
+
+    def pwm_opcodes_stay_bulk():
+        full_init(link, args)
+        # in SPI mode 0x12 and 0x13 are bulk transfers; avrdude sends every 4 byte ISP command as 0x13
+        for count in (3, 4):
+            data = cmd_bulk(link, bytes(count))
+            if len(data) != count:
+                raise Failure("bulk 0x%02x returned %d bytes" % (0x10 | (count - 1), len(data)))
+            link.expect_silence(0.05, "after bulk 0x%02x" % (0x10 | (count - 1)))
+        runner.commands += 2
+        return "0x12 and 0x13 after 0x01 are 3 and 4 byte bulk transfers"
 
     def spi_opcodes_after_leave():
         link.write(b"\x00")
@@ -505,6 +545,8 @@ def suite_layers(runner, args):
         return "leaving the SPI submode re-arms the gate"
 
     runner.run("SPI opcodes before 0x01", spi_opcodes_before_enter)
+    runner.run("PWM commands before 0x01", pwm_commands)
+    runner.run("0x12 and 0x13 after 0x01", pwm_opcodes_stay_bulk)
     runner.run("SPI opcodes after 0x00", spi_opcodes_after_leave)
 
 
@@ -1141,7 +1183,7 @@ def main():
     print("  binary port    %s" % args.port)
     print("  terminal port  %s" % (args.terminal or "not given, exit prompt tests skipped"))
     print("  loopback       %s" % ("yes (IO7 -> IO4)" if args.loopback else "no (framing only)"))
-    print("  chip select    %s" % ("0x04, CS# asserted" if args.use_cs else "0x05, CS# never asserted"))
+    print("  chip select    %s" % ("0x04, CS# asserted" if args.use_cs else "0x05, no CS# during transfers"))
     print("  power supply   %s" % ("on" if args.psu else "off"))
     print("  spi speed idx  %d" % args.spispeed)
     if args.use_cs:

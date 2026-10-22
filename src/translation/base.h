@@ -711,6 +711,17 @@ enum T_translations{
     T_RF24_CMD_JAM,
     T_RF24_OPT_GROUP,
     T_RF24_OPT_END_CHANNEL,
+    T_HELP_CELL_MODEM,
+    T_HELP_CELL_NETWORK,
+    T_HELP_CELL_OPERATOR,
+    T_HELP_CELL_SIM,
+    T_HELP_CELL_UNLOCK,
+    T_HELP_CELL_PHONEBOOK,
+    T_HELP_CELL_SMS,
+    T_HELP_CELL_CALL,
+    T_HELP_CELL_USSD,
+    T_HELP_CELL_SETMODE,
+    T_HELP_CELL_AT,
 
 	T_LAST_ITEM_ALWAYS_AT_THE_END //LEAVE THIS ITEM AT THE END!!! It helps the compiler report errors if there are missing translations
 };

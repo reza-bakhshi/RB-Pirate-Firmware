@@ -304,6 +304,11 @@ set(buspirate_common
         commands/uart/glitch.h
         commands/uart/glitch.c
 
+        # CELL: cellular AT modem commands (UART mode)
+        commands/cell/cell.h
+        commands/cell/cell.c
+        commands/cell/cell_at.c
+
         # Half duplex UART
         mode/hwhduart.h
         mode/hwhduart.c

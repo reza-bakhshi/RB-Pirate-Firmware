@@ -84,6 +84,7 @@ waterfall -a 433050 -z 434790 -s 25 -n 20
 hop -f 433920,315000 -d 500 [-s]
 receive -t 5000 [-v]
 burst [-c count] [-f kHz]
+ear [-f kHz] [-g dBm] [-p pin]
 monitor -t 10000
 clone [file.sub] [-t 5000]
 replay -r 2
@@ -124,6 +125,12 @@ Press any key to stop early.
 
 `burst` transmits pseudo-random RF jitter pulse trains for receiver and RF link
 testing. You can also trigger a burst using `send -R`.
+
+`ear` maps real-time CC1101 RSSI to an audible tone: wire a piezo/buzzer to the
+selected buffered pin (default BIO3), and the tone pitch rises from 800 Hz to
+12 kHz as the received signal gets stronger. `-g` sets the RSSI gate in dBm
+below which the output stays silent, `-p` selects the audio pin BIO0-BIO7,
+and `-f` tunes a different frequency. Press ENTER to stop.
 
 `clone [file.sub]` is the guided workflow: it captures, analyzes, decodes,
 and saves the matched frame as a key file (auto-named `Protocol_Key.sub`

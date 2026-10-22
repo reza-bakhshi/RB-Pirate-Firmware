@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "pico/stdlib.h"
+#include "hardware/pwm.h"
+#include "hardware/clocks.h"
 #include "pirate.h"
 #include "system_config.h"
 #include "command_struct.h"
@@ -587,6 +589,25 @@ static const bp_command_def_t burst_def = {
     .description_text = "Transmit pseudo-random RF jitter pulse bursts for testing",
     .opts = burst_opts,
     .usage = burst_usage, .usage_count = count_of(burst_usage),
+};
+
+static const bp_command_opt_t ear_opts[] = {
+    { "frequency", 'f', BP_ARG_REQUIRED, "kHz",     0, NULL, "frequency in kHz (default current)" },
+    { "gate",      'g', BP_ARG_REQUIRED, "dBm",     0, NULL, "RSSI gate, -127 to 0 dBm (default -65)" },
+    { "pin",       'p', BP_ARG_REQUIRED, "BIO0-BIO7", 0, NULL, "audio pin for piezo/buzzer (default BIO3)" },
+    { 0 }
+};
+static const char *const ear_usage[] = {
+    "ear [-f kHz] [-g dBm] [-p pin]",
+    "RSSI to audio at the current frequency:%s ear",
+    "RSSI to audio at 433.92 MHz with gate -70:%s ear -f 433920 -g -70",
+    "Audio on BIO1:%s ear -p 1",
+};
+static const bp_command_def_t ear_def = {
+    .name = "ear", .description = 0,
+    .description_text = "Map real-time CC1101 RSSI to an audible tone (PWM on a buffered pin)",
+    .opts = ear_opts,
+    .usage = ear_usage, .usage_count = count_of(ear_usage),
 };
 
 static const bp_command_opt_t jam_opts[] = {
@@ -3121,6 +3142,76 @@ static void burst_handler(struct command_result *res) {
     printf("Burst transmission complete.\r\n");
 }
 
+/* ear: map the live CC1101 RSSI to an audible tone (800Hz-12kHz) driven by
+ * PWM on a buffered IO pin (wire a piezo/buzzer). Adapted from the
+ * ESP32-Bit-Pirate "ear" feature. */
+static void ear_handler(struct command_result *res) {
+    if (bp_cmd_help_check(&ear_def, res->help_flag) || !command_ready()) return;
+    uint32_t khz = mode_config.frequency_khz;
+    if (bp_cmd_get_uint32(&ear_def, 'f', &khz) && !valid_frequency(khz)) {
+        printf("Invalid frequency %lu kHz.\r\n", (unsigned long)khz);
+        return;
+    }
+    int32_t gate = -65;
+    if (bp_cmd_get_int32(&ear_def, 'g', &gate) && (gate < -127 || gate > 0)) {
+        printf("RSSI gate must be -127 to 0 dBm.\r\n");
+        return;
+    }
+    uint32_t pin = BIO3;
+    if (bp_cmd_get_uint32(&ear_def, 'p', &pin) && pin > BIO7) {
+        printf("Audio pin must be BIO0-BIO7.\r\n");
+        return;
+    }
+    if (khz != mode_config.frequency_khz) {
+        if (!cc1101_set_frequency(khz)) {
+            printf("Failed to set frequency.\r\n");
+            return;
+        }
+        mode_config.frequency_khz = khz;
+    }
+    if (!cc1101_rx()) {
+        printf("Failed to enter RX state.\r\n");
+        return;
+    }
+    uint8_t gpio_pin = bio2bufiopin[pin];
+    uint8_t slice_num = pwm_gpio_to_slice_num(gpio_pin);
+    uint8_t chan_num = pwm_gpio_to_channel(gpio_pin);
+    bio_output(pin);
+    gpio_set_function(gpio_pin, GPIO_FUNC_PWM);
+    pwm_config pwm_cfg = pwm_get_default_config();
+    // clkdiv 3: 150MHz sysclock / 3 / 800Hz min tone = 62500 <= 65535 wrap
+    pwm_config_set_clkdiv(&pwm_cfg, 3.0f);
+    pwm_init(slice_num, &pwm_cfg, false);
+    pwm_set_enabled(slice_num, true);
+    printf("SUBGHZ Ear: RSSI to audio at %u.%03u MHz, gate %ld dBm (press ENTER to stop)\r\n",
+           khz / 1000u, khz % 1000u, (long)gate);
+    while (true) {
+        char c;
+        if (rx_fifo_try_get(&c)) break; // any keypress stops
+        int16_t rssi = cc1101_rssi();
+        if (rssi >= gate) {
+            int32_t norm = (int32_t)rssi + 120; // -120..0 dBm -> 0..120
+            if (norm < 0) norm = 0;
+            if (norm > 120) norm = 120;
+            uint32_t hz = 800u + ((uint32_t)norm * (12000u - 800u)) / 120u;
+            uint32_t top = clock_get_hz(clk_sys) / (3u * hz);
+            if (top < 2u) top = 2u;
+            if (top > 65535u) top = 65535u;
+            pwm_set_wrap(slice_num, top);
+            pwm_set_chan_level(slice_num, chan_num, top / 2u); // 50% duty
+        } else {
+            pwm_set_chan_level(slice_num, chan_num, 0); // silence below gate
+        }
+        sleep_us(200); // ~5 kHz refresh rate
+    }
+    // stop tone and restore the pin
+    pwm_set_chan_level(slice_num, chan_num, 0);
+    pwm_set_enabled(slice_num, false);
+    gpio_set_function(gpio_pin, GPIO_FUNC_SIO);
+    bio_input(pin);
+    printf("SUBGHZ Ear: Stopped by user.\r\n");
+}
+
 /* ============================================================
  * New commands: preset, protocol, hop, power, bitrate, info
  * ============================================================ */
@@ -3611,6 +3702,7 @@ const struct _mode_command_struct subghz_commands[] = {
     { .func = jam_handler, .def = &jam_def, .supress_fala_capture = true },
     { .func = bruteforce_handler, .def = &bruteforce_def, .supress_fala_capture = true },
     { .func = burst_handler, .def = &burst_def, .supress_fala_capture = true },
+    { .func = ear_handler, .def = &ear_def, .supress_fala_capture = true },
 };
 const uint32_t subghz_commands_count = count_of(subghz_commands);
 

@@ -675,6 +675,18 @@ static char const * const en_us[]={
 	[T_HDUART_LISTEN_MENU]="Bus mode",
 	[T_HDUART_LISTEN_MENU_1]="Master (drive line)",
 	[T_HDUART_LISTEN_MENU_2]="Listen (passive, open drain)",
+	// LCDTap mode
+	[T_HELP_LCDTAP]="Capture an LCD bus and reconstruct its framebuffer",
+	[T_HELP_LCDTAP_BUS]="Input interface: i2c, spi4, or 9-bit spi3",
+	[T_HELP_LCDTAP_CONTROLLER]="LCD controller family to emulate",
+	[T_HELP_LCDTAP_WIDTH]="Framebuffer width (or ST7032 text columns)",
+	[T_HELP_LCDTAP_HEIGHT]="Framebuffer height (or ST7032 text rows)",
+	[T_HELP_LCDTAP_ADDRESS]="7-bit I2C slave address used for capture",
+	[T_HELP_LCDTAP_STATUS]="Show capture byte counts, resets, and overruns",
+	[T_HELP_LCDTAP_SAVE]="Save the reconstructed framebuffer as a 24-bit BMP",
+	[T_HELP_LCDTAP_SAVE_FILE]="Destination BMP filename on the SD card",
+	[T_HELP_LCDTAP_CMDDUMP]="Show up to 256 captured command/data events",
+	[T_HELP_LCDTAP_RESET]="Reset the emulated LCD controller state",
 };
 
 // Since en-us is the base language, the following static assert at least verifies the table size

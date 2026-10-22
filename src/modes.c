@@ -53,6 +53,9 @@
 #ifdef BP_USE_SUBGHZ
 #include "mode/subghz.h"
 #endif
+#ifdef BP_USE_LCDTAP
+#include "mode/lcdtap.h"
+#endif
 #ifdef BP_USE_DUMMY1
 #include "mode/dummy1.h"
 #endif
@@ -603,6 +606,36 @@ struct _mode modes[] = {
         .mode_commands_count = &ps2_commands_count, // mode specific commands count
         .protocol_get_speed = ps2_get_speed,        // get the current speed setting of the protocol
         .protocol_preflight_sanity_check = ps2_preflight_sanity_check,      // sanity check before executing syntax
+    },
+#endif
+#ifdef BP_USE_LCDTAP
+    [LCDTAP] = {
+        .protocol_name = "LCDTAP",
+        .protocol_start = nullfunc1_temp,
+        .protocol_start_alt = nullfunc1_temp,
+        .protocol_stop = nullfunc1_temp,
+        .protocol_stop_alt = nullfunc1_temp,
+        .protocol_write = nullfunc1_temp,
+        .protocol_read = nullfunc1_temp,
+        .protocol_clkh = nullfunc1_temp,
+        .protocol_clkl = nullfunc1_temp,
+        .protocol_dath = nullfunc1_temp,
+        .protocol_datl = nullfunc1_temp,
+        .protocol_dats = nullfunc1_temp,
+        .protocol_tick_clock = nullfunc1_temp,
+        .protocol_bitr = nullfunc1_temp,
+        .protocol_periodic = lcdtap_periodic,
+        .protocol_macro = lcdtap_macro,
+        .protocol_setup = lcdtap_setup,
+        .protocol_setup_exc = lcdtap_setup_exc,
+        .protocol_cleanup = lcdtap_cleanup,
+        .protocol_settings = lcdtap_settings,
+        .protocol_help = lcdtap_help,
+        .mode_commands = lcdtap_commands,
+        .mode_commands_count = &lcdtap_commands_count,
+        .protocol_get_speed = lcdtap_get_speed,
+        .protocol_preflight_sanity_check = lcdtap_preflight_sanity_check,
+        .setup_def = &lcdtap_setup_def,
     },
 #endif
 #ifdef BP_USE_USB

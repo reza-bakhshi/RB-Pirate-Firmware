@@ -1,0 +1,246 @@
+#include "ssd1306_controller.hpp"
+
+#include <lcdtap/devices/ssd1306.hpp>
+
+namespace lcdtap {
+
+uint16_t Ssd1306Controller::logicalWidth() const { return config.buffWidth; }
+
+uint16_t Ssd1306Controller::logicalHeight() const { return config.buffHeight; }
+
+void Ssd1306Controller::updateWriteCache() {
+  cachedHOffset = 0;
+  cachedHStep = 1;
+  cachedVOffset = 0;
+  cachedVStep = config.buffWidth;
+}
+
+void Ssd1306Controller::softReset() {
+  ssdAddrMode = 2;  // page addressing (SSD1306 default)
+  ssdSegmentRemap = false;
+  ssdComFlip = false;
+  expectedParams = 0;
+  pageColLow = 0;
+  pageColHigh = 0;
+  resetCommon();
+  sleeping = false;  // SSD1306 has no sleep mode
+  interfaceFormat = InterfaceFormat::GRAY1_VPACK8_H2L;
+  casetXS = 0;
+  casetXE = static_cast<uint16_t>(config.buffWidth - 1);
+  rasetYS = 0;
+  rasetYE = static_cast<uint16_t>(config.buffHeight - 1);
+  ramwrX = 0;
+  ramwrY = 0;
+}
+
+// Accepts all DCX=0 bytes (both command body and parameters)
+void Ssd1306Controller::dispatchCommand(uint8_t cmd) {
+  using namespace ssd1306;
+
+  // Waiting for parameters of the current command
+  if (expectedParams > 0) {
+    --expectedParams;
+    switch (currentCmd) {
+      case CMD_SET_ADDR_MODE:
+        ssdAddrMode = cmd & 0x03u;
+        log("SSD1306: SET_ADDR_MODE");
+        break;
+      case CMD_SET_COL_ADDR:
+        if (cmdDataLen == 0) {
+          casetXS = LCDTAP_CLIP(0, config.buffWidth - 1, cmd);
+          ramwrX = casetXS;
+        } else {
+          casetXE = LCDTAP_CLIP(casetXS, config.buffWidth - 1, cmd);
+          if (effectiveSegmentRemap()) {
+            expandTrimX(config.buffWidth - 1 - casetXE,
+                        config.buffWidth - 1 - casetXS);
+          } else {
+            expandTrimX(casetXS, casetXE);
+          }
+          log("SSD1306: SET_COL_ADDR");
+        }
+        break;
+      case CMD_SET_PAGE_ADDR:
+        if (cmdDataLen == 0) {
+          rasetYS = LCDTAP_CLIP(0, config.buffHeight - 1, (uint16_t)cmd * 8u);
+          ramwrY = rasetYS;
+        } else {
+          rasetYE = LCDTAP_CLIP(rasetYS, config.buffHeight - 1,
+                                (uint16_t)cmd * 8u + 7u);
+          if (effectiveComFlip()) {
+            expandTrimY(config.buffHeight - 1 - rasetYE,
+                        config.buffHeight - 1 - rasetYS);
+          } else {
+            expandTrimY(rasetYS, rasetYE);
+          }
+          log("SSD1306: SET_PAGE_ADDR");
+        }
+        break;
+      default: break;  // parameter for a command that is otherwise ignored
+    }
+    ++cmdDataLen;
+    return;
+  }
+
+  // New command
+  currentCmd = cmd;
+  cmdDataLen = 0;
+  ramwrBufLen = 0;
+  expectedParams = 0;
+
+  if (cmd >= (CMD_SET_START_LINE_BASE) &&
+      cmd <= (CMD_SET_START_LINE_BASE | CMD_SET_START_LINE_MASK)) {
+    // Start-line (scroll): accepted but not applied
+    return;
+  }
+
+  if (cmd >= CMD_SET_PAGE_START_BASE &&
+      cmd <= (CMD_SET_PAGE_START_BASE | CMD_SET_PAGE_START_MASK)) {
+    // Page addressing mode: set page
+    uint8_t page = cmd & CMD_SET_PAGE_START_MASK;
+    ramwrY = static_cast<uint16_t>(page * 8u);
+    ramwrX = casetXS;
+    return;
+  }
+
+  if (cmd >= CMD_SET_LOWER_COL_BASE &&
+      cmd <= (CMD_SET_LOWER_COL_BASE | CMD_SET_LOWER_COL_MASK)) {
+    // Page addressing mode: column address lower nibble
+    pageColLow = cmd & CMD_SET_LOWER_COL_MASK;
+    applyPageModeCol();
+    return;
+  }
+
+  if (cmd >= CMD_SET_HIGHER_COL_BASE &&
+      cmd <= (CMD_SET_HIGHER_COL_BASE | CMD_SET_HIGHER_COL_MASK)) {
+    // Page addressing mode: column address upper nibble
+    pageColHigh = static_cast<uint8_t>((cmd & CMD_SET_HIGHER_COL_MASK) << 4);
+    applyPageModeCol();
+    return;
+  }
+
+  switch (cmd) {
+    case CMD_DISPLAY_OFF:
+      displayOn = false;
+      bumpEpoch();
+      log("SSD1306: DISPLAY_OFF");
+      break;
+    case CMD_DISPLAY_ON:
+      displayOn = true;
+      bumpEpoch();
+      log("SSD1306: DISPLAY_ON");
+      break;
+    case CMD_NORMAL_DISPLAY:
+      setInverted(config.inverted);
+      log("SSD1306: NORMAL_DISPLAY");
+      break;
+    case CMD_INVERT_DISPLAY:
+      setInverted(!config.inverted);
+      log("SSD1306: INVERT_DISPLAY");
+      break;
+    case CMD_SEG_REMAP_0:
+      ssdSegmentRemap = false;
+      log("SSD1306: SEG_REMAP_0");
+      break;
+    case CMD_SEG_REMAP_1:
+      ssdSegmentRemap = true;
+      log("SSD1306: SEG_REMAP_1");
+      break;
+    case CMD_COM_SCAN_INC:
+      ssdComFlip = false;
+      log("SSD1306: COM_SCAN_INC");
+      break;
+    case CMD_COM_SCAN_DEC:
+      ssdComFlip = true;
+      log("SSD1306: COM_SCAN_DEC");
+      break;
+    case CMD_SET_ADDR_MODE: expectedParams = 1; break;
+    case CMD_SET_COL_ADDR: expectedParams = 2; break;
+    case CMD_SET_PAGE_ADDR: expectedParams = 2; break;
+    // Single-parameter commands with no visible effect
+    case CMD_SET_CONTRAST:
+    case CMD_SET_MULTIPLEX:
+    case CMD_SET_DISPLAY_OFFSET:
+    case CMD_SET_CLK_DIV:
+    case CMD_SET_PRECHARGE:
+    case CMD_SET_COM_PINS:
+    case CMD_SET_VCOMH:
+    case CMD_CHARGE_PUMP: expectedParams = 1; break;
+    case CMD_NOP: break;
+    default: noteUnknownCommand(cmd); break;
+  }
+}
+
+// For SSD1306, DCX=1 is always GDDRAM data — feedDataByte is never called
+void Ssd1306Controller::feedDataByte(uint8_t /*byte*/) {}
+
+// DCX=1 is always GDDRAM (pixel) data
+bool Ssd1306Controller::isRamWriteCommand() const { return true; }
+
+// GRAY1_VPACK8_H2L: 1 byte = 8 vertical pixels (bit0=top, bit7=bottom)
+void Ssd1306Controller::processRamwrData(const uint8_t* data, uint32_t numElems,
+                                         uint32_t stride) {
+  const uint16_t lcdW = config.buffWidth;
+  const uint16_t lcdH = config.buffHeight;
+  const uint32_t byteLen = numElems * stride;
+
+  for (uint32_t i = 0; i < byteLen; i += stride) {
+    uint8_t byte = data[i];
+
+    // Write 8 pixels vertically from 1 byte
+    uint32_t diff = 0;
+    uint16_t physRowMin = 0xFFFFu, physRowMax = 0, physColLast = 0;
+    for (uint16_t bit = 0; bit < 8u; ++bit) {
+      uint16_t row = static_cast<uint16_t>(ramwrY + bit);
+      if (row < lcdH) {
+        uint16_t physRow =
+            effectiveComFlip() ? static_cast<uint16_t>(lcdH - 1u - row) : row;
+        uint16_t physCol = effectiveSegmentRemap()
+                               ? static_cast<uint16_t>(lcdW - 1u - ramwrX)
+                               : ramwrX;
+        uint16_t px = static_cast<uint16_t>((byte & 1u) ? 0xFFFFu : 0x0000u);
+        uint16_t* dst = &frameBuffer[physRow * lcdW + physCol];
+        if (dirtyTracking) {
+          diff |= static_cast<uint32_t>(*dst ^ px);
+          if (physRow < physRowMin) physRowMin = physRow;
+          if (physRow > physRowMax) physRowMax = physRow;
+          physColLast = physCol;
+        }
+        *dst = px;
+      }
+      byte >>= 1;
+    }
+    if (diff != 0) {
+      markDirtyRect(physRowMin, physRowMax, physColLast, physColLast);
+    }
+
+    // Advance write position
+    switch (ssdAddrMode) {
+      case 0:  // horizontal addressing: column → page
+        if (++ramwrX > casetXE) {
+          ramwrX = casetXS;
+          ramwrY = static_cast<uint16_t>(ramwrY + 8u);
+          if (ramwrY > rasetYE) ramwrY = rasetYS;
+        }
+        break;
+      case 1:  // vertical addressing: page → column
+        ramwrY = static_cast<uint16_t>(ramwrY + 8u);
+        if (ramwrY > rasetYE) {
+          ramwrY = rasetYS;
+          if (++ramwrX > casetXE) ramwrX = casetXS;
+        }
+        break;
+      default:  // page addressing: column only
+        if (++ramwrX > casetXE) ramwrX = casetXS;
+        break;
+    }
+  }
+}
+
+void Ssd1306Controller::applyPageModeCol() {
+  ramwrX = static_cast<uint16_t>(pageColHigh | pageColLow);
+  if (ramwrX >= config.buffWidth)
+    ramwrX = static_cast<uint16_t>(config.buffWidth - 1u);
+}
+
+}  // namespace lcdtap

@@ -54,6 +54,9 @@ enum {
 #ifdef BP_USE_SUBGHZ
     SUBGHZ,   /**< CC1101 Sub-GHz radio */
 #endif
+#ifdef BP_USE_LCDTAP
+    LCDTAP,   /**< Passive LCD bus capture and framebuffer reconstruction */
+#endif
 #ifdef BP_USE_JTAG
     JTAG,     /**< JTAG protocol */
 #endif

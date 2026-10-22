@@ -417,6 +417,23 @@ set(buspirate_common
         pirate/cc1101.c
         pirate/cc1101.h
 
+        # LCDTap passive display capture (MIT, https://github.com/shapoco/lcdtap)
+        mode/lcdtap.c
+        mode/lcdtap.h
+        mode/lcdtap_backend.cpp
+        mode/lcdtap_backend.h
+        lib/lcdtap/src/config.cpp
+        lib/lcdtap/src/lcdtap.cpp
+        lib/lcdtap/src/spi_display_base.cpp
+        lib/lcdtap/src/st7789_controller.cpp
+        lib/lcdtap/src/ili9341_controller.cpp
+        lib/lcdtap/src/ssd1306_controller.cpp
+        lib/lcdtap/src/ssd1331_controller.cpp
+        lib/lcdtap/src/st7032_controller.cpp
+        lib/lcdtap/src/ks0108_controller.cpp
+        lib/lcdtap/pico2/src/spi_slave.cpp
+        lib/lcdtap/pico2/src/i2c_slave.cpp
+
         # JTAG
         mode/jtag.h
         mode/jtag.c
@@ -712,6 +729,8 @@ foreach(revision ${revisions})
         pico_generate_pio_header(${revision} ${CMAKE_CURRENT_LIST_DIR}/lib/pico-i2c-sniff/hw2w_sniffer.pio)
         pico_generate_pio_header(${revision} ${CMAKE_CURRENT_LIST_DIR}/mode/i2s_out.pio)
         pico_generate_pio_header(${revision} ${CMAKE_CURRENT_LIST_DIR}/mode/i2s_in.pio)
+        pico_generate_pio_header(${revision} ${CMAKE_CURRENT_LIST_DIR}/lib/lcdtap/pico2/src/spi_4line_mode0.pio)
+        pico_generate_pio_header(${revision} ${CMAKE_CURRENT_LIST_DIR}/lib/lcdtap/pico2/src/spi_3line_mode0.pio)
 
         pico_set_program_name(${revision} ${revision}) 
         pico_set_program_version(${revision} "0.1.0")
@@ -740,6 +759,8 @@ foreach(revision ${revisions})
         target_include_directories(${revision} PUBLIC
                 ${CMAKE_CURRENT_LIST_DIR}
                 .
+                ${CMAKE_CURRENT_LIST_DIR}/lib/lcdtap/include
+                ${CMAKE_CURRENT_LIST_DIR}/lib/lcdtap/pico2/include
         )
         pico_add_extra_outputs(${revision})
         pico_set_linker_script(${revision} ${CMAKE_CURRENT_LIST_DIR}/boards/memmap_default_rp2350.ld)

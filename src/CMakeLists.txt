@@ -726,8 +726,8 @@ add_executable(bus_pirate6
                 fatfs/tf_card.h
                 ${buspirate_rtt}
                 ${rp2350_common}
-                platform/bpi6-rev2.h
-                platform/bpi6-rev2.c
+                platform/rb-pirate.h
+                platform/rb-pirate.c
                 )
 target_compile_definitions(bus_pirate6 PUBLIC BP_VER=6)
 target_compile_definitions(bus_pirate6 PUBLIC BP_REV=10)

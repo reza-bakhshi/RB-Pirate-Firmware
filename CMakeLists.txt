@@ -41,7 +41,7 @@ message(GIT_COMMIT_HASH="${GIT_COMMIT_HASH}")
 message(BP_FIRMWARE_HASH="${BP_FIRMWARE_HASH}")
 
 set(PICO_PLATFORM "rp2350")
-set(PICO_BOARD buspirate6)
+set(PICO_BOARD rb-pirate)
 
 #set(PICO_SDK_PATH "~/pico-sdk")
 

@@ -62,7 +62,7 @@
 #define RP2350 2350
 
 
-#include "platform/bpi6-rev2.h"
+#include "platform/rb-pirate.h"
 #define RPI_PLATFORM RP2350
 #define BP_HW_STORAGE_TFCARD 1
 #define BP_HW_IOEXP_NONE 1

@@ -411,6 +411,36 @@ set(buspirate_common
         commands/infrared/tvbgone.c
         commands/infrared/tvbgone.h
         commands/infrared/tvbgone-codes.h
+        commands/infrared/ir_common.c
+        commands/infrared/ir_common.h
+        commands/infrared/ir_flipper.c
+        commands/infrared/ir_flipper.h
+        commands/infrared/ir_send.c
+        commands/infrared/ir_send.h
+        commands/infrared/ir_receive.c
+        commands/infrared/ir_receive.h
+        commands/infrared/ir_setprotocol.c
+        commands/infrared/ir_setprotocol.h
+        commands/infrared/ir_devicebgone.c
+        commands/infrared/ir_devicebgone.h
+        commands/infrared/ir_remote.c
+        commands/infrared/ir_remote.h
+        commands/infrared/ir_record.c
+        commands/infrared/ir_record.h
+        commands/infrared/ir_load.c
+        commands/infrared/ir_load.h
+        commands/infrared/ir_replay.c
+        commands/infrared/ir_replay.h
+        commands/infrared/ir_jam.c
+        commands/infrared/ir_jam.h
+        commands/infrared/ir_config.c
+        commands/infrared/ir_config.h
+        pirate/ir_protocols.c
+        pirate/ir_protocols.h
+        lib/makehex/MakeHex.cpp
+        lib/makehex/MakeHex.h
+        lib/makehex/irp_definitions.c
+        lib/makehex/irp_definitions.h
         lib/picofreq/picofreq.c
         lib/picofreq/picofreq.h
         commands/infrared/irtxrx.c

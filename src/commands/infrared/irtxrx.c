@@ -169,7 +169,7 @@ void irtx_handler(struct command_result *res){
 	char buffer[512];
 
 	//if -f flag, transmit from file
-	char file[13];
+	char file[64];
 	if(bp_cmd_get_string(&irtx_def, 'f', file, sizeof(file))){
 		//get the filename
 		printf("Transmitting from file %s\r\n", file);
@@ -187,7 +187,7 @@ void irtx_handler(struct command_result *res){
 		//TCHAR* bufptr;
 		//result = f_read(&file_handle, buffer, sizeof(buffer), &bytes_read);
 		infrared_cleanup_temp(); //tear down current IR PIO programs
-		irio_pio_tx_init(bio2bufiopin[BIO4], 38000); //setup IR PIO programs, actual freq will be set in irtx_packet
+		irio_pio_tx_init(bio2bufiopin[infrared_get_tx_pin()], 38000); //setup IR PIO programs, actual freq will be set in irtx_packet
 		while(f_gets(buffer, sizeof(buffer), &file_handle)){
 			/*if(bufptr ==0) {
 				printf("Error reading file %s\r\n", file);
@@ -200,7 +200,7 @@ void irtx_handler(struct command_result *res){
 				break;
 			}
 		}	
-		irio_pio_tx_deinit(bio2bufiopin[BIO4]); //tear down IR PIO programs
+		irio_pio_tx_deinit(bio2bufiopin[infrared_get_tx_pin()]); //tear down IR PIO programs
 		infrared_setup_resume(); //reinit IR PIO programs	
 		//close the file
 		result = f_close(&file_handle);
@@ -230,12 +230,12 @@ void irtx_handler(struct command_result *res){
 			
 			//printf("%s", buffer);
 			infrared_cleanup_temp(); //tear down current IR PIO programs
-			irio_pio_tx_init(bio2bufiopin[BIO4], 38000); //setup IR PIO programs, actual freq will be set in irtx_packet
+			irio_pio_tx_init(bio2bufiopin[infrared_get_tx_pin()], 38000); //setup IR PIO programs, actual freq will be set in irtx_packet
 			if(!irtx_transmit(buffer)){
 				printf("Error parsing AIR packet\r\n");
 				res->error = true;
 			}
-			irio_pio_tx_deinit(bio2bufiopin[BIO4]); //tear down IR PIO programs
+			irio_pio_tx_deinit(bio2bufiopin[infrared_get_tx_pin()]); //tear down IR PIO programs
 			infrared_setup_resume(); //reinit IR PIO programs
 			return;
 		}
@@ -256,7 +256,7 @@ void irrx_handler(struct command_result *res){
 	FIL file_handle;
 	FRESULT result;
 	bool save_file=false;
-	char file[13];
+	char file[64];
 	if(bp_cmd_get_string(&irrx_def, 'f', file, sizeof(file))){
 		printf("Saving to file %s\r\n", file);
 		save_file=true;
@@ -306,7 +306,7 @@ void irrx_handler(struct command_result *res){
 	infrared_cleanup_temp();
 	//setup IR PIO programs
 	irio_pio_rx_init(bio2bufiopin[ir_rx_pins[rx_sensor].bio]);
-	irio_pio_tx_init(bio2bufiopin[BIO4], 36000);
+	irio_pio_tx_init(bio2bufiopin[infrared_get_tx_pin()], 36000);
 
 	while(true){
 		uint32_t buffer[128];
@@ -320,7 +320,7 @@ void irrx_handler(struct command_result *res){
 		irio_pio_rxtx_drain_fifo();
 		//display captured packet
 		while(true){
-			if(irio_pio_rx_frame_buf(&mod_freq, &us, &pairs, buffer)) break;
+			if(irio_pio_rx_frame_buf(&mod_freq, &us, &pairs, buffer, count_of(buffer))) break;
 			// any key to exit
 			char c;
 		    if (rx_fifo_try_get(&c)) {
@@ -402,7 +402,7 @@ menu_irrx_handler:
 exit_irrx_handler:
 				//resume IR PIO programs
 				irio_pio_rx_deinit(bio2bufiopin[ir_rx_pins[rx_sensor].bio]);
-				irio_pio_tx_deinit(bio2bufiopin[BIO4]);
+				irio_pio_tx_deinit(bio2bufiopin[infrared_get_tx_pin()]);
 				infrared_setup_resume();
 				//close file
 				if(save_file){

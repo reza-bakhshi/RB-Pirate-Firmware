@@ -8,3 +8,6 @@ src/translation/history/new__en-us.json
 tools/__pycache__/
 
 result
+
+# host-side test binaries
+tests/test_ir_protocols

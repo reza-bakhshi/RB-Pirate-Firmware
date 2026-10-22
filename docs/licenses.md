@@ -34,6 +34,8 @@ All the people listed below hold copyrights to code in this project:
 * Copyright (c) 2014-2019 Marco Paland (info@paland.com), PALANDesign Hannover, Germany
 * Copyright (c) 2017,2019 Two Blue Cubes Ltd. All rights reserved.
 * Copyright (c) 2026 Shapoco (LcdTap)
+* Copyright (c) 2005 John S. Fine (MakeHex IRP encoder)
+* Copyright (c) 2025-2026 geo-tp (ESP32-Bit-Pirate MakeHex port, MIT)
 
 ## MIT: LcdTap
 
@@ -63,6 +65,25 @@ Therefore, we comply with all the terms of the LGPL3 license, including section 
 
 In conclusion, these are the reasons that we comply with LGPL3 and we can distribute binaries under LGPL3 terms.  
 For further information, please see the discussion at [github](https://github.com/DangerousPrototypes/BusPirate5-firmware/pull/34).
+
+## MakeHex IRP encoder (custom permissive license)
+### Used libraries
+#### [MakeHex](https://github.com/probonopd/MakeHex/) by John S. Fine
+##### Files that are being used from the project
+* `lib/makehex/MakeHex.cpp`
+* `lib/makehex/MakeHex.h`
+* `lib/makehex/irp_definitions.c` (protocol definitions data, adapted from the ESP32-Bit-Pirate project)
+* `lib/makehex/irp_definitions.h`
+##### Source Files that use this library
+* `pirate/ir_protocols.c` (INFRARED mode `send` for the MakeHex protocol set)
+##### copyright notice
+Copyright 2005 John S. Fine. You may use, copy, modify and/or distribute this program for private or
+commercial use provided that: 1) You do not hold him responsible for any damage or negative consequences
+resulting from those activities. 2) You include this copyright notice and disclaimer in any copy of any
+part or all of this program. The full license text is embedded at the top of `lib/makehex/MakeHex.cpp`.
+
+The protocol definition data and the ESP32 adaptation are from the
+[ESP32-Bit-Pirate](https://github.com/geo-tp/ESP32-Bit-Pirate) project (MIT, Copyright (c) 2025-2026 geo-tp).
 
 ## BSD 3 Clause
 This license is completely compatible with our MIT license. So BSD components have been directly incorporated into this project.

@@ -37,7 +37,7 @@
         E_DEBUG_CAT_CATCHALL         =  0u, // (((uint32_t)1u) <<  0u), // for messages that are not (yet) categorized
         E_DEBUG_CAT_EARLY_BOOT       =  1u, // (((uint32_t)1u) <<  1u), // early-in-boot (initialization)
         E_DEBUG_CAT_ONBOARD_PIXELS   =  2u, // (((uint32_t)1u) <<  2u), // onboard RGB pixels
-        E_DEBUG_CAT_ONBOARD_STORAGE  =  3u, // (((uint32_t)1u) << XXu), // lcdi2c mode specific
+        E_DEBUG_CAT_ONBOARD_STORAGE  =  3u, // (((uint32_t)1u) << XXu), // onboard storage debug
         // E_DEBUG_CAT_USB_HID          = XXu, // (((uint32_t)1u) << XXu), // USB based HID interactions
         // E_DEBUG_CAT_USB_CDC          = XXu, // (((uint32_t)1u) << XXu), // USB based serial port
         // E_DEBUG_CAT_USB_MSC          = XXu, // (((uint32_t)1u) << XXu), // USB based mass storage commands

@@ -1,170 +1,88 @@
-# Bus Pirate
+# RB-Pirate Firmware
 
-![](./img/bp5rev10-cover-angle.jpg)
+Custom firmware for the **RB-Pirate** board — a personal, trimmed-down fork of the
+[Bus Pirate 5/6 firmware](https://github.com/DangerousPrototypes/BusPirate5-firmware) by DangerousPrototypes.
 
-Bus Pirate™ 5 & 6 are the latest editions of the universal serial interface trusted by hackers since 2008.
+The Bus Pirate is a universal serial interface tool trusted by hackers since 2008: send commands over
+common serial protocols (1-Wire, I2C, SPI, UART, MIDI, serial LEDs, …) to probe and get to know a chip
+before prototyping — no code required.
 
-Can't get a chip to work? Is it the circuit, code, bad part or a burned out pin? The Bus Pirate sends commands over common serial protocols (1-Wire, I2C, SPI, UART, MIDI, serial LEDs, etc) so you can get to know a chip before prototyping. Updated with tons of new features, talking to chips and probing interfaces is more fun than ever!
+## About this fork
 
-## Resources
+This is a single-board build: every multi-version / multi-platform support that is not needed for the
+RB-Pirate hardware has been removed, and the board identity lives in its own config file.
 
-- [Download the latest firmware build](https://forum.buspirate.com/t/bus-pirate-5-auto-build-main-branch/20/99999)
-- [Get help and chat in the forum](https://forum.buspirate.com/)
-- [Firmware documentation](https://firmware.buspirate.com/) ([source](https://github.com/DangerousPrototypes/BusPirate5-docs-firmware))
-- [Hardware documentation](https://hardware.buspirate.com/) ([source](https://github.com/DangerousPrototypes/BusPirate5-docs-hardware))
-- [Hardware repo](https://github.com/DangerousPrototypes/BusPirate5-hardware)
-- [Firmware repo](https://github.com/DangerousPrototypes/BusPirate5-firmware)
+| | |
+|---|---|
+| Board | RB-Pirate (custom Bus Pirate 6 style hardware, rev 2) |
+| Board config | `src/platform/rb-pirate.h` / `src/platform/rb-pirate.c` |
+| Pico SDK board header | `src/boards/rb-pirate.h` (`PICO_BOARD=rb-pirate`) |
+| MCU | Raspberry Pi **RP2350B** (dual Cortex-M33, 512KB SRAM) |
+| Program flash | 128Mbit (16MB) external QSPI flash |
+| Storage | **TF card (SPI)** — settings, files and USB mass storage |
+| Display | none — full VT100 terminal interface (on-board LCD subsystem removed) |
 
-## VT100 terminal interface
+### Customizations vs upstream
 
-![](./img/teraterm-done.png)
+- **Single board target** — removed Bus Pirate 5, 5XL and 7 platform files, the RP2040 platform and the
+  obsolete board-selection logic; the build produces the `bus_pirate6` (RB-Pirate) firmware only.
+- **TF card instead of NAND flash** — removed the NAND/Dhara storage stack; SD SPI runs on
+  `spi0` (CLK `GPIO34`, CDI `GPIO32`, CDO `GPIO35`, CS `GPIO31`), 512-byte sectors, USB MSC geometry fixed.
+- **On-board LCD subsystem removed** — display code, images and LCD modes are gone; `LCDTap` below is the
+  external-accessory replacement.
+- **Pin configuration verified against the RB-Pirate schematic** — BUFDIR/BUFIO, current-sense
+  control/detect pins, logic-analyzer sense pins, 74HCT4067 analog mux selects, RGB, buttons.
+- **RP2350 E9 errata workaround** — the logic-analyzer sense pins (GPIO20-27) keep their input buffers
+  disabled when idle so they don't leak into floating lines; enabled only while sampling.
+- **All feature branches merged in:** `add-lcd-tap`, `add-nrf24`, `add-rfid`, `adding-cell`,
+  `ir-inferared-improve`, `subGhz` (see below).
 
-VT100 terminal emulation supports color and a live statusbar view of the voltage and functions on each pin. Type simple commands into the terminal, the Bus Pirate translates them into popular serial protocols and displays the response. Learn how a chip works without touching a line of code.
+## Modes & features
 
-## Specifications
+1-Wire, UART (+HDUART), I2C, SPI, 2-Wire, 3-Wire, DIO, LED, JTAG and more from the upstream firmware,
+plus these merged/custom modes:
 
-- Raspberry Pi RP2040 with 128Mbit program flash
-- 8 powerful IO pins - Support multiple protocols from 1.2-5volts. Analog voltage measurement and optional 10K pull-ups on all pins
-- 1-5volt output power supply - 0-500mA current limit, current sense, resettable fuse and protection circuit
-- 1Gbit NAND flash - Store settings and files. Appears as a USB drive.
-- LCD - A beautiful 240x320 pixel color IPS (all angle viewing) LCD acts as a pin label, while also showing the voltage on each pin and the current consumption of the programmable power supply unit
-- 18 RGB LEDs - It's customary to have an indicator LED, so to check that box we added 18 SK6812 RGB LEDs.
-- Just one button - 18 party LEDs but just one button!
-- 1-Wire, I2C, SPI, UART, MIDI, serial LEDs supported, more to come!
-
-Bus Pirate 5 is the universal serial interface tool designed by hackers, for hackers. It's crammed full of hardware and firmware features to make probing chips pleasant and easy.  
+- **INFRARED** — MakeHex/IRP protocol engine, full Bit-Pirate protocol set, Flipper `.ir` files,
+  record/send/replay/jam, TV-B-Gone.
+- **SUBGHZ** (CC1101) — `scan`, `sweep`, `trace`, `waterfall`, `send`, `receive`, `replay`, `record`,
+  `bruteforce` (12-bit fixed-key protocols), `jam`, `load` (Flipper `.sub`), `ear` (RSSI-to-audio tone),
+  `setfrequency`, KeeLoq keys, and more.
+- **LCDTAP** — passively capture an external LCD bus (I2C / 4-line SPI / 9-bit SPI3), reconstruct the
+  framebuffer and save it as a BMP (ST7032, ST7789, ILI9341, SSD1306, SSD1331, KS0108).
+- **RF24** (nRF24L01) — channel scan/sweep/waterfall, send/receive packets, jamming.
+- **RFID** (PN532 over HSU UART) — NFC/RFID operations, MIFARE authentication, libnfc-style commands.
+- **CELL** — SIMCom-style AT modem commands inside UART mode (info, network, SMS, calls, USSD, …).
 
 ## Build
 
-This project uses `cmake` as the build system, so building the project only takes 2 steps:
-1. project configuration (needs to be ran once, or when you want to change configuration).  
+This project uses `cmake`; building takes 2 steps:
+
+1. Configure (once):
     ```
-    cmake -S . -B build_rp2040 -DPICO_SDK_FETCH_FROM_GIT=TRUE
     cmake -S . -B build_rp2350 -DPICO_SDK_FETCH_FROM_GIT=TRUE -DBP_PICO_PLATFORM=rp2350
     ```
-    you may want to add the flags `-DPICO_SDK_PATH=/path/to/pico-sdk -DPICO_SDK_FETCH_FROM_GIT=FALSE` if you want to use pico-sdk that is in your local path.  
-    > NOTE: WINDOWS users: for some reason the automatic fetch fails because of git submodule, so you will need to clone pico-sdk your self, and then
-    > apply the following commands inside the pico-sdk repo:  
-    > ```bash
-    > git submodule init
-    > git submodule update
-    > ```
-    
-2. project build
-    ```bash
-    cmake --build ./build_rp2040 --parallel --target all
-    cmake --build ./build_rp2350 --parallel --target all
-    # you may add a specific target, such as:
-    cmake --build ./build_rp2040 --parallel --target bus_pirate5_rev8
-    cmake --build ./build_rp2040 --parallel --target bus_pirate5_rev10
-    cmake --build ./build_rp2350 --parallel --target bus_pirate5_xl
-    cmake --build ./build_rp2350 --parallel --target bus_pirate6
+    Add `-DPICO_SDK_PATH=/path/to/pico-sdk -DPICO_SDK_FETCH_FROM_GIT=FALSE` to use a local pico-sdk.
+
+2. Build:
     ```
-    You can also manually clean using `--target clean`, or
-    force a clean prior to building by using `--clean-first`.
+    cmake --build build_rp2350 --parallel --target bus_pirate6
+    ```
 
-### Build using Github Actions
+The UF2 image ends up in `build_rp2350/src/bus_pirate6.uf2` — hold BOOTSEL, plug in USB, copy it over.
 
-Having difficulty setting up a build environment?  Here's a
-workaround that, while it takes longer to build than a local build,
-can be done with just a web browser and a GitHub account.
+## Resources
 
-<details><summary>Click to expand / show workaround...</summary><P/>
+- [Upstream Bus Pirate firmware](https://github.com/DangerousPrototypes/BusPirate5-firmware)
+- [Bus Pirate forum](https://forum.buspirate.com/)
+- [Firmware documentation](https://firmware.buspirate.com/)
+- [Hardware documentation](https://hardware.buspirate.com/)
 
-Example:
-1. Presume you've forked the repository into your GitHub account, and have a local branch you've named `fix_branch` with your changes.
-1. Next, click on the `Actions` tab (near top of the UI, to the right of `<> Code` and `Pull Requests`
-1. If this is the first time you've done this, you may need to authorize the github actions to run on your fork.  This is a one-time operation.
-1. Otherwise, click on the `CMake` workflow listed on the left.
-1. Note that the page will say, `This workflow has a workflow_run event trigger.`  That means you can run the action manually on a branch of your choice.
-1. Click the `Run workflow` button, select the branch you created (e.g., `fix_branch`), and click the `Run workflow` button.
-1. Wait a few seconds, then refresh the page, and you should see the workflow running.  It may take a few minutes to complete (e.g., **4-7 minutes** is normal.)
-1. Once the workflow completes (shows green checkmark), click on the job to see details.  At the bottom of the page should be the generated artifacts, with download links.
-1. Download the artifact of interest. BP5 firmware can be found in `firmware-rp2040-*`, while the BP5XL and BP6 firmwares can be found in `firmware-rp2350-*`.
+## Licenses
 
-That's it!  You now have a firmware build without having to have installed a local build environment.
-
-</details>
-
-### build using docker
-
-Instructions on the forum provide additional details; however, this repo provides a docker compose image for you to just get running quickly in the event you want to try patching/hacking.
-To run a build, perform the following actions on linux:
-
-```sh
-# clone the repo
-git clone git@github.com:DangerousPrototypes/BusPirate5-firmware.git
-cd BusPirate5-firmware
-
-# OPTIONAL: build the environment, or you can just let it pull - this will happen automatically in vscode using the devcontainers
-# docker compose build
-#
-# NOTE: should you need to customize your users in docker for some reason:
-# docker compose build --build-arg UID="$(id -u)" --build-arg GID="$(id -g)" --build-arg USERNAME="build" dev
-
-# run a build
-docker compose run dev build-clean
-
-# build stuff happens ...
-# [100%] Linking CXX executable bus_pirate5_rev10.elf
-# Memory region         Used Size  Region Size  %age Used
-#            FLASH:      460068 B         2 MB     21.94%
-#              RAM:      256168 B       256 KB     97.72%
-#        SCRATCH_X:          4 KB         4 KB    100.00%
-#        SCRATCH_Y:          0 GB         4 KB      0.00%
-# [100%] Built target bus_pirate5_rev10
-#
-# your build will be placed in ./build/ - congrats!
-
-# Or drop into the container and run builds manually
-docker compose run dev
-
-# To debug using the containers
-cp docker/debug.env .env
-# edit your BP_PORT{#} environment variables to your USB devices
-# run the debug version of the services
-docker compose run dev-debug
-```
-### build using nix
-
-Either build using nix directly
-
-```shell
-$ nix build
-$ file result/bus_pirate5_rev10.uf2
-result/bus_pirate5_rev10.uf2: UF2 firmware image, family Raspberry Pi RP2040, address 0x10000000, 3572 total blocks
-```
-
-or using nix to get a development shell, which is more convenient for incremental builds:
-
-```shell
-$ nix develop
-$ cmake -S . -B build_rp2040
--- Build files have been written to: /home/zoid/clone/BusPirate5-firmware/build_rp2040
-$ cmake --build build_rp2040 --parallel --target bus_pirate5_rev10
-Memory region         Used Size  Region Size  %age Used
-           FLASH:     1169872 B        16 MB      6.97%
-             RAM:      224840 B       256 KB     85.77%
-       SCRATCH_X:          4 KB         4 KB    100.00%
-       SCRATCH_Y:          4 KB         4 KB    100.00%
-[100%] Built target bus_pirate5_rev10
-$ file ./build_rp2040/src/bus_pirate5_rev10.uf2
-./build_rp2040/src/bus_pirate5_rev10.uf2: UF2 firmware image, family Raspberry Pi RP2040, address 0x10000000, 3572 total blocks
-```
-
-## Other open source licenses
-
-This project uses code from the following licenses:  
-* LGPL3  
-* BSD 3 clause 
-
-More information on the licenses and components being used can be found [here](docs/licenses.md).  
-
-## Contributing
-Please see [contributing.md](docs/contributing.md)
+This project inherits the upstream licenses (see [docs/licenses.md](docs/licenses.md)) and adds third
+party components (LcdTap, MakeHex, Bruce bruteforce tables, …) with their own notices.
 
 ## Trademarks
 
-Bus Pirate™ is a trademark of Where Labs, LLC. All rights reserved.
-
-
+Bus Pirate™ is a trademark of Where Labs, LLC. All rights reserved. This fork is an independent
+personal project and is not affiliated with or endorsed by Where Labs, LLC or DangerousPrototypes.

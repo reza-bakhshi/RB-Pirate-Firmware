@@ -116,7 +116,7 @@ extern const uint8_t bio2bufdirpin[8];
 #define BP_SPI_CLK  34 // SPI_CLK (Pin 43)
 #define BP_SPI_CDO 35 // SPI_CDO (Pin 44)
 
-// NAND flash is on the BP_SPI_PORT, define Chip Select
+// TF card is on the BP_SPI_PORT, define Chip Select
 #define FLASH_STORAGE_CS 31 // CARD_CS (Pin 39)
 #define CARD_CS FLASH_STORAGE_CS
 

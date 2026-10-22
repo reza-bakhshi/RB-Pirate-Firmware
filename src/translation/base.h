@@ -711,7 +711,6 @@ enum T_translations{
     T_RF24_CMD_JAM,
     T_RF24_OPT_GROUP,
     T_RF24_OPT_END_CHANNEL,
->>>>>>> add-nrf24
 
 	T_LAST_ITEM_ALWAYS_AT_THE_END //LEAVE THIS ITEM AT THE END!!! It helps the compiler report errors if there are missing translations
 };

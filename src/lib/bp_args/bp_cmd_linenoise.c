@@ -34,30 +34,23 @@
 
 /*
  * Upper bound on the number of defs we collect per callback invocation.
- * Global commands (~50) + largest mode command set (~15).
- * If a mode has more than this many migrated commands some will simply
- * be silently skipped — a safe, low-cost tradeoff vs. malloc on an RP2040.
+ * Largest mode command set (~25) + global commands (~100).
  */
-#define MAX_COLLECTED_DEFS 80
+#define MAX_COLLECTED_DEFS 160
 
 /* ── helpers ────────────────────────────────────────────────────────── */
 
 /**
- * @brief Collect non-NULL .def pointers from global + current-mode commands.
+ * @brief Collect non-NULL .def pointers from current-mode + global commands.
+ * @details Mode commands are collected first so they take precedence for hints
+ *          and completion within an active mode.
  * @param[out] defs   Caller-provided array of at least MAX_COLLECTED_DEFS
  * @return            Number of defs collected
  */
 static size_t collect_defs(const bp_command_def_t *defs[]) {
     size_t n = 0;
 
-    /* Global commands */
-    for (uint32_t i = 0; i < commands_count && n < MAX_COLLECTED_DEFS; i++) {
-        if (commands[i].def) {
-            defs[n++] = commands[i].def;
-        }
-    }
-
-    /* Current mode commands */
+    /* Current mode commands (collected first for mode-specific precedence) */
     if (modes[system_config.mode].mode_commands_count) {
         uint32_t mc = *modes[system_config.mode].mode_commands_count;
         const struct _mode_command_struct *mc_arr = modes[system_config.mode].mode_commands;
@@ -65,6 +58,13 @@ static size_t collect_defs(const bp_command_def_t *defs[]) {
             if (mc_arr[i].def) {
                 defs[n++] = mc_arr[i].def;
             }
+        }
+    }
+
+    /* Global commands */
+    for (uint32_t i = 0; i < commands_count && n < MAX_COLLECTED_DEFS; i++) {
+        if (commands[i].def) {
+            defs[n++] = commands[i].def;
         }
     }
 

@@ -434,6 +434,12 @@ set(buspirate_common
         lib/lcdtap/pico2/src/spi_slave.cpp
         lib/lcdtap/pico2/src/i2c_slave.cpp
 
+        # nRF24L01 2.4GHz radio
+        mode/rf24.c
+        mode/rf24.h
+        pirate/nrf24l01.c
+        pirate/nrf24l01.h
+
         # JTAG
         mode/jtag.h
         mode/jtag.c

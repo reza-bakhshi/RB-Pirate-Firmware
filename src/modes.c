@@ -56,6 +56,9 @@
 #ifdef BP_USE_LCDTAP
 #include "mode/lcdtap.h"
 #endif
+#ifdef BP_USE_RF24
+#include "mode/rf24.h"
+#endif
 #ifdef BP_USE_DUMMY1
 #include "mode/dummy1.h"
 #endif
@@ -546,6 +549,36 @@ struct _mode modes[] = {
         .protocol_get_speed = nullfunc7_no_error,
         .protocol_preflight_sanity_check = subghz_preflight_sanity_check,
         .setup_def = &subghz_setup_def,
+    },
+#endif
+#ifdef BP_USE_RF24
+    [RF24] = {
+        .protocol_name = "RF24",
+        .protocol_start = nullfunc1_temp,
+        .protocol_start_alt = nullfunc1_temp,
+        .protocol_stop = nullfunc1_temp,
+        .protocol_stop_alt = nullfunc1_temp,
+        .protocol_write = nullfunc1_temp,
+        .protocol_read = nullfunc1_temp,
+        .protocol_clkh = nullfunc1_temp,
+        .protocol_clkl = nullfunc1_temp,
+        .protocol_dath = nullfunc1_temp,
+        .protocol_datl = nullfunc1_temp,
+        .protocol_dats = nullfunc1_temp,
+        .protocol_tick_clock = nullfunc1_temp,
+        .protocol_bitr = nullfunc1_temp,
+        .protocol_periodic = noperiodic,
+        .protocol_macro = nullfunc4,
+        .protocol_setup = rf24_setup,
+        .protocol_setup_exc = rf24_setup_exc,
+        .protocol_cleanup = rf24_cleanup,
+        .protocol_settings = rf24_settings,
+        .protocol_help = rf24_help,
+        .mode_commands = rf24_commands,
+        .mode_commands_count = &rf24_commands_count,
+        .protocol_get_speed = nullfunc7_no_error,
+        .protocol_preflight_sanity_check = NULL,
+        .setup_def = &rf24_setup_def,
     },
 #endif
 #ifdef BP_USE_JTAG

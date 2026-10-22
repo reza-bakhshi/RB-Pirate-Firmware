@@ -1,88 +1,145 @@
+<div align="center">
+
 # RB-Pirate Firmware
 
-Custom firmware for the **RB-Pirate** board — a personal, trimmed-down fork of the
-[Bus Pirate 5/6 firmware](https://github.com/DangerousPrototypes/BusPirate5-firmware) by DangerousPrototypes.
+**Custom RP2350B firmware for the RB-Pirate hardware exploration and debugging tool**
 
-The Bus Pirate is a universal serial interface tool trusted by hackers since 2008: send commands over
-common serial protocols (1-Wire, I2C, SPI, UART, MIDI, serial LEDs, …) to probe and get to know a chip
-before prototyping — no code required.
+[![MCU: RP2350B](https://img.shields.io/badge/MCU-RP2350B-c51a4a?style=flat-square)](#firmware-features)
+[![Storage: TF card](https://img.shields.io/badge/Storage-TF%20card-2f855a?style=flat-square)](#removable-tf-card-storage)
+[![Based on: Bus Pirate 6](https://img.shields.io/badge/Based%20on-Bus%20Pirate%206-314cb0?style=flat-square)](https://github.com/DangerousPrototypes/BusPirate5-firmware)
+[![License: MIT](https://img.shields.io/badge/License-MIT-f5c518?style=flat-square)](LICENSE.TXT)
 
-## About this fork
+</div>
 
-This is a single-board build: every multi-version / multi-platform support that is not needed for the
-RB-Pirate hardware has been removed, and the board identity lives in its own config file.
+RB-Pirate Firmware lets developers, makers, and hardware enthusiasts communicate
+with, analyze, and debug electronic devices directly from a terminal. It can
+explore serial buses, inspect unknown interfaces, capture logic activity, measure
+signal voltages, safely power target circuits, work with memory devices and
+sensors, and automate common hardware tasks — all with simple commands typed
+into a color VT100 terminal, no code required.
 
-| | |
-|---|---|
-| Board | RB-Pirate (custom Bus Pirate 6 style hardware, rev 2) |
-| Board config | `src/platform/rb-pirate.h` / `src/platform/rb-pirate.c` |
-| Pico SDK board header | `src/boards/rb-pirate.h` (`PICO_BOARD=rb-pirate`) |
-| MCU | Raspberry Pi **RP2350B** (dual Cortex-M33, 512KB SRAM) |
-| Program flash | 128Mbit (16MB) external QSPI flash |
-| Storage | **TF card (SPI)** — settings, files and USB mass storage |
-| Display | none — full VT100 terminal interface (on-board LCD subsystem removed) |
+RB-Pirate Firmware is an independent project based on the
+[Bus Pirate 5/6 firmware](https://github.com/DangerousPrototypes/BusPirate5-firmware)
+created by [Dangerous Prototypes](https://dangerousprototypes.com/).
 
-### Customizations vs upstream
+> [!IMPORTANT]
+> ### RB-Pirate hardware only
+>
+> This is a single-board build made exclusively for the
+> **[RB-Pirate board](https://github.com/reza-bakhshi/RB-Pirate)**. Do not flash
+> it on mainline Bus Pirate 5, 5XL, 6, or 7 hardware. For those devices use the
+> official firmware from Dangerous Prototypes.
 
-- **Single board target** — removed Bus Pirate 5, 5XL and 7 platform files, the RP2040 platform and the
-  obsolete board-selection logic; the build produces the `bus_pirate6` (RB-Pirate) firmware only.
-- **TF card instead of NAND flash** — removed the NAND/Dhara storage stack; SD SPI runs on
-  `spi0` (CLK `GPIO34`, CDI `GPIO32`, CDO `GPIO35`, CS `GPIO31`), 512-byte sectors, USB MSC geometry fixed.
-- **On-board LCD subsystem removed** — display code, images and LCD modes are gone; `LCDTap` below is the
-  external-accessory replacement.
-- **Pin configuration verified against the RB-Pirate schematic** — BUFDIR/BUFIO, current-sense
-  control/detect pins, logic-analyzer sense pins, 74HCT4067 analog mux selects, RGB, buttons.
-- **RP2350 E9 errata workaround** — the logic-analyzer sense pins (GPIO20-27) keep their input buffers
-  disabled when idle so they don't leak into floating lines; enabled only while sampling.
-- **All feature branches merged in:** `add-lcd-tap`, `add-nrf24`, `add-rfid`, `adding-cell`,
-  `ir-inferared-improve`, `subGhz` (see below).
+## Firmware features
 
-## Modes & features
+### Single-board build
 
-1-Wire, UART (+HDUART), I2C, SPI, 2-Wire, 3-Wire, DIO, LED, JTAG and more from the upstream firmware,
-plus these merged/custom modes:
+- Board identity lives in its own config file: `src/platform/rb-pirate.h` (+ `src/platform/rb-pirate.c`)
+- Pico SDK board header: `src/boards/rb-pirate.h` (`PICO_BOARD=rb-pirate`)
+- Bus Pirate 5, 5XL, and 7 platform files, RP2040 platform, and board-selection logic removed
+- Pin configuration verified against the RB-Pirate schematic (buffer direction, current sense,
+  logic-analyzer sense pins, analog mux selects, RGB, buttons)
+
+### Terminal and logic analysis
+
+- Color VT100 terminal interface
+- Live status toolbar with voltage and current monitoring
+- Follow-Along Logic Analyzer capture while commands are executed
+- Live bus-activity inspection, decoding, and analysis workflows
+- RP2350 E9 errata workaround keeps analyzer sense pins from leaking into floating lines when idle
+
+### Removable TF card storage
+
+- Stores global and protocol-mode settings
+- Provides space for logs, captures, dumps, scripts, and `.sub` signal files
+- Appears as a USB mass-storage device through the firmware's USB storage interface
+- Removable and easy to replace or upgrade
+
+## Modes and protocols
+
+- I²C, SPI, UART, half-duplex UART, 1-Wire, 2-Wire, and 3-Wire communication
+- Digital I/O and serial LED control
+- JTAG and SWD discovery
+- EEPROM, flash, FRAM, sensor, and smart-card interaction
+
+### Additional merged modes
 
 - **INFRARED** — MakeHex/IRP protocol engine, full Bit-Pirate protocol set, Flipper `.ir` files,
-  record/send/replay/jam, TV-B-Gone.
-- **SUBGHZ** (CC1101) — `scan`, `sweep`, `trace`, `waterfall`, `send`, `receive`, `replay`, `record`,
-  `bruteforce` (12-bit fixed-key protocols), `jam`, `load` (Flipper `.sub`), `ear` (RSSI-to-audio tone),
-  `setfrequency`, KeeLoq keys, and more.
-- **LCDTAP** — passively capture an external LCD bus (I2C / 4-line SPI / 9-bit SPI3), reconstruct the
-  framebuffer and save it as a BMP (ST7032, ST7789, ILI9341, SSD1306, SSD1331, KS0108).
-- **RF24** (nRF24L01) — channel scan/sweep/waterfall, send/receive packets, jamming.
-- **RFID** (PN532 over HSU UART) — NFC/RFID operations, MIFARE authentication, libnfc-style commands.
-- **CELL** — SIMCom-style AT modem commands inside UART mode (info, network, SMS, calls, USSD, …).
+  record/send/replay/jam, TV-B-Gone
+- **SUBGHZ (CC1101)** — band `scan` and `sweep` with activity/confidence, GDO0 logic `trace`,
+  `waterfall`, Princeton `send`, `receive` with encoding/bitrate guessing, `replay`, `record`,
+  12-bit key `bruteforce` (Nice/Came/Ansonic/Holtek/Linear/Chamberlain), `jam`, Flipper `.sub` `load`,
+  RSSI-to-audio `ear`, `setfrequency`, KeeLoq keys, and more
+- **LCDTAP** — passive capture of external LCD buses (I²C, 4-line SPI, 9-bit SPI3) with framebuffer
+  reconstruction and BMP export (ST7032, ST7789, ILI9341, SSD1306, SSD1331, KS0108)
+- **RF24 (nRF24L01)** — channel scan/sweep/waterfall, packet send/receive, jamming
+- **RFID (PN532 over HSU UART)** — NFC/RFID operations, MIFARE authentication, libnfc-style commands
+- **CELL** — SIMCom-style AT modem commands inside UART mode (info, network, SIM, SMS, calls, USSD, …)
 
 ## Build
 
-This project uses `cmake`; building takes 2 steps:
+This project uses `cmake` as the build system.
 
-1. Configure (once):
+### Requirements
+
+- CMake
+- Raspberry Pi [pico-sdk](https://github.com/raspberrypi/pico-sdk)
+- ARM GCC toolchain (installed automatically with the SDK environment)
+
+### Steps
+
+1. Configure the project (run once, or when changing configuration):
+
     ```
     cmake -S . -B build_rp2350 -DPICO_SDK_FETCH_FROM_GIT=TRUE -DBP_PICO_PLATFORM=rp2350
     ```
-    Add `-DPICO_SDK_PATH=/path/to/pico-sdk -DPICO_SDK_FETCH_FROM_GIT=FALSE` to use a local pico-sdk.
 
-2. Build:
+    To use a local pico-sdk instead, add `-DPICO_SDK_PATH=/path/to/pico-sdk -DPICO_SDK_FETCH_FROM_GIT=FALSE`.
+
+2. Build the firmware:
+
     ```
     cmake --build build_rp2350 --parallel --target bus_pirate6
     ```
 
-The UF2 image ends up in `build_rp2350/src/bus_pirate6.uf2` — hold BOOTSEL, plug in USB, copy it over.
+The build outputs `build_rp2350/src/bus_pirate6.uf2`.
+
+## Installation
+
+1. Hold the **BOOTSEL** button while connecting the board to USB
+2. Copy `bus_pirate6.uf2` onto the mounted `RP2350` drive
+3. The board reboots into the new firmware automatically
+
+For updates over USB serial, the firmware also exposes a bootloader identification
+through the terminal interface.
+
+## Related projects
+
+- **[RB-Pirate](https://github.com/reza-bakhshi/RB-Pirate)** — the RB-Pirate hardware (RP2350B, 2-layer KiCad 10 PCB)
+- **[RB-Pirate RGB & Button HAT](https://github.com/reza-bakhshi/RB-Pirate-RGB-HAT)** — optional RGB feedback
+  and user button; the firmware provides RGB & Button HAT integration, and RB-Pirate operates normally without it
 
 ## Resources
 
-- [Upstream Bus Pirate firmware](https://github.com/DangerousPrototypes/BusPirate5-firmware)
 - [Bus Pirate forum](https://forum.buspirate.com/)
 - [Firmware documentation](https://firmware.buspirate.com/)
 - [Hardware documentation](https://hardware.buspirate.com/)
 
-## Licenses
+## License
 
-This project inherits the upstream licenses (see [docs/licenses.md](docs/licenses.md)) and adds third
-party components (LcdTap, MakeHex, Bruce bruteforce tables, …) with their own notices.
+RB-Pirate Firmware is released under the [MIT License](LICENSE.TXT).
+
+Third-party components and libraries remain subject to their respective licenses
+(see [docs/licenses.md](docs/licenses.md)).
 
 ## Trademarks
 
-Bus Pirate™ is a trademark of Where Labs, LLC. All rights reserved. This fork is an independent
-personal project and is not affiliated with or endorsed by Where Labs, LLC or DangerousPrototypes.
+Bus Pirate™ is a trademark of Where Labs, LLC. All rights reserved. This fork is
+an independent personal project and is not affiliated with or endorsed by
+Where Labs, LLC or Dangerous Prototypes.
+
+---
+
+<div align="center">
+  <sub>Built for hardware exploration, debugging, and experimentation.</sub>
+</div>

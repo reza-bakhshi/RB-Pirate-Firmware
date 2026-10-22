@@ -107,6 +107,13 @@ void logic_analyser_done(void) {
     }
     pio_sm_set_enabled(pio_config.pio, pio_config.sm, false);
 
+    // disable the pad input buffers again (RP2350 E9 errata: leaks current into floating lines)
+    if (la_base_pin == LA_BPIO0) {
+        for (uint8_t i = 0; i < 8; i++) {
+            gpio_set_input_enabled(LA_BPIO0 + i, false);
+        }
+    }
+
     if (pio_config.program) {
         // pio_remove_program_and_unclaim_sm(pio_config.program, pio_config.pio, pio_config.sm, pio_config.offset);
         pio_remove_program(pio_config.pio, pio_config.program, pio_config.offset);
@@ -258,6 +265,13 @@ uint32_t logic_analyzer_configure(
 
     restart_dma(); // do after PIO and SM are assigned
 
+    // enable the pad input buffers for the logic analyzer pins
+    // (RP2350 E9 errata workaround: input buffers are left disabled when not sampling)
+    for (uint8_t i = 0; i < 8; i++) {
+        if (la_base_pin + i >= 48) break; // RP2350B bank 0 ends at GPIO47
+        gpio_set_input_enabled(la_base_pin + i, true);
+    }
+
     // interrupt on done notification
     pio_interrupt_clear(pio_config.pio, 0);
     pio_set_irq0_source_enabled(pio_config.pio, pis_interrupt0, true);
@@ -293,6 +307,13 @@ bool logic_analyzer_cleanup(void) {
         // pio_remove_program_and_unclaim_sm(pio_config.program, pio_config.pio, pio_config.sm, pio_config.offset);
         pio_remove_program(pio_config.pio, pio_config.program, pio_config.offset);
         pio_config.program = 0;
+    }
+
+    // disable the pad input buffers again (RP2350 E9 errata: leaks current into floating lines)
+    if (la_base_pin == LA_BPIO0) {
+        for (uint8_t i = 0; i < 8; i++) {
+            gpio_set_input_enabled(LA_BPIO0 + i, false);
+        }
     }
 
     mem_free((uint8_t*)la_buf);

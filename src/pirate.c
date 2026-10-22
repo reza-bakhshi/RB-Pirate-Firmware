@@ -214,6 +214,12 @@ static void main_system_initialization(void) {
     gpio_setup(LA_BPIO5, GPIO_IN, 0);
     gpio_setup(LA_BPIO6, GPIO_IN, 0);
     gpio_setup(LA_BPIO7, GPIO_IN, 0);
+    // disable the input buffers of the floating logic analyzer sense pins
+    // (RP2350 E9 errata: the input buffers leak current into the buffered IO lines
+    // when idle, lifting floating readings and varying between boots)
+    for (uint8_t i = 0; i < 8; i++) {
+        gpio_set_input_enabled(LA_BPIO0 + i, false);
+    }
 #else
 #error "Platform not speficied in pirate.c"
 #endif

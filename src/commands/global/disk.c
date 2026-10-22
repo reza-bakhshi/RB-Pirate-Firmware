@@ -271,7 +271,7 @@ uint8_t disk_format(void) {
 
     if (FR_OK != fr) {
         storage_file_error(fr);
-        printf("Error: Format failed...\r\n", fr); // fs make failure
+        printf("Error: Format failed... (%d)\r\n", fr); // fs make failure
         return fr;
     }
     printf("Format success!\r\n"); // fs make success

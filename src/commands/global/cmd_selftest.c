@@ -382,6 +382,10 @@ bool selftest_button(void) {
 bool selftest_la_bpio(void) {
     uint32_t temp1, fails = 0, iopin = 0;
     printf("LA_BPIO TEST (SHOULD BE 1)\r\n");
+    // enable the LA pad input buffers for the test (RP2350 E9 workaround disables them when idle)
+    for (uint8_t i = 0; i < 8; i++) {
+        gpio_set_input_enabled(LA_BPIO0 + i, true);
+    }
     for (uint8_t lapin = LA_BPIO0; lapin < (LA_BPIO7 + 1); lapin++) {
         bio_output(iopin);
         bio_put(iopin, 1);
@@ -417,16 +421,10 @@ bool selftest_la_bpio(void) {
         }
         bio_input(iopin);
         iopin++;
-
-        /*
-        while(true){
-            pullup_enable();
-            busy_wait_ms(1);
-            printf("LA_BPIO: 0:%d 1:%d 2:%d 3:%d 4:%d 5:%d 6:%d 7:%d\r\n", gpio_get(LA_BPIO0), gpio_get(LA_BPIO1),
-        gpio_get(LA_BPIO2), gpio_get(LA_BPIO3), gpio_get(LA_BPIO4), gpio_get(LA_BPIO5), gpio_get(LA_BPIO6),
-        gpio_get(LA_BPIO7));
-        }
-        */
+    }
+    // disable the LA pad input buffers again (RP2350 E9 workaround)
+    for (uint8_t i = 0; i < 8; i++) {
+        gpio_set_input_enabled(LA_BPIO0 + i, false);
     }
     if (fails) {
         return true;

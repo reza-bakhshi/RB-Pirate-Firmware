@@ -294,7 +294,7 @@ DSTATUS diskio_initialize (
 )
 {
 	BYTE n, cmd, ty, ocr[4];
-	const uint32_t timeout = 1000; /* Initialization timeout = 1 sec */
+	const uint32_t timeout = 2000; /* Initialization timeout = 2 sec (slow SDSC cards) */
 	uint32_t t;
 
 	spi_busy_wait(true);

@@ -112,9 +112,9 @@ extern const uint8_t bio2bufdirpin[8];
 // SPI Defines
 // We are going to use SPI 0 for on-board peripherals
 #define BP_SPI_PORT spi0
-#define BP_SPI_CDI 32 //16
-#define BP_SPI_CLK  34 //18
-#define BP_SPI_CDO 35 //19
+#define BP_SPI_CDI 32 // SPI_CDI (Pin 40)
+#define BP_SPI_CLK  34 // SPI_CLK (Pin 43)
+#define BP_SPI_CDO 35 // SPI_CDO (Pin 44)
 
 // NAND flash is on the BP_SPI_PORT, define Chip Select
 #define FLASH_STORAGE_CS 31 // CARD_CS (Pin 39)
@@ -130,12 +130,12 @@ extern const uint8_t bio2bufdirpin[8];
 #define RGB_LEN 18 
 
 //PWM based PSU control pins
-#define PSU_PWM_CURRENT_ADJ 45 //10B
-#define PSU_PWM_VREG_ADJ 44 //10A
+#define PSU_PWM_CURRENT_ADJ 45 // CURRENT_ADJ_MCU (Pin 56, ADC5)
+#define PSU_PWM_VREG_ADJ 44 // VREG_ADJ_MCU (Pin 55, ADC4)
 #define CURRENT_EN          19 // CURRENT_EN (Pin 19)
 #define CURRENT_RESET       16 // CURRENT_RESET (Pin 16)
 #define CURRENT_EN_OVERRIDE 18 // CURRENT_EN_OVERRIDE (Pin 18)
-#define CURRENT_FUSE_DETECT 17 
+#define CURRENT_FUSE_DETECT 17 // CURRENT_DETECT (Pin 17)
 
 //Look behind logic analyzer buffer
 #define LA_BPIO0 20
@@ -148,15 +148,15 @@ extern const uint8_t bio2bufdirpin[8];
 #define LA_BPIO7 27
 
 // A single ADC pin is used to measure the source selected by a 74hct4067
-#define AMUX_OUT 46 //28
+#define AMUX_OUT 46 // AMUX_OUT (Pin 57, ADC6)
 #define AMUX_OUT_ADC 6
 
 // Current sense ADC
-#define CURRENT_SENSE 47 //29
+#define CURRENT_SENSE 47 // CURRENT_SENSE (Pin 58, ADC7)
 #define CURRENT_SENSE_ADC 7
 
-// Two pins for front buttons
-#define EXT1 43 //27
+// Pin for front button
+#define EXT1 43 // BUTTONS (Pin 54, ADC3)
 
 // on bp6 AMUX is controlled directly by MCU pins
 #define AMUX_S0             40 // AMUX_S0_3V3 (Pin 49, C0/ADC0)
@@ -168,26 +168,29 @@ extern const uint8_t bio2bufdirpin[8];
 // (voltage is divided by 2 with a buffered resistor divider)
 // ADC connections as they appear on the analog mux pins
 // will be disambiguated in the hw_pin_voltages_ordered'
+// the comment after each entry is the physical mux channel number
+// RB-Pirate wiring: IO0-IO7 on channels 0-7 (direct, not reversed)
 enum adc_mux{
-    HW_ADC_MUX_BPIO0, //7
-    HW_ADC_MUX_BPIO1, //6
-    HW_ADC_MUX_BPIO2, //5
-    HW_ADC_MUX_BPIO3, //4
-    HW_ADC_MUX_BPIO4, //3
-    HW_ADC_MUX_BPIO5, //2
-    HW_ADC_MUX_BPIO6, //1
-    HW_ADC_MUX_BPIO7, //0
+    HW_ADC_MUX_BPIO0, //0
+    HW_ADC_MUX_BPIO1, //1
+    HW_ADC_MUX_BPIO2, //2
+    HW_ADC_MUX_BPIO3, //3
+    HW_ADC_MUX_BPIO4, //4
+    HW_ADC_MUX_BPIO5, //5
+    HW_ADC_MUX_BPIO6, //6
+    HW_ADC_MUX_BPIO7, //7
     HW_ADC_MUX_VUSB, //8
-    HW_ADC_MUX_VREG_OUT, //10
-    HW_ADC_MUX_VREF_VOUT, //11
-    HW_ADC_MUX_CURRENT_DETECT,    //9
-    HW_ADC_MUX_CARD_DETECT,
+    HW_ADC_MUX_VREG_OUT, //9
+    HW_ADC_MUX_VREF_VOUT, //10
+    HW_ADC_MUX_CURRENT_DETECT, //11
+    HW_ADC_MUX_CARD_DETECT, //12
     HW_ADC_MUX_COUNT
 };
 
 #define HW_ADC_MUX_GND 15
 
-#define bufio2amux(x) (7 - x)
+// BIO pin x is wired to mux channel x on this board (direct order)
+#define bufio2amux(x) (x)
 
 //CURRENT SENSE is attached to a separate ADC, not through the mux
 //lets make a define for it (and space in the hw_adc_x arrays) at the end of HW_ADC_MUX_count
@@ -240,6 +243,6 @@ static const uint32_t* hw_pin_avgsum_voltage_ordered[]={
 #define BP_DEBUG_UART_1_TX BIO0 
 #define BP_DEBUG_UART_1_RX BIO1     
 
-#define BP_FLASH_DISK_BLOCK_SIZE 2048 //512
+#define BP_FLASH_DISK_BLOCK_SIZE 512 // TF card (SD SPI) sector size
 
 #endif

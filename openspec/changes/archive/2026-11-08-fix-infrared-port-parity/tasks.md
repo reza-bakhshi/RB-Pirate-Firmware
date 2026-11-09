@@ -1,0 +1,25 @@
+# Tasks: Fix Infrared Port Parity and Protocol Ambiguities
+
+- [x] 1. Disambiguate protocol table and lookup in `src/pirate/ir_protocols.c` <!-- id: 1 -->
+  - [x] 1.1 Rename 7 duplicate MakeHex entries in `ir_protocol_table` to `jvc_mh`, `panasonic_mh`, `rc5_mh`, `rc6_mh`, `sharp_mh`, `denon_mh`, `mitsubishi_mh` with descriptive display names <!-- id: 1.1 -->
+  - [x] 1.2 Update `ir_protocols_find()` to support hyphen and underscore aliases <!-- id: 1.2 -->
+- [x] 2. Harden PIO frame transmission in `src/pirate/irio_pio.c` and `src/pirate/irio_pio.h` <!-- id: 2 -->
+  - [x] 2.1 Change loop counter from `uint8_t i` to `uint16_t i` in `irio_pio_tx_frame_write()` <!-- id: 2.1 -->
+  - [x] 2.2 Add early NULL/zero guard and carrier frequency safety clamping (10 kHz - 100 kHz) <!-- id: 2.2 -->
+  - [x] 2.3 Implement and export `irio_pio_validate_pairs()` <!-- id: 2.3 -->
+- [x] 3. Harden raw timing parser and command buffers <!-- id: 3 -->
+  - [x] 3.1 Validate timing values against 16-bit limits (`1 <= val <= 0xFFFF`) in `src/commands/infrared/irtxrx.c` <!-- id: 3.1 -->
+  - [x] 3.2 Fix semicolon append string termination bug in `src/commands/infrared/irtxrx.c` <!-- id: 3.2 -->
+  - [x] 3.3 Expand protocol name buffer from 17 to 32 bytes in `src/commands/infrared/ir_setprotocol.c` <!-- id: 3.3 -->
+- [x] 4. Expand host tests in `tests/test_ir_protocols.c` <!-- id: 4 -->
+  - [x] 4.1 Add test verifying 0 duplicates across all 75 protocol entries <!-- id: 4.1 -->
+  - [x] 4.2 Add test verifying lookup of all 7 native and 7 MakeHex disambiguated protocols <!-- id: 4.2 -->
+  - [x] 4.3 Add test for pair counts >= 256 and timing bounds validation <!-- id: 4.3 -->
+  - [x] 4.4 Run `tests/test_ir_protocols.sh` under AddressSanitizer and UndefinedBehaviorSanitizer <!-- id: 4.4 -->
+- [x] 5. Run full verification suite and build firmware target <!-- id: 5 -->
+  - [x] 5.1 Run all host tests (`tests/*.sh`) <!-- id: 5.1 -->
+  - [x] 5.2 Build `bus_pirate6.uf2` on RP2350 target and verify RAM ceiling <= 380 KB and 4 KB fixed stacks <!-- id: 5.2 -->
+- [x] 6. OpenSpec validation and archiving <!-- id: 6 -->
+  - [x] 6.1 Validate strictly with `openspec validate fix-infrared-port-parity --strict` <!-- id: 6.1 -->
+  - [x] 6.2 Archive change with `openspec archive fix-infrared-port-parity -y` <!-- id: 6.2 -->
+  - [x] 6.3 Update `openspec/ROADMAP.md` progression table and status board <!-- id: 6.3 -->

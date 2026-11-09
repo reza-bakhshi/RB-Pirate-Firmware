@@ -1,0 +1,23 @@
+# Tasks: Fix RFID Port Parity and Tag Lifecycle
+
+- [x] 1. Peripheral arbitration and pinmux lifecycle <!-- id: 1 -->
+  - [x] 1.1 Declare `BP_RES_PERIPH_UART0` and `BP_RES_PERIPH_UART1` in `src/kernel/bp_resource.h` <!-- id: 1.1 -->
+  - [x] 1.2 Acquire UART peripheral lease in `pn532_init()` and release in `pn532_deinit()` <!-- id: 1.2 -->
+  - [x] 1.3 Restore GPIO pinmux to `GPIO_FUNC_SIO` and direction to input on `pn532_deinit()` <!-- id: 1.3 -->
+  - [x] 1.4 Guard pin labeling in `rfid_setup_exc()` based on `pn532_init()` success <!-- id: 1.4 -->
+- [x] 2. Tag lifecycle and error handling <!-- id: 2 -->
+  - [x] 2.1 Clean up partial/empty files with `f_unlink()` on unsupported tag dump in `dump_handler()` <!-- id: 2.1 -->
+  - [x] 2.2 Add explicit unsupported notification in `read_handler()` for non-Classic/non-Ultralight tags <!-- id: 2.2 -->
+- [x] 3. Responsive cancellation hardening <!-- id: 3 -->
+  - [x] 3.1 Check `bp_job_check_cancelled()` in `pn532_uart_read_byte()` polling loop <!-- id: 3.1 -->
+  - [x] 3.2 Add cancellation checks to `forum4_handler()`, `clone_handler()`, and `erase_handler()` <!-- id: 3.2 -->
+- [x] 4. Host unit test suite <!-- id: 4 -->
+  - [x] 4.1 Create `tests/test_rfid.c` verifying PN532 framing, checksums, ACK, tag identification, and error strings <!-- id: 4.1 -->
+  - [x] 4.2 Create `tests/test_rfid.sh` with ASan + UBSan and execute successfully <!-- id: 4.2 -->
+- [x] 5. Regression testing and target build <!-- id: 5 -->
+  - [x] 5.1 Run all host tests (`tests/test_*.sh`) and verify 0 failures <!-- id: 5.1 -->
+  - [x] 5.2 Build `bus_pirate6.uf2` and verify static RAM ceiling <= 380 KB and fixed 4 KB stacks <!-- id: 5.2 -->
+- [x] 6. OpenSpec validation and archiving <!-- id: 6 -->
+  - [x] 6.1 Run strict OpenSpec validation <!-- id: 6.1 -->
+  - [x] 6.2 Archive change `fix-rfid-port-parity` <!-- id: 6.2 -->
+  - [x] 6.3 Update `openspec/ROADMAP.md` progression and status board <!-- id: 6.3 -->

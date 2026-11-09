@@ -1,0 +1,275 @@
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+#include "pico/stdlib.h"
+#include <stdint.h>
+#include "pirate.h"
+#include "system_config.h"
+#include "command_struct.h"
+#include "bytecode.h"
+#include "mode/hw2wire.h"
+#include "pirate/bio.h"
+#include "ui/ui_cmdln.h"
+#include "hw2wire.pio.h"
+#include "pirate/hw2wire_pio.h"
+#include "pirate/storage.h"
+#include "ui/ui_term.h"
+#include "ui/ui_format.h"
+#include "ui/ui_help.h"
+#include "commands/2wire/sle4442.h"
+#include "commands/2wire/hw2w_sniff.h"
+#include "lib/bp_args/bp_cmd.h"
+
+static const char pin_labels[][5] = { "SDA", "SCL", "RST" };
+struct _hw2wire_mode_config hw2wire_mode_config;
+static uint8_t checkshort(void);
+
+// command configuration
+const struct _mode_command_struct hw2wire_commands[] = {
+    {   .func=&sle4442,
+        .def=&sle4442_def,
+        .supress_fala_capture=true
+    },
+    {   .func=&hw2w_sniff,
+        .def=&hw2w_sniff_def,
+        .supress_fala_capture=false
+    }
+};
+const uint32_t hw2wire_commands_count = count_of(hw2wire_commands);
+
+// Speed — flag -s / --speed (kHz)
+static const bp_val_constraint_t hw2wire_speed_range = {
+    .type = BP_VAL_UINT32,
+    .u = { .min = 1, .max = 1000, .def = 400 },
+    .prompt = T_HW2WIRE_SPEED_MENU,
+    .hint = T_HWI2C_SPEED_MENU_1,
+};
+
+static const bp_command_opt_t hw2wire_setup_opts[] = {
+    { "speed", 's', BP_ARG_REQUIRED, "1-1000", 0, &hw2wire_speed_range },
+    { 0 },
+};
+
+const bp_command_def_t hw2wire_setup_def = {
+    .name = "2wire",
+    .description = 0,
+    .opts = hw2wire_setup_opts,
+};
+
+uint32_t hw2wire_setup(void) {
+
+    const char config_file[] = "rb2wire.rb";
+
+    const mode_config_t config_t[] = {
+        // clang-format off
+        { "$.baudrate", &hw2wire_mode_config.baudrate, MODE_CONFIG_FORMAT_DECIMAL },
+        { "$.data_bits", &hw2wire_mode_config.data_bits, MODE_CONFIG_FORMAT_DECIMAL },
+        // clang-format on
+    };
+
+    // Detect interactive vs CLI mode by checking the primary flag
+    bp_cmd_status_t st = bp_cmd_flag(&hw2wire_setup_def, 's', &hw2wire_mode_config.baudrate);
+    if (st == BP_CMD_INVALID) return 0;
+    bool interactive = (st == BP_CMD_MISSING);
+
+    if (interactive) {
+        if (storage_load_mode(config_file, config_t, count_of(config_t))) {
+            printf("\r\n\r\n%s%s%s\r\n", ui_term_color_info(), GET_T(T_USE_PREVIOUS_SETTINGS), ui_term_color_reset());
+            hw2wire_settings();
+            int r = bp_cmd_yes_no_exit("");
+            if (r == BP_YN_EXIT) return 0; // exit
+            if (r == BP_YN_YES)  return 1; // use saved settings
+        }
+
+        if (bp_cmd_prompt(&hw2wire_speed_range, &hw2wire_mode_config.baudrate) != BP_CMD_OK) return 0;
+    }
+
+    storage_save_mode(config_file, config_t, count_of(config_t));
+
+    return 1;
+}
+
+uint32_t hw2wire_setup_exc(void) {
+    pio_hw2wire_init(bio2bufiopin[M_2WIRE_SDA],
+                     bio2bufiopin[M_2WIRE_SCL],
+                     bio2bufdirpin[M_2WIRE_SDA],
+                     bio2bufdirpin[M_2WIRE_SCL],
+                     hw2wire_mode_config.baudrate);
+    system_bio_update_purpose_and_label(true, M_2WIRE_SDA, BP_PIN_MODE, pin_labels[0]);
+    system_bio_update_purpose_and_label(true, M_2WIRE_SCL, BP_PIN_MODE, pin_labels[1]);
+    system_bio_update_purpose_and_label(true, M_2WIRE_RST, BP_PIN_MODE, pin_labels[2]);
+    pio_hw2wire_reset();
+    bio_put(M_2WIRE_RST, 0); // preload the RST pin to be 0 when output
+    return 1;
+}
+
+bool hw2wire_preflight_sanity_check(void){
+    return ui_help_sanity_check(true, 0);
+}
+
+void hw2wire_start(struct _bytecode* result, struct _bytecode* next) {
+    result->data_message = GET_T(T_HWI2C_START);
+    pio_hw2wire_start();
+}
+
+void hw2wire_start_alt(struct _bytecode* result, struct _bytecode* next) {
+    result->data_message = GET_T(T_HW2WIRE_RST_HIGH);
+    bio_input(M_2WIRE_RST);
+}
+
+void hw2wire_stop(struct _bytecode* result, struct _bytecode* next) {
+    result->data_message = GET_T(T_HWI2C_STOP);
+    pio_hw2wire_stop();
+}
+
+void hw2wire_stop_alt(struct _bytecode* result, struct _bytecode* next) {
+    result->data_message = GET_T(T_HW2WIRE_RST_LOW);
+    bio_output(M_2WIRE_RST);
+}
+
+void hw2wire_write(struct _bytecode* result, struct _bytecode* next) {
+    uint32_t temp = result->out_data;
+    ui_format_bitorder_manual(&temp, result->bits, system_config.bit_order);
+    pio_hw2wire_put16(temp);
+}
+
+void hw2wire_read(struct _bytecode* result, struct _bytecode* next) {
+    uint8_t temp8;
+    pio_hw2wire_get16(&temp8);
+    uint32_t temp = temp8;
+    ui_format_bitorder_manual(&temp, result->bits, system_config.bit_order);
+    result->in_data = temp;
+}
+
+void hw2wire_tick_clock(struct _bytecode* result, struct _bytecode* next) {
+    pio_hw2wire_clock_tick();
+}
+
+void hw2wire_set_clk_high(struct _bytecode* result, struct _bytecode* next) {
+    pio_hw2wire_set_mask(1 << M_2WIRE_SCL, 1 << M_2WIRE_SCL);
+    result->out_data = 1;
+}
+
+void hw2wire_set_clk_low(struct _bytecode* result, struct _bytecode* next) {
+    pio_hw2wire_set_mask(1 << M_2WIRE_SCL, 0);
+    result->out_data = 0;
+}
+
+void hw2wire_set_dat_high(struct _bytecode* result, struct _bytecode* next) {
+    pio_hw2wire_set_mask(1 << M_2WIRE_SDA, 1 << M_2WIRE_SDA);
+    result->out_data = 1;
+}
+
+void hw2wire_set_dat_low(struct _bytecode* result, struct _bytecode* next) {
+    pio_hw2wire_set_mask(1 << M_2WIRE_SDA, 0);
+    result->out_data = 0;
+}
+
+void hw2wire_read_bit(struct _bytecode* result, struct _bytecode* next) {
+    result->in_data = bio_get(M_2WIRE_SDA);
+}
+
+void hw2wire_macro(uint32_t macro) {
+    uint32_t result = 0;
+    switch (macro) {
+        case 0:
+            printf(" 0. Macro menu\r\n");
+            break;
+        default:
+            printf("%s\r\n", GET_T(T_MODE_ERROR_MACRO_NOT_DEFINED));
+            system_config.error = 1;
+    }
+
+    if (result) {
+        printf("Device not found\r\n");
+    }
+}
+
+void hw2wire_cleanup(void) {
+    pio_hw2wire_cleanup();
+    bio_init();
+    system_bio_update_purpose_and_label(false, M_2WIRE_SDA, BP_PIN_MODE, 0);
+    system_bio_update_purpose_and_label(false, M_2WIRE_SCL, BP_PIN_MODE, 0);
+    system_bio_update_purpose_and_label(false, M_2WIRE_RST, BP_PIN_MODE, 0);
+}
+
+/*void hw2wire_pins(void){
+    printf("-\t-\tSCL\tSDA");
+}*/
+
+void hw2wire_settings(void) {
+    ui_help_setting_int(GET_T(T_HW2WIRE_SPEED_MENU), hw2wire_mode_config.baudrate, GET_T(T_KHZ));
+}
+
+void hw2wire_printI2Cflags(void) {
+}
+
+void hw2wire_help(void) {
+    printf("%s2 wire open drain bus with CLOCK and bidirectional DATA\r\n", ui_term_color_info());
+    printf("Open drain bus, requires pull-up resistors (use 'P' to enable pull-ups)\r\n");
+    printf("[ & ] create an I2C START & STOP sequence\r\n");
+    printf("{ & } Toggle the RST pin HIGH and LOW.\r\n");
+    ui_help_mode_commands(hw2wire_commands, hw2wire_commands_count);
+/*printf("\r\nAvailable mode commands:\r\n");
+for(uint32_t i=0;i<hw2wire_commands_count;i++)
+{
+    printf("%s%s%s\t%s%s\r\n", ui_term_color_prompt(), hw2wire_commands[i].command,
+        ui_term_color_info(), hw2wire_commands[i].help_text?t[hw2wire_commands[i].help_text]:"Unavailable",
+ui_term_color_reset());
+}*/
+#if 0
+	printf("\r\n");
+	printf("More info: https://en.wikipedia.org/wiki/I2C\r\n");
+	printf("\r\n");
+	printf("Electrical:\r\n");
+	printf("\r\n");
+	printf("BPCMD\t   { |            ADDRES(7bits+R/!W bit)             |\r\n");
+	printf("CMD\tSTART| A6  | A5  | A4  | A3  | A2  | A1  | A0  | R/!W| ACK* \r\n");
+	printf("\t-----|-----|-----|-----|-----|-----|-----|-----|-----|-----\r\n");
+	printf("SDA\t\"\"___|_###_|_###_|_###_|_###_|_###_|_###_|_###_|_###_|_###_ ..\r\n");
+	printf("SCL\t\"\"\"\"\"|__\"__|__\"__|__\"__|__\"__|__\"__|__\"__|__\"__|__\"__|__\"__ ..\r\n");
+	printf("\r\n");
+	printf("BPCMD\t   |                      DATA (8bit)              |     |  ]  |\r\n");
+	printf("CMD\t.. | D7  | D6  | D5  | D4  | D3  | D2  | D1  | D0  | ACK*| STOP|  \r\n");
+	printf("\t  -|-----|-----|-----|-----|-----|-----|-----|-----|-----|-----|\r\n");
+	printf("SDA\t.. |_###_|_###_|_###_|_###_|_###_|_###_|_###_|_###_|_###_|___\"\"|\r\n");
+	printf("SCL\t.. |__\"__|__\"__|__\"__|__\"__|__\"__|__\"__|__\"__|__\"__|__\"__|\"\"\"\"\"|\r\n");
+	printf("\r\n");
+	printf("* Receiver needs to pull SDA down when address/byte is received correctly\r\n");
+	printf("\r\n");
+	printf("Connection:\r\n");
+	printf("\t\t  +--[2k]---+--- +3V3 or +5V0\r\n");
+	printf("\t\t  | +-[2k]--|\r\n");
+	printf("\t\t  | |\r\n");
+	printf("\tSDA \t--+-|------------- SDA\r\n");
+	printf("{BP}\tSCL\t----+------------- SCL  {DUT}\r\n");
+	printf("\tGND\t------------------ GND\r\n");
+#endif
+}
+
+static uint8_t checkshort(void) {
+    uint8_t temp;
+    temp = (bio_get(M_2WIRE_SDA) == 0 ? 1 : 0);
+    temp |= (bio_get(M_2WIRE_SCL) == 0 ? 2 : 0);
+    return (temp == 3); // there is only a short when both are 0 otherwise repeated start wont work
+}
+
+uint32_t hw2wire_get_speed(void) {
+    return hw2wire_mode_config.baudrate * 1000;
+}
+
+//-----------------------------------------
+// Flatbuffer/binary access functions
+//-----------------------------------------
+bool bpio_hw2wire_configure(bpio_mode_configuration_t *bpio_mode_config){
+    //set defaults, check range
+    hw2wire_mode_config.baudrate = 400; // default speed in kHz
+    if(hw2wire_mode_config.baudrate < 1 || hw2wire_mode_config.baudrate > 1000){
+        if(bpio_mode_config->debug) printf("[2WIRE] Invalid speed %d kHz\r\n", hw2wire_mode_config.baudrate);
+        return false;
+    }
+        
+    if(bpio_mode_config->debug) printf("[2WIRE] Speed %d Hz\r\n", bpio_mode_config->speed);
+    hw2wire_mode_config.baudrate=bpio_mode_config->speed/1000; // convert to kHz
+    return true;  
+}

@@ -1,0 +1,68 @@
+/**
+ * @file intercore_helpers.h
+ * @brief Inter-core messaging helpers for RP2040/RP2350.
+ * @details Provides safe wrappers for multicore FIFO communication between cores.
+ */
+
+// Inter-Core Messages
+
+#include "pico/multicore.h"
+
+// This file added in response to manual code review discovering the following:
+//     Some places, core0 sends, and then loops until core1 sends ***same*** value as response.
+//     (This could lose other messages that are sent, if any.)
+//
+//     Other places, core0 sends, and then loops until core1 sends ***any*** value as response.
+//     (This could improperly continue even if the response is for a different message.)
+//
+//     There are strong warnings AGAINST using multicore FIFOs unless can be sure not used
+//     by any RTOS layer, intercore lockout functionality, etc.  Thus, consider changing these
+//     to use a standard queue instead.
+//
+typedef uint8_t bp_icm_message_t;
+#define BP_ICM_INIT_CORE1 ((bp_icm_message_t)0xA5)          // Used to synchronize Core0 and Core1 intialization.
+#define BP_ICM_UPDATE_TOOLBARS    ((bp_icm_message_t)0xC0)  // Core0 requests Core1 toolbar update cycle
+#define BP_ICM_DISABLE_SYSTEM_TICK ((bp_icm_message_t)0xF0) // pause periodic monitoring while hardware is busy
+#define BP_ICM_ENABLE_SYSTEM_TICK ((bp_icm_message_t)0xF1)  // resume periodic monitoring
+#define BP_ICM_DISABLE_RGB_UPDATES ((bp_icm_message_t)0xF3) // disables RGB updates / IRQ
+#define BP_ICM_ENABLE_RGB_UPDATES ((bp_icm_message_t)0xF4)  // enables RGB updates / IRQ
+
+// This is intended to be an opaque data type
+typedef struct _bp_icm_raw_message_t {
+    union {
+        uint32_t raw;
+        struct {
+            uint8_t map;          // set to 0xABu to create invalid pointer, per RP2040 memory map
+            uint8_t cnt;          // incremented each time a message is sent, to catch desynchronization
+            uint8_t rfu;          // reserved for future use
+            bp_icm_message_t msg; // actual message, aka bp_icm_message_t
+        };
+    };
+} bp_icm_raw_message_t; // wrapper to clarify that this differs from bp_icm_message_t
+static_assert(sizeof(bp_icm_message_t) == sizeof(uint8_t),
+              "sizeof(bp_icm_message_t) must be sizeof(uint8_t), else structure must be updated");
+static_assert(sizeof(bp_icm_raw_message_t) == sizeof(uint32_t),
+              "sizeof(bp_icm_raw_message_t) must be sizeof(uint32_t) to be used by intercore messaging");
+
+/**
+ * @brief Send synchronous message from core0 to core1.
+ * @param message_id  Message identifier
+ * @note Waits for core1 acknowledgment before returning
+ */
+void icm_core0_send_message_synchronous(bp_icm_message_t message_id);
+
+/**
+ * @brief Get raw intercore message (core1).
+ * @return  Raw message structure
+ */
+inline bp_icm_raw_message_t icm_core1_get_raw_message() {
+    bp_icm_raw_message_t result;
+    result.raw = multicore_fifo_pop_blocking();
+    return result;
+}
+inline void icm_core1_notify_completion(bp_icm_raw_message_t icm_raw_value) {
+    multicore_fifo_push_blocking(icm_raw_value.raw);
+}
+inline bp_icm_message_t get_embedded_message(bp_icm_raw_message_t icm_raw_value) {
+    return icm_raw_value.msg;
+}

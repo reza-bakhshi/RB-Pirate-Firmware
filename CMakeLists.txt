@@ -1,0 +1,54 @@
+# == DO NEVER EDIT THE NEXT LINES for Raspberry Pi Pico VS Code Extension to work ==
+if(WIN32)
+    set(USERHOME $ENV{USERPROFILE})
+else()
+    set(USERHOME $ENV{HOME})
+endif()
+if(WIN32)
+set(sdkVersion 2.0.0)
+set(toolchainVersion 13_2_Rel1)
+set(picotoolVersion 2.0.0)
+include(${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
+endif()
+# ====================================================================================
+cmake_minimum_required(VERSION 3.21)
+
+# Could use target_compile_features() instead of explicitly `set(C_STANDARD 23)` with `set(C_STANDARD_REQUIRED ON)`
+# but would need to list all the features relied upon, which can be a bit of a pain.
+# This may result in the use of /std:gnu2x or /std:c23 depending on compiler version.
+set(CMAKE_C_STANDARD 23)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 17) 
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# initalize pico_sdk from installed location
+# (note this can come from environment, CMake cache etc)
+#set(PICO_SDK_PATH "C:/pico113/pico-sdk")
+
+# Add my_pico_w.h
+set(PICO_BOARD_HEADER_DIRS ${CMAKE_CURRENT_LIST_DIR}/src/boards ) 
+# Add my_pico_w.cmake
+set(PICO_BOARD_CMAKE_DIRS ${CMAKE_CURRENT_LIST_DIR}/src/boards )
+# Add my_pico_w
+#
+
+if(DEFINED GIT_COMMIT_HASH)
+    set(BP_FIRMWARE_HASH ${GIT_COMMIT_HASH})
+else()
+    set(BP_FIRMWARE_HASH "unknown")
+endif()
+message(GIT_COMMIT_HASH="${GIT_COMMIT_HASH}")
+message(BP_FIRMWARE_HASH="${BP_FIRMWARE_HASH}")
+
+set(PICO_PLATFORM "rp2350")
+set(PICO_BOARD rb-pirate)
+
+#set(PICO_SDK_PATH "~/pico-sdk")
+
+# Pull in Raspberry Pi Pico SDK (must be before project)
+include(cmake/pico_sdk_import.cmake)
+
+project(bus_pirate C CXX ASM) 
+
+
+add_subdirectory(src)

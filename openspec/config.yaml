@@ -1,0 +1,86 @@
+schema: spec-driven
+
+context: |
+  Tech stack: embedded C (C23), C++17 for the LCDTAP backend, RP2350B, Pico SDK 2.x, CMake.
+  Product: RB-Pirate, a single-board fork of the Bus Pirate 6 firmware. RP2040, BP5, BP5XL and BP7
+  targets are out of scope; the only build target is `bus_pirate6` in `build_rp2350`.
+
+  Target dual-core architecture:
+  - Core 0 (CTRL): TinyUSB CDC0/CDC1/MSC, terminal/VT100/toolbars, command parser, mode manager,
+    job dispatcher, config, FatFS + SD, ADC/AMUX, PSU, buttons, RGB, watchdog supervisor.
+  - Core 1 (PROTO): protocol engines, PIO0/PIO1, protocol DMA/IRQs, captures, decoders,
+    SUMP/BPIO/legacy binary engines, FALA logic analyzer, LCDTAP capture, RF/IR/RFID/RF24.
+
+  Memory policy:
+  - New code MUST NOT use malloc, calloc, realloc, free, new, delete, or heap-using STL types.
+  - Use static arrays, fixed block pools, bump arenas, SPSC rings or placement new into static storage.
+  - Existing heap sites must be migrated to static pools/arenas; see docs/architecture/memory-model.md.
+  - A change that needs a heap exception MUST document the measured budget and the owner.
+  - No allocation from an ISR and no cross-core heap access.
+
+  Hard constraints:
+  - No cross-core function calls. Only typed queues and seqlock snapshots cross the core boundary.
+  - No `printf` from Core 1; Core 1 posts fixed-size log records.
+  - No TinyUSB (`tud_*`) calls outside the Core 0 USB service.
+  - No FatFS (`f_*`) calls outside the Core 0 storage service.
+  - No unbounded blocking waits; every wait has a timeout and returns an error.
+  - Every PIO block/state machine, DMA channel, IRQ, pin and large buffer is owned by a lease.
+  - Mode changes are transactional: stop and release the old mode before starting the new one;
+    roll back on failure.
+  - Preserve command syntax, translation keys, FlatBuffers schema, PIO programs and wire timing.
+
+  Verification:
+  - Build: `cmake --build build_rp2350 --parallel --target bus_pirate6`.
+  - Host tests: `tests/*.sh`.
+  - Hardware tests: `tools/serial` and a real RB-Pirate board.
+  - Report flash/RAM changes and stack high-water after each change.
+
+  Test bench:
+  - All feature hardware is available: CC1101, PN532, two nRF24L01+ modules, IR receiver/LED/remotes,
+    PS/2 keyboard and mouse, USB low/full-speed target, ST7789/ILI9341/SSD1306/ST7032 LCD targets,
+    SIMCom modem with SIM, second nRF24/SDR, logic analyzer/scope.
+  - Wiring and evidence rules are in `openspec/HARDWARE.md`; per-feature checklists are in
+    `openspec/checklists/`.
+
+  Ported-feature policy:
+  - Features ported from Bus Pirate upstream, ESP32-Bit-Pirate or Flipper Zero are tracked in
+    `openspec/FEATURES.md` with a pinned source commit, status and verification method.
+  - Never claim a ported feature works without both host-test and hardware evidence.
+  - A feature fix must compare against the pinned upstream source, not only the local port.
+  - Hardware-specific features that cannot exist on RP2350 (Wi-Fi, Bluetooth, SDR, FM) are
+    explicitly out of scope, not treated as broken ports.
+
+rules:
+  proposal:
+    - State the user-visible failure or behavior this change fixes.
+    - Name the affected core (CTRL or PROTO) and the resources it owns.
+    - State what is explicitly out of scope.
+  specs:
+    - Requirements MUST be observable on hardware or through a host test.
+    - "Include failure scenarios: queue full, USB disconnect, SD hotplug, timeout, cancel, watchdog."
+    - Keep implementation details out of the requirements; put them in design.md.
+  design:
+    - Document core ownership and every cross-core message or shared snapshot.
+    - Document timeout, cancellation and rollback behavior.
+    - Document the resource leases used by the change.
+    - Document every buffer/static pool size and its lifetime; no hidden heap use.
+  tasks:
+    - Each task MUST state its verification command or observable behavior.
+    - Keep tasks small enough for one focused session.
+    - Build after every task group and record flash/RAM size.
+    - Every feature or protocol change MUST fill an acceptance checklist from
+      `openspec/FEATURE_ACCEPTANCE_CHECKLIST.md` and link it from the change.
+    - Do not mark a feature `verified` in `openspec/FEATURES.md` until every checklist row passes
+      with host-test and hardware evidence.
+    - New code must not use malloc/calloc/realloc/free/new/delete; use the static memory model in
+      docs/architecture/memory-model.md.
+
+operations:
+  apply:
+    guidance:
+      - Build after each task group; run the relevant host test before marking tasks complete.
+      - Never mark a task done without its stated verification.
+      - Keep `openspec/changes/<name>/tasks.md` checkboxes up to date as work progresses.
+  archive:
+    guidance:
+      - Record measured flash/RAM deltas and the stability test result in the archive summary.

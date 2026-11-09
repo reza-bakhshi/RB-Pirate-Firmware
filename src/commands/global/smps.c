@@ -1,0 +1,163 @@
+#include <stdio.h>
+#include "pico/stdlib.h"
+#include <stdint.h>
+#include <string.h>
+#include "pirate.h"
+#include "system_config.h"
+#include "pirate/button.h"
+#include "command_struct.h"       // File system related
+#include "fatfs/ff.h"       // File system related
+#include "pirate/storage.h" // File system related
+#include "lib/bp_args/bp_cmd.h"    // This file is needed for the command line parsing functions
+#include "ui/ui_term.h"     // Terminal functions
+#include "ui/ui_process.h"
+#include "usb_rx.h"
+#include "usb_tx.h"
+#include "bytecode.h"
+#include "modes.h"
+#include "ui/ui_help.h" // Functions to display help in a standardized way
+#include "pirate/amux.h"
+#include "hardware/pwm.h"
+#include "pirate/bio.h"
+
+static const char* const usage[] = {
+    "smps\t[volts] [-s]",
+    "Set SMPS to volts:%s smps 12.3",
+    "Show SMPS ADC setpoints (diagnostic):%s smps -s",
+};
+
+static const bp_command_opt_t smps_opts[] = {
+    { "setpoints", 's', BP_ARG_NONE, NULL, T_HELP_CMD_SMPS_SETPOINTS },
+    { 0 }
+};
+
+static const bp_val_constraint_t smps_voltage_constraint = {
+    .type = BP_VAL_FLOAT,
+    .f = { .min = 5.1f, .max = 16.0f, .def = 13.0f },
+    .prompt = T_HELP_GCMD_SMPS_VOLTAGE,
+};
+
+static const bp_command_positional_t smps_positionals[] = {
+    { "volts", "5.1-16.0", T_HELP_GCMD_SMPS_VOLTAGE, false, &smps_voltage_constraint },
+    { 0 }
+};
+
+const bp_command_def_t smps_def = {
+    .name         = "smps",
+    .description  = T_HELP_CMD_SMPS,
+    .actions      = NULL,
+    .action_count = 0,
+    .opts         = smps_opts,
+    .positionals      = smps_positionals,
+    .positional_count = 1,
+    .usage        = usage,
+    .usage_count  = count_of(usage),
+};
+
+void smps_handler(struct command_result* res) {
+    // check help
+    if (bp_cmd_help_check(&smps_def, res->help_flag)) {
+        return;
+    }
+
+    // SMPS:
+    // Output max: 16volts
+    // Output protection zener: 18volts (16.8-19.1volts min/max)
+    // Feedback divider: 9.1K/3.3K
+    // Feedback max output @ 16volts: 4.258volts
+    // Feedback protection zener: 4.7volts (4.4-5volts min/max)
+    // feedback=((6600*hw_adc_raw[X])/4096);
+    // hw_adc_raw[X]=feedback*4096/6600
+
+#define SMPS_R1 9100
+#define SMPS_R2 3300
+#define VOLTAGE_DIVIDER_TO_ADC (I * R2) / (R1 + R2) = (6600 * ADC) / 4096
+// #define SMPS_ADC_SET(X) (4096 * X * SMPS_R2)/(6600*(SMPS_R1+SMPS_R2))
+// #define SMPS_ADC_SET (4096 * I * 330)/(6600*(9100+3300))
+// #define SMPS_ADC_SET_2(X) (5632/341000)*(X*10000)
+#define SMPS_ADC_SET(X) (uint32_t)(((float)((float)X * (float)100.0f) * (float)((float)16516.0f)) / (float)10000.0f)
+
+    float volts;
+    bool has_setpoints = bp_cmd_find_flag(&smps_def, 's');
+
+    if (has_setpoints) {
+        printf("SMPS ADC SETPOINTS:\r\n");
+        for (int i = 5; i < 17; i++) {
+            printf("\t%dvolts = %d\r\n", i, SMPS_ADC_SET(i));
+        }
+    }
+
+    bp_cmd_status_t s = bp_cmd_positional(&smps_def, 1, &volts);
+    if (s == BP_CMD_INVALID) {
+        res->error = true;
+        return;
+    }
+    if (s == BP_CMD_MISSING && !has_setpoints) {
+        s = bp_cmd_prompt(&smps_voltage_constraint, &volts);
+        if (s == BP_CMD_EXIT) {
+            res->error = true;
+            return;
+        }
+    } else if (s == BP_CMD_MISSING) {
+        return; // only -s flag, no voltage needed
+    }
+
+    uint32_t adc_set = SMPS_ADC_SET(volts);
+    printf("Setting SMPS to %1.2f volts\r\n", volts);
+    printf("ADC SET: %d\r\n", adc_set);
+    // X to exit
+    printf("Press X to exit\r\n");
+
+    // disable analog subsystem
+
+    // measure voltage
+    uint32_t raw = amux_read_bio(BIO3);
+#define PWM_TOP 14000 // 0x30D3
+    // PWM setup
+    // Current adjust is slice 4 channel a
+    // voltage adjust is slice 4 channel b
+    uint slice_num = pwm_gpio_to_slice_num(bio2bufiopin[BIO2]);
+    uint chan_num = pwm_gpio_to_channel(bio2bufiopin[BIO2]);
+    // 10KHz clock, into our 1K + 0.1uF filter
+    pwm_set_clkdiv_int_frac(slice_num, 16 >> 4, 16 & 0b1111);
+    pwm_set_wrap(slice_num, PWM_TOP);
+    pwm_set_chan_level(slice_num, chan_num, (uint16_t)(PWM_TOP / 2));
+    bio_output(BIO2);
+    // enable output
+    gpio_set_function(bio2bufiopin[BIO2], GPIO_FUNC_PWM);
+    pwm_set_enabled(slice_num, true);
+    bool pwm_on = true;
+
+    absolute_time_t start_time = get_absolute_time();
+
+    while (true) {
+        // measure voltage
+        raw = amux_read_bio(BIO3);
+        // adjust PWM
+        if (raw > adc_set) {
+            // PWM off
+            pwm_set_enabled(slice_num, false);
+            pwm_on = false;
+        } else if (raw < adc_set && !pwm_on) {
+            // PWM on
+            pwm_set_enabled(slice_num, true);
+            pwm_on = true;
+        }
+        busy_wait_us(500);
+        char c;
+        if (rx_fifo_try_get(&c)) {
+            if (c == 'X' || c == 'x') {
+                break;
+            }
+        }
+
+        int64_t duration_ms = absolute_time_diff_us(start_time, get_absolute_time()) / 1000;
+        if (duration_ms > 1000) {
+            printf("SMPS voltage: %1.2f\r", (float)((float)raw / 165.0f));
+            start_time = get_absolute_time();
+        }
+    }
+    printf("\r\n");
+    pwm_set_enabled(slice_num, false);
+    bio_input(BIO2);
+}

@@ -1,0 +1,979 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "pico/multicore.h"
+#include "hardware/spi.h"
+#include "hardware/timer.h"
+#include "hardware/watchdog.h"
+#include "hardware/uart.h"
+#include "pico/mutex.h"
+#include "ws2812.pio.h"
+#include "pirate.h"
+#include "system_config.h"
+#include "command_struct.h"
+#include "pirate/rgb.h"
+#include "pirate/crash_record.h"
+#include "pirate/watchdog.h"
+#if BP_HW_IOEXP_595
+#include "pirate/shift.h"
+#endif
+#include "pirate/bio.h"
+#include "pirate/button.h"
+#include "pirate/storage.h"
+#include "services/bp_storage.h"
+#include "pirate/amux.h"
+#include "pirate/mcu.h"
+#include "ui/ui_init.h"
+#include "ui/ui_info.h"
+#include "ui/ui_term.h"
+#include "ui/ui_prompt.h"
+#include "ui/ui_process.h"
+#include "ui/ui_flags.h"
+#include "commands/global/button_scr.h"
+#include "commands/global/freq.h"
+#include "spsc_queue.h"
+#include "kernel/bp_kernel.h"
+#include "kernel/bp_job.h"
+#include "usb_tx.h"
+#include "usb_rx.h"
+#include "debug_uart.h"
+#include "ui/ui_cmdln.h"
+#include "bytecode.h"
+#include "modes.h"
+#include "system_monitor.h"
+#include "ui/ui_statusbar.h"
+#include "ui/ui_toolbar.h"
+#include "lib/vt100_keys/vt100_keys.h"
+
+
+#include "tusb.h"
+#include "hardware/sync.h"
+#include "pico/lock_core.h"
+// #include "helpers.h"
+#include "binmode/binmodes.h"
+#include "services/bp_bin_transport.h"
+#include "commands/global/p_pullups.h"
+#include "pirate/psu.h"
+#include "commands/global/w_psu.h"
+// #include "mode/logicanalyzer.h"
+#include "msc_disk.h"
+#include "pirate/intercore_helpers.h"
+#include "ui/ui_term_linenoise.h"
+// #include "display/robot16.h"
+#if RPI_PLATFORM == RP2350
+    #include "hardware/regs/addressmap.h"
+    #include "hardware/regs/otp.h"
+#endif
+
+static mutex_t spi_mutex;
+
+//uint8_t reserve_for_future_mode_specific_allocations[10 * 1024] = { 0 };
+
+void core1_entry(void);
+void gpio_setup(uint8_t pin, bool direction, bool level) {
+    gpio_set_dir(pin, direction);
+    gpio_set_function(pin, GPIO_FUNC_SIO);
+    gpio_put(pin, level);
+}
+static bool should_disable_unique_usb_serial_number(void) {
+
+    bool result = false;
+#ifdef BP_MANUFACTURING_TEST_MODE
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: manufacturing mode ... disabling unique USB serial number\n"
+        );
+    result = true;
+#endif
+    if (system_config.disable_unique_usb_serial_number) {
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: system_config.disable_unique_usb_serial_number is TRUE\n"
+            );
+        result = true;
+    } else if (system_config.storage_fat_type == 0) {
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: Storage unformatted ... disabling unique USB serial number\n"
+            );
+        result = true;
+    } else if (storage_file_exists("FACTORY.USB")) {
+        // if (!system_config.config_loaded_from_file) {
+        //     BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        //         "Init: no configuration ... disabling unique USB serial number\n"
+        //         );
+        //     result = true;
+        // } else
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: `\\FACTORY.USB` file exists ... disabling unique USB serial number\n"
+            );
+        result = true;
+    }
+    return result;
+}
+static void softlock_all_otp(void) {
+    // lock all OTP pages as read-only
+    #if RPI_PLATFORM == RP2350
+        uint32_t * otp_soft_lock_register = ((uint32_t*)(OTP_BASE+REG_ALIAS_SET_BITS));
+        for (uint32_t offset = 0; offset < 64; ++offset) {
+            otp_soft_lock_register[offset] = 0x5; // read-only
+        }
+    #elif RPI_PLATFORM == RP2040
+        //nothing to do
+    #else
+        #error "Unknown platform in pirate.c"
+    #endif 
+}
+
+static void main_system_initialization(void) {
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: tx/rx_fifo_init()\n"
+        );
+    tx_fifo_init();
+    rx_fifo_init();
+    bp_kernel_init();
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: softlock OTP\n"
+        );
+    softlock_all_otp();
+
+
+    #if (BP_VER == 5)
+        uint8_t bp_rev = mcu_detect_revision();
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: mcu_detect_revision: %d\n", bp_rev
+            );
+    #endif
+
+    //reserve_for_future_mode_specific_allocations[1] = 99;
+    //reserve_for_future_mode_specific_allocations[2] = reserve_for_future_mode_specific_allocations[1];
+    //reserve_for_future_mode_specific_allocations[1] = reserve_for_future_mode_specific_allocations[2];
+
+    // init buffered IO pins
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: buffered IO\n"
+        );
+    bio_init();
+
+    // setup SPI0 for on board peripherals
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: setup SPI0\n"
+        );
+    spi_init(BP_SPI_PORT, BP_SPI_HIGH_SPEED);
+    gpio_set_function(BP_SPI_CDI, GPIO_FUNC_SPI);
+    gpio_set_function(BP_SPI_CLK, GPIO_FUNC_SPI);
+    gpio_set_function(BP_SPI_CDO, GPIO_FUNC_SPI);
+    gpio_pull_up(BP_SPI_CDI);
+    gpio_set_function(FLASH_STORAGE_CS, GPIO_FUNC_SIO);
+    gpio_set_dir(FLASH_STORAGE_CS, GPIO_OUT);
+    gpio_put(FLASH_STORAGE_CS, 1);
+    gpio_pull_up(FLASH_STORAGE_CS);
+
+// init shift register pins
+#if BP_HW_IOEXP_595
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: shift register pins\n"
+        );
+    shift_init();
+#endif
+
+#ifdef BP_REV
+    system_config.hardware_revision = BP_REV;
+#else
+#error "No platform revision defined. Check pirate.h."
+#endif
+
+    // SPI bus is used from here
+    // setup the mutex for spi arbitration
+    mutex_init(&spi_mutex);
+
+    // init psu pins
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: PSU\n"
+        );
+    psucmd_init();
+
+    // ADC pin init
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: ADC\n"
+        );
+    amux_init();
+
+    // TF flash card CS pin init
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: Storage\n"
+        );
+    storage_init(); // only sets up the GPIO... storage actually mounted later
+
+    // initial pin states
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: Pin states\n"
+        );
+#if (BP_HW_IOEXP_595)
+    // configure the defaults for shift register attached hardware
+    shift_clear_set_wait(CURRENT_EN_OVERRIDE, (AMUX_S3 | AMUX_S1 | CURRENT_EN));
+#elif (BP_HW_IOEXP_NONE)
+    // todo: current detect
+    gpio_setup(CURRENT_RESET, GPIO_OUT, 1);
+    gpio_setup(CURRENT_EN_OVERRIDE, GPIO_OUT, 0);
+    gpio_setup(AMUX_S0, GPIO_OUT, 0);
+    gpio_setup(AMUX_S1, GPIO_OUT, 1);
+    gpio_setup(AMUX_S2, GPIO_OUT, 0);
+    gpio_setup(AMUX_S3, GPIO_OUT, 1);
+    gpio_setup(CURRENT_EN, GPIO_OUT, 1);
+    gpio_setup(LA_BPIO0, GPIO_IN, 0);
+    gpio_setup(LA_BPIO1, GPIO_IN, 0);
+    gpio_setup(LA_BPIO2, GPIO_IN, 0);
+    gpio_setup(LA_BPIO3, GPIO_IN, 0);
+    gpio_setup(LA_BPIO4, GPIO_IN, 0);
+    gpio_setup(LA_BPIO5, GPIO_IN, 0);
+    gpio_setup(LA_BPIO6, GPIO_IN, 0);
+    gpio_setup(LA_BPIO7, GPIO_IN, 0);
+    // disable the input buffers of the floating logic analyzer sense pins
+    // (RP2350 E9 errata: the input buffers leak current into the buffered IO lines
+    // when idle, lifting floating readings and varying between boots)
+    for (uint8_t i = 0; i < 8; i++) {
+        gpio_set_input_enabled(LA_BPIO0 + i, false);
+    }
+#else
+#error "Platform not speficied in pirate.c"
+#endif
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: Pullups\n"
+        );
+    pullups_init(); // uses shift register internally
+
+    // Shift register setup (BP5, BP5XL)
+#if BP_HW_IOEXP_595
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: BP5 / BP5XL - shift output enable\n"
+        );
+    // enable shift register outputs
+    // also enabled level translator so..
+    // ***don't do RGB LEDs before here***
+    shift_output_enable(true);
+#endif
+
+    // RGB init must be post-shift-register setup on BP5, BP5XL
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: rgb_init()\n"
+        );
+    rgb_init();
+
+    // Verify PCB revision (BP5 only)
+#if (BP_VER == 5)
+    // test for PCB revision
+    // must be done after shift register setup
+    //  if firmware mismatch, turn all LEDs red
+    if (bp_rev != BP_REV) { //
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_FATAL, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: FATAL: PCB revision does not match firmware. Expected %d, found %d.\n",
+            BP_REV, bp_rev
+            );
+        rgb_irq_enable(false);
+        while (true) {
+            rgb_set_all(0x7F, 0, 0); // half brightness red is still VERY bright
+            busy_wait_ms(500);
+            rgb_set_all(0, 0, 0);
+            busy_wait_ms(500);
+        }
+    }
+#endif
+
+    // input button init
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: button init\n"
+        );
+    button_init();
+
+    // setup the system_config defaults and the initial pin label references
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: system init()\n"
+        );
+    system_init();
+
+    // setup the UI command buffers
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: ui_init()\n"
+        );
+    ui_init();
+
+    // voltage and current monitor for the terminal toolbar
+    // highly optimized to only update changed characters
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: monitor_init()\n"
+        );
+    monitor_init();
+
+    // //////////////////////////////////////////////////////////////////////
+    // Prior to this point, configuration settings from storage have
+    // not been available!
+#ifdef BP_HW_STORAGE_TFCARD
+    // Now continue after init of all the pins and shift registers
+    // Mount the TF flash card file system (and put into SPI mode)
+    // This must be done before any other SPI communications
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: BP5 w/TF Flash: storage mount\n"
+        );
+    spi_set_baudrate(BP_SPI_PORT, BP_SPI_START_SPEED);
+    bp_storage_init();
+    sleep_ms(50); // Allow SD card internal MCU to stabilize after 3.3V rail power-up
+    bp_storage_mount();
+    if (bp_storage_load_config() == BP_STATUS_OK) {
+        system_config.config_loaded_from_file = true;
+        // update LED
+        rgb_set_effect(system_config.led_effect);
+    } else {
+        // party mode/demo mode if no config file found
+        rgb_set_effect(LED_EFFECT_PARTY_MODE);
+    }
+    spi_set_baudrate(BP_SPI_PORT, BP_SPI_HIGH_SPEED);
+#elif defined(BP_HW_STORAGE_NAND)
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: Mounting SPI Flash\n"
+        );
+    bp_storage_init();
+    bp_storage_mount();
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: loading config file\n"
+        );
+    if (bp_storage_load_config() == BP_STATUS_OK) {
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: Config found, setting pixel effect to %d\n",
+            system_config.led_effect
+            );
+        system_config.config_loaded_from_file = true;
+        // update LED
+        rgb_set_effect(system_config.led_effect);
+    } else {
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: No config found, setting pixel effect to PARTY MODE\n"
+            );
+        // party mode/demo mode if no config file found
+        rgb_set_effect(LED_EFFECT_PARTY_MODE);
+        system_config.led_effect = LED_EFFECT_PARTY_MODE;
+    }
+#else
+    #error "Storage device not defined in pirate.c"
+#endif
+    // Stored configuration settings (if available) now loaded.
+    // //////////////////////////////////////////////////////////////////////
+
+    // May rely on storage and/or system_config settings...
+    if (should_disable_unique_usb_serial_number()) {
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: Disabling unique USB serial number\n"
+            );
+        system_config.disable_unique_usb_serial_number = true;
+    }
+
+    translation_set(system_config.terminal_language);
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: Translation %d --> %d (%s)\n",
+        system_config.terminal_language,
+        get_current_language_idx(),
+        get_current_language_name()
+        );
+
+    // duplicate the terminal output on a debug uart on IO pins
+    if (system_config.terminal_uart_enable) {
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: Enabling UART %d for Console\n",
+            system_config.terminal_uart_number
+            );
+        debug_uart_init(system_config.terminal_uart_number, true, true, true);
+    }
+    // a transmit only uart for developers to debug (on IO pins)
+    if (system_config.debug_uart_enable) {
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: Enabling UART %d for DEBUG (output only)\n",
+            system_config.debug_uart_number
+            );
+        debug_uart_init(system_config.debug_uart_number, true, true, false);
+    }
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: Launching Core1\n"
+        );
+    multicore_launch_core1(core1_entry);
+
+    // turn everything off
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: make pins safe and PSU disable\n"
+        );
+    bio_init();       // make all pins safe
+    psucmd_disable(); // disable psu and reset pin label, clear any errors
+
+    if (bp_crash_record_is_valid(&bp_crash_record) && bp_crash_record.consecutive_crashes >= 3) {
+        system_config.safe_mode = true;
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_WARNING, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: SAFE MODE ACTIVATED (%u consecutive crashes)\n",
+            (unsigned)bp_crash_record.consecutive_crashes
+            );
+    }
+
+    monitor();
+
+    // //////////////////////////////////////////////////////////////////////
+    // Notify the second core to complete initialization now that
+    // system_config settings are loaded.
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: ICM - Sync init w/ core1\n"
+        );
+    icm_core0_send_message_synchronous(BP_ICM_INIT_CORE1);
+#if !defined(BP_WATCHDOG_DISABLE)
+    watchdog_update();
+#endif
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: ICM - Core1 sync completed\n"
+        );
+    // Only ***AFTER*** Core1 is ready can printf (UART / Terminals) be used.
+    // //////////////////////////////////////////////////////////////////////
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: loading binmode configuration\n"
+        );
+    binmode_load_save_config(false);
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: binmode_setup()\n"
+        );
+    binmode_setup();
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: main_system_initialization() complete()\n"
+        );
+
+}
+
+static void core0_infinite_loop(void) {
+
+    enum bp_statemachine {
+        BP_SM_DISPLAY_MODE,
+        BP_SM_DISPLAY_MODE_WAIT,
+        BP_SM_GET_INPUT,
+        BP_SM_PROCESS_COMMAND,
+        BP_SM_COMMAND_PROMPT,
+        BP_SM_TOOLBAR_FOCUS
+    };
+
+    uint8_t bp_state = 0;
+
+    struct prompt_result result;
+    //alarm_id_t screensaver;
+    bool has_been_connected = false;
+
+
+    button_irq_enable(0, &button_irq_callback);
+
+    while (1) {
+        bp_watchdog_heartbeat(0);
+        bp_watchdog_service();
+        bp_service(0);
+
+        static bool clean_uptime_checked = false;
+        if (!clean_uptime_checked && to_ms_since_boot(get_absolute_time()) >= 30000) {
+            bp_crash_record_reset_consecutive();
+            clean_uptime_checked = true;
+        }
+
+        // co-op multitask **when not actively doing anything**
+        // core 2 handles USB and other sensitive stuff, so it's not critical to co-op multitask
+        // but the terminal will not be responsive if the service is blocking
+        binmode_service();
+
+        //if not connected to a terminal, then check for button presses to allow user to execute button scripts without a terminal connected
+        if (!tud_cdc_n_connected(0)|| bp_state <= BP_SM_DISPLAY_MODE_WAIT){
+            enum button_codes press_code = button_check_press(0);
+            if (press_code != BP_BUTT_NO_PRESS) {
+                bp_op_request_cancel_active(BP_CANCEL_REASON_BUTTON);
+                uint32_t active_jid = bp_job_get_active_id();
+                if (active_jid > 0) {
+                    bp_job_cancel(active_jid);
+                }
+                bp_event_t ev = {
+                    .id = BP_EV_BUTTON_PRESS,
+                    .source = 0,
+                    .timestamp_ms = to_ms_since_boot(get_absolute_time()),
+                    .data.u32[0] = (uint32_t)press_code
+                };
+                bp_kernel_post_event(0, &ev);
+                button_irq_disable(0);
+                button_exec(press_code);         // execute script based on the button press type
+                button_irq_enable(0, &button_irq_callback);
+            }
+        }
+
+        if (tud_cdc_n_connected(0)) {
+            if (!has_been_connected) {
+                PRINT_INFO("New terminal connection detected ... making USB storage read-only.\n");
+                has_been_connected = true;
+                bp_event_t ev = {
+                    .id = BP_EV_USB_CONNECT,
+                    .source = 0,
+                    .timestamp_ms = to_ms_since_boot(get_absolute_time())
+                };
+                bp_kernel_post_event(0, &ev);
+                prepare_usbmsdrive_readonly();
+                // sync with the host
+                storage_mount();
+                insert_usbmsdrive();
+            }
+        } else {
+            if (has_been_connected) {
+                PRINT_INFO("Terminal disconnected ... ensuring USB storage is writable.\n");
+                has_been_connected = false;
+                bp_op_request_cancel_active(BP_CANCEL_REASON_USB_DISCONNECT);
+                uint32_t active_jid = bp_job_get_active_id();
+                if (active_jid > 0) {
+                    bp_job_cancel(active_jid);
+                }
+                bp_event_t ev = {
+                    .id = BP_EV_USB_DISCONNECT,
+                    .source = 0,
+                    .timestamp_ms = to_ms_since_boot(get_absolute_time())
+                };
+                bp_kernel_post_event(0, &ev);
+            }
+            make_usbmsdrive_writable();
+        }
+
+        switch (bp_state) {
+            case BP_SM_DISPLAY_MODE:
+                // start linenoise prompt, 
+                // don't show any prompt text yet, just wait for user input
+                ui_prompt_vt100_mode_start("");
+                bp_state = BP_SM_DISPLAY_MODE_WAIT;
+                break;
+
+            case BP_SM_DISPLAY_MODE_WAIT:
+                uint32_t value;
+                if (!ui_prompt_vt100_mode_feed(&value)) {
+                    break; // still editing, return to main loop
+                }
+                // user hit enter, now used any saved config or prompt the user to select a display mode
+                // config file option loaded, wait for any key
+                // for ASCII mode terminal_ansi_color is always false
+                // this has the side effect of always prompting if the saved mode is ASCII
+                // this is a feature, not a bug -
+                // it lets new users escape from ASCII mode without learning of the config menus                
+                if (system_config.terminal_ansi_color) {
+                    goto display_mode_done_saved;
+                }          
+                
+                if(value == 'n'){
+                    // user requested ASCII mode
+                    system_config.terminal_ansi_color = UI_TERM_NO_COLOR;
+                    system_config.terminal_ansi_statusbar = false;
+                    printf("\r\n"); // make pretty
+                }else if(value == 'y') {
+                    // user requested VT100 mode
+                    // no configuration exists, default to status bar enabled
+                    system_config.terminal_ansi_color = UI_TERM_FULL_COLOR;
+                    system_config.terminal_ansi_statusbar = true;
+
+                display_mode_done_saved:// case were configuration already exists
+                    if (!ui_term_detect()) { // Do we detect a VT100 ANSI terminal? what is the size?
+                        system_config.terminal_ansi_color = UI_TERM_NO_COLOR;
+                        system_config.terminal_ansi_statusbar = false;                        
+                        bp_state = BP_SM_COMMAND_PROMPT;
+                        break;
+                    }
+                    // if something goes wrong with detection, the next function will skip internally
+                    ui_term_init(); // Initialize VT100 if ANSI terminal (or not if detect failed)
+                    // this sets the scroll region for the status bar (if enabled)
+                    // and does the initial painting of the full statusbar
+                    if (system_config.terminal_ansi_statusbar) {
+                        ui_statusbar_init();
+                        toolbar_update_blocking();
+                    }
+                }else{ 
+                    // if value is not y/n, then we got enter with no parameters
+                    // show the user the prompt               
+                    ui_prompt_vt100_mode_start("\r\n\r\nVT100 compatible color mode? (Y/n)> ");
+                    break;
+                }    
+
+                bp_state = BP_SM_COMMAND_PROMPT;
+                break;
+            case BP_SM_GET_INPUT:
+                modes[system_config.mode].protocol_periodic();
+
+                if (system_config.binmode_lock_terminal) {
+                    break;
+                }
+                
+                uint32_t ln_result = ui_term_linenoise_feed();
+                
+                if (ln_result == 0xff) {  // Enter - line complete
+                    bp_state = BP_SM_PROCESS_COMMAND;
+                    button_irq_disable(0); 
+                    break;
+                }
+                
+                if (ln_result == 0xfe) {  // Ctrl+C - cancel
+                    printf("^C\r\n");
+                    bp_state = BP_SM_COMMAND_PROMPT;
+                    break;
+                }
+
+                if (ln_result == 0xfb) {  // TAB on empty line - toolbar focus request
+                    if (toolbar_focus_enter()) {
+                        bp_state = BP_SM_TOOLBAR_FOCUS;
+                    }
+                    break;
+                }
+
+                enum button_codes press_code = button_check_press(0);
+                if (press_code != BP_BUTT_NO_PRESS) {
+                    button_irq_disable(0);
+                    button_exec(press_code);         // execute script based on the button press type
+                    bp_state = BP_SM_COMMAND_PROMPT; // return to command prompt
+                }
+                break;
+            case BP_SM_PROCESS_COMMAND:
+                system_config.error = ui_process_commands();
+                bp_state = BP_SM_COMMAND_PROMPT;
+                break;
+            case BP_SM_COMMAND_PROMPT:
+                {
+                    static bool crash_report_printed = false;
+                    if (!crash_report_printed) {
+                        crash_report_printed = true;
+                        if (bp_crash_record_is_valid(&bp_crash_record) && bp_crash_record.reason != BP_CRASH_REASON_NONE) {
+                            bp_crash_report_print();
+                        }
+                        if (system_config.safe_mode) {
+                            printf("\r\n\x1b[1;31m[SAFE MODE ACTIVATED: 3+ consecutive crashes detected. Auto-scripts and power rails disabled.]\x1b[0m\r\n\r\n");
+                        }
+                    }
+                    // Build prompt string for linenoise
+                    static char prompt_buf[128];
+                    if (system_config.subprotocol_name) {
+                        snprintf(prompt_buf, sizeof(prompt_buf), "%s%s-(%s)>%s ",
+                                 ui_term_color_prompt(),
+                                 modes[system_config.mode].protocol_name,
+                                 system_config.subprotocol_name,
+                                 ui_term_color_reset());
+                    } else {
+                        snprintf(prompt_buf, sizeof(prompt_buf), "%s%s>%s ",
+                                 ui_term_color_prompt(),
+                                 modes[system_config.mode].protocol_name,
+                                 ui_term_color_reset());
+                    }
+                    // Start linenoise editing session (outputs prompt)
+                    ui_term_linenoise_start(prompt_buf);
+                    // Output end-of-prompt marker for test tools (invisible)
+                    printf("\x03");
+                }
+                bp_state = BP_SM_GET_INPUT;
+                button_irq_enable(0, &button_irq_callback);
+                break;
+
+            case BP_SM_TOOLBAR_FOCUS: {
+                modes[system_config.mode].protocol_periodic();
+
+                /* Non-blocking peek: if no input, keep looping */
+                char peek;
+                if (!rx_fifo_try_get(&peek)) break;
+
+                int key = vt100_key_read_rx_fifo(peek);
+                if (toolbar_focus_handle_key(key) == TB_FOCUS_EXIT) {
+                    bp_state = BP_SM_GET_INPUT;
+                }
+                break;
+            }
+
+            default:
+                bp_state = BP_SM_COMMAND_PROMPT;
+                break;
+        }
+
+        // shared multitasking stuff
+        // system error, over current error, etc
+        if (system_config.error) {
+            printf("\x07");        // bell!
+            psucmd_show_clear_error(); // check for PSU error, reset and show warning
+            system_config.error = 0;
+            bp_state = BP_SM_COMMAND_PROMPT;
+        }
+    }
+    assert(false); // funtion should never exit / this point should be unreachable
+}
+
+int main(void) {
+    // N.B. -- printf() can ***NOT*** be used until after
+    //         both cores are in their infinite loops.
+    //         Use RTT for early boot debugging / status messages.
+
+    // N.B. -- Keep it SIMPLE.  Do as much initialization
+    //         from core 0 as possible, before going multi-core.
+    //         This includes loading system_config from storage (if avialable).
+    //         Consider renaming functions to reflect
+    //         pre-config vs. post-config (conditional) setup?
+    SEGGER_RTT_Init();
+    bp_crash_record_init();
+    bp_stack_paint(0);
+    bp_watchdog_init();
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_WARNING, BP_DEBUG_CAT_EARLY_BOOT,"\n");
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_WARNING, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: =========== %s ===========\n",
+        BP_HARDWARE_VERSION
+        );
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_WARNING, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: Firmware %s @ %s (%s)\n",
+        BP_FIRMWARE_VERSION,
+        BP_FIRMWARE_HASH,
+        BP_FIRMWARE_TIMESTAMP
+        );
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_WARNING, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: %s with %s RAM, %s FLASH, S/N %08X%08X\n",
+           BP_HARDWARE_MCU,
+           BP_HARDWARE_RAM,
+           BP_HARDWARE_FLASH,
+           (uint32_t)(mcu_get_unique_id() >> 32),
+           (uint32_t)(mcu_get_unique_id() & 0xFFFFFFFFu)
+           );
+    main_system_initialization();
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: entering core0_infinite_loop()\n"
+        );
+
+    bp_mark_system_initialized();
+#if !defined(BP_WATCHDOG_DISABLE)
+    watchdog_update();
+#endif
+    core0_infinite_loop(); // this never should exit, but....
+    assert(false); // infinite loop above should never exit
+    return 0;
+}
+
+// Periodic service flag, set by the timer and serviced outside interrupt context.
+bool system_tick_request = false;
+
+// begin of code execution for the second core (core1)
+static void core1_initialization(void) {
+
+    // //////////////////////////////////////////////////////////////////////
+    // N.B. - Do ***NOT*** expect system configuration to be
+    //        available until _AFTER_ the ICM message is received.
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: Core1: waiting for signal from core0...\n"
+        );
+    // wait for main core to signal start
+    bp_icm_raw_message_t raw_init_message;
+    do {
+        raw_init_message = icm_core1_get_raw_message();
+        if (get_embedded_message(raw_init_message) != BP_ICM_INIT_CORE1) {
+            // Should never occur.  If it does, likely to never get expected message.
+            // In which case, critical to have at least logged the error.
+            BP_DEBUG_PRINT(BP_DEBUG_LEVEL_ERROR, BP_DEBUG_CAT_EARLY_BOOT,
+                "Init: Core1: Unexpected ICM value! "
+                "Got %02x (raw: %08x), expected %02x\n",
+                get_embedded_message(raw_init_message), raw_init_message.raw, BP_ICM_INIT_CORE1
+                );
+        }
+    } while (get_embedded_message(raw_init_message) != BP_ICM_INIT_CORE1);
+    // OK, system_config is valid (loaded from storage, if available)
+    // //////////////////////////////////////////////////////////////////////
+
+    if (system_config.terminal_usb_enable) {
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: Core1: tusb_init()\n"
+            );
+        tusb_init();
+    } else {
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_WARNING, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: Core1: USB ***DISABLED*** by config\n"
+            );
+    }
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: Core1: system_tick_enable()\n"
+        );
+    system_tick_enable(BP_SYSTEM_TICK_MS);
+
+    // terminal debug uart enable
+    if (system_config.terminal_uart_enable) {
+        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_WARNING, BP_DEBUG_CAT_EARLY_BOOT,
+            "Init: Core1: UART terminal ***ENABLED*** by config\n"
+            );
+        rx_uart_init_irq();
+    }
+
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: Core1: icm_core1_notify_completion(0x%08x)\n",
+        raw_init_message.raw
+        );
+    icm_core1_notify_completion(raw_init_message);
+}
+
+static void assert_error()
+{
+    BP_ASSERT(false);
+}
+
+static void tud_cdc_rx_task() {
+
+    BP_ASSERT_CORE1(); // RX FIFO (whether from UART, CDC, RTT, ...) should only be added to from core1 (deadlock risk)
+
+    uint8_t buf[64];
+    uint32_t available = 0;
+    if (system_config.terminal_usb_enable && (available = tud_cdc_n_available(0))) {
+        uint32_t free_space = spsc_queue_free(&rx_fifo);
+        if (free_space) {
+            uint32_t count = tud_cdc_n_read(0, buf, MIN(available, free_space));
+            for (uint32_t i = 0; i < count; i++) {
+                bool success = spsc_queue_try_add(&rx_fifo, buf[i]);
+                if (!success)
+                    assert_error();
+            }
+        }
+    }
+}
+static void core1_infinite_loop(void) {
+
+    //uint32_t core0_requested_update_flags = 0;
+    while (1) {
+        bp_watchdog_heartbeat(1);
+        bp_service(1);
+
+        // service (thread safe) tinyusb tasks
+        if (system_config.terminal_usb_enable || system_config.binmode_usb_rx_queue_enable) {
+            tud_task(); // tinyusb device task
+            tud_cdc_rx_task();
+        }
+
+        // service the terminal TX queue
+        tx_fifo_service();
+        // service one step of the toolbar Core1 state machine
+        toolbar_core1_service();
+        // service the binary mode transport queues
+        bp_bin_transport_usb_service();
+        // also receive input from RTT, if available
+        rx_from_rtt_terminal();
+
+        if (psu_poll_fuse_vout_error()) {
+            psucmd_irq_callback();
+        }
+
+        if (system_tick_request) {
+            monitor(); // TODO: fix monitor to return bool up_volts and up_current
+            uint32_t update_flags = 0;
+            if (system_config.pin_changed) {
+                update_flags |= UI_UPDATE_LABELS | UI_UPDATE_VOLTAGES; // pin labels + values (type may have changed)
+            }
+            if (monitor_voltage_changed()) {
+                update_flags |= UI_UPDATE_VOLTAGES; // pin voltages
+            }
+            if (psu_status.enabled && monitor_current_changed()) {
+                update_flags |= UI_UPDATE_CURRENT; // psu current sense
+            }
+            if (system_config.info_bar_changed) {
+                update_flags |= UI_UPDATE_INFOBAR; // info bar
+            }
+
+            if (system_config.terminal_ansi_color &&
+                toolbar_count_registered() &&
+                !system_config.terminal_toolbar_pause) {
+                toolbar_core1_begin_update(update_flags);
+            }
+
+            #ifdef BP_HW_STORAGE_TFCARD
+                bool card_present = (hw_adc_raw[HW_ADC_MUX_CARD_DETECT] < 100);
+                bp_storage_notify_card_detect(card_present);
+            #endif
+
+            freq_measure_period_irq(); // update frequency periodically
+            monitor_reset();
+            system_tick_request = false;
+        }
+
+        // service any requests with priority
+        while (multicore_fifo_rvalid()) {
+            bp_icm_raw_message_t raw_message = icm_core1_get_raw_message();
+            switch (get_embedded_message(raw_message)) {
+                case BP_ICM_UPDATE_TOOLBARS:
+                    toolbar_core1_begin_update(UI_UPDATE_ALL);
+                    break;
+                case BP_ICM_DISABLE_SYSTEM_TICK:
+                    system_tick_disable();
+                    system_tick_request = false;
+                    break;
+                case BP_ICM_ENABLE_SYSTEM_TICK:
+                    system_tick_enable(BP_SYSTEM_TICK_MS);
+                    system_tick_request = true;
+                    break;
+                case BP_ICM_ENABLE_RGB_UPDATES:
+                    rgb_irq_enable(false);
+                    break;
+                case BP_ICM_DISABLE_RGB_UPDATES:
+                    rgb_irq_enable(true);
+                    break;
+                default:
+                    break;
+            }
+            icm_core1_notify_completion(raw_message);
+        }
+
+    } // while(1)
+}
+void core1_entry(void) {
+    bp_stack_paint(1);
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: core1_entry()\n"
+        );
+    core1_initialization();
+    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
+        "Init: starting core1_infinite_loop()\n"
+        );
+    bp_mark_system_initialized();
+    core1_infinite_loop();
+    assert(false); // infinite loop above should never exit
+}
+
+struct repeating_timer system_tick_timer;
+static bool s_system_tick_enabled = false;
+
+bool system_tick_callback(struct repeating_timer* t) {
+    system_tick_request = true;
+    return true;
+}
+
+void system_tick_disable(void) {
+    if (s_system_tick_enabled) {
+        cancel_repeating_timer(&system_tick_timer);
+        s_system_tick_enabled = false;
+    }
+}
+
+void system_tick_enable(int16_t repeat_interval) {
+    // Create a repeating timer that calls repeating_timer_callback.
+    // If the delay is negative (see below) then the next call to the callback will be exactly 500ms after the
+    // start of the call to the last callback
+    // Negative delay so means we will call repeating_timer_callback, and call it again
+    // 500ms later regardless of how long the callback took to execute
+    if (!s_system_tick_enabled) {
+        if (add_repeating_timer_ms(repeat_interval, system_tick_callback, NULL, &system_tick_timer)) {
+            s_system_tick_enabled = true;
+        }
+    }
+}
+
+// gives protected access to spi (core safe)
+void spi_busy_wait_internal(bool enable, const char *file, int line) {
+
+    if (!enable) {
+
+        BP_ASSERT(lock_get_caller_owner_id() == spi_mutex.owner);
+        mutex_exit(&spi_mutex);
+
+    } else {
+
+        mutex_enter_blocking(&spi_mutex);
+        BP_ASSERT(lock_get_caller_owner_id() == spi_mutex.owner);
+    }
+}

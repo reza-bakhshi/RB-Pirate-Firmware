@@ -1,0 +1,376 @@
+#define _POSIX_C_SOURCE 200809L
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <sched.h>
+#include <string.h>
+#include <assert.h>
+#include <pthread.h>
+#include <unistd.h>
+
+#include "hardware/sync.h"
+#include "hardware/adc.h"
+#include "kernel/bp_status.h"
+#include "kernel/bp_config.h"
+#include "kernel/bp_job.h"
+#include "system_config.h"
+#include "pirate/amux.h"
+#include "pirate/psu.h"
+
+// Hardware stubs and variables for host execution
+uint16_t s_mock_adc_val = 1000;
+static spin_lock_t s_mock_spin_lock = 0;
+
+static int8_t s_test_core_id = 0;
+unsigned int get_core_num(void) {
+    return (unsigned int)s_test_core_id;
+}
+
+uint16_t hw_adc_raw[16];
+uint32_t hw_adc_voltage[16];
+uint32_t hw_adc_avgsum_voltage[16];
+
+struct _system_config system_config;
+
+void bp_watchdog_heartbeat(uint8_t c) { (void)c; }
+
+// Spinlock mock
+uint32_t spin_lock_blocking(spin_lock_t *lock) {
+    (void)lock;
+    return 0;
+}
+
+void spin_unlock(spin_lock_t *lock, uint32_t save) {
+    (void)lock;
+    (void)save;
+}
+
+void spin_lock_unsafe_blocking(spin_lock_t *lock) {
+    (void)lock;
+}
+
+void spin_unlock_unsafe(spin_lock_t *lock) {
+    (void)lock;
+}
+
+uint spin_lock_claim_unused(bool required) {
+    (void)required;
+    return 1;
+}
+
+spin_lock_t* spin_lock_init(uint lock_num) {
+    (void)lock_num;
+    return &s_mock_spin_lock;
+}
+
+static bp_status_t mock_job_slice(void* ctx, uint8_t* out_percent) {
+    (void)ctx;
+    *out_percent = 50;
+    return BP_STATUS_BUSY;
+}
+
+// -------------------------------------------------------------------------
+// Test 1: Reentrant ADC lock on same core
+// -------------------------------------------------------------------------
+static void test_adc_reentrancy(void) {
+    printf("[TEST] Reentrant ADC arbitration on the same core...\n");
+    s_test_core_id = 0;
+
+    assert(adc_get_owner() == -1);
+    assert(adc_get_nest_count() == 0);
+
+    // Initial acquire
+    adc_busy_wait(true);
+    assert(adc_get_owner() == 0);
+    assert(adc_get_nest_count() == 1);
+
+    // Reentrant acquire 4 more times (nesting level 5)
+    for (int i = 0; i < 4; i++) {
+        adc_busy_wait(true);
+        assert(adc_get_owner() == 0);
+        assert(adc_get_nest_count() == (uint32_t)(2 + i));
+    }
+    assert(adc_get_nest_count() == 5);
+
+    // Release 4 times
+    for (int i = 0; i < 4; i++) {
+        adc_busy_wait(false);
+        assert(adc_get_owner() == 0);
+        assert(adc_get_nest_count() == (uint32_t)(4 - i));
+    }
+    assert(adc_get_nest_count() == 1);
+    assert(adc_get_owner() == 0);
+
+    // Final release
+    adc_busy_wait(false);
+    assert(adc_get_owner() == -1);
+    assert(adc_get_nest_count() == 0);
+
+    printf("[PASS] Reentrant ADC lock verified (nesting up to 5 levels)\n");
+}
+
+// -------------------------------------------------------------------------
+// Test 2: Multicore ADC arbitration
+// -------------------------------------------------------------------------
+static void test_adc_multicore_arbitration(void) {
+    printf("[TEST] Cross-core ADC arbitration & handoff...\n");
+
+    // Core 0 acquires
+    s_test_core_id = 0;
+    adc_busy_wait(true);
+    assert(adc_get_owner() == 0);
+
+    // Switch to Core 1: verify owner is Core 0
+    s_test_core_id = 1;
+    assert(adc_get_owner() == 0);
+
+    // Core 0 releases
+    s_test_core_id = 0;
+    adc_busy_wait(false);
+    assert(adc_get_owner() == -1);
+
+    // Core 1 acquires
+    s_test_core_id = 1;
+    adc_busy_wait(true);
+    assert(adc_get_owner() == 1);
+    assert(adc_get_nest_count() == 1);
+
+    // Core 1 releases
+    adc_busy_wait(false);
+    assert(adc_get_owner() == -1);
+    assert(adc_get_nest_count() == 0);
+
+    s_test_core_id = 0;
+    printf("[PASS] Cross-core arbitration & handoff verified\n");
+}
+
+// -------------------------------------------------------------------------
+// Test 3: Multithreaded Seqlock Monitor Snapshot
+// -------------------------------------------------------------------------
+#define NUM_SEQLOCK_CYCLES 20000
+static volatile bool s_writer_running = true;
+
+static void* snapshot_writer_thread(void* arg) {
+    (void)arg;
+    uint16_t pin_v[HW_PINS];
+    for (uint32_t i = 1; i <= NUM_SEQLOCK_CYCLES; i++) {
+        for (int p = 0; p < HW_PINS; p++) {
+            pin_v[p] = (uint16_t)(i + p * 100);
+        }
+        uint32_t vout = i * 10;
+        uint32_t vreg = vout + 200; // Invariant: vreg == vout + 200
+        uint32_t cur = i % 500;
+        bp_ui_snapshot_publish_power(i, 1, vreg, vout, cur, pin_v, true, true, false, false);
+    }
+    s_writer_running = false;
+    return NULL;
+}
+
+static void test_seqlock_snapshot_concurrency(void) {
+    printf("[TEST] Multithreaded seqlock snapshot read/write (20,000 cycles)...\n");
+    assert(bp_config_subsystem_init() == BP_STATUS_OK);
+
+    s_writer_running = true;
+    pthread_t writer;
+    assert(pthread_create(&writer, NULL, snapshot_writer_thread, NULL) == 0);
+
+    bp_ui_snapshot_t snap;
+    uint32_t reads_performed = 0;
+    uint32_t valid_reads = 0;
+
+    while (s_writer_running || reads_performed < 30000) {
+        if ((reads_performed % 64) == 0) {
+            sched_yield();
+        }
+        if (bp_ui_snapshot_read(&snap)) {
+            // Verify seqlock was not read while odd (in-progress write)
+            assert((snap.seq & 1) == 0);
+            if (snap.timestamp_ms > 0) {
+                // Verify mathematical invariant written atomically
+                assert(snap.vreg_mv == snap.vout_mv + 200);
+                assert(snap.pin_voltages[0] == (uint16_t)(snap.timestamp_ms));
+                valid_reads++;
+            }
+        }
+        reads_performed++;
+    }
+
+    pthread_join(writer, NULL);
+    assert(valid_reads > 100);
+    printf("[PASS] Seqlock snapshot verified: %u reads, %u consistent snapshots, ZERO torn reads\n",
+           reads_performed, valid_reads);
+}
+
+// -------------------------------------------------------------------------
+// Test 4: PSU Overcurrent Trip and Job Abort
+// -------------------------------------------------------------------------
+static void test_psu_overcurrent_job_abort(void) {
+    printf("[TEST] PSU overcurrent detection and protocol job abort...\n");
+    assert(bp_job_subsystem_init() == BP_STATUS_OK);
+
+    // Submit an active protocol job
+    uint32_t job_id = 0;
+    assert(bp_job_submit("proto_stream", BP_JOB_PROTO_TEST, 5000, mock_job_slice, NULL, 0, &job_id) == BP_STATUS_OK);
+    assert(job_id > 0);
+    assert(bp_job_get_active_id() == job_id);
+
+    // Simulate active PSU
+    psu_status.enabled = true;
+    psu_status.error_overcurrent = false;
+    psu_status.error_undervoltage = false;
+    psu_status.error_pending = false;
+    psu_status.undervoltage_limit_adc = 500;
+    s_mock_adc_val = 1000; // Normal reading > 300
+
+    // Normal poll with fuse OK: no error
+    assert(!psu_poll_fuse_vout_error());
+    assert(psu_status.enabled == true);
+    assert(bp_job_get_active_id() == job_id);
+
+    // Simulate overcurrent fuse blowing (ADC read <= 300)
+    s_mock_adc_val = 50;
+    bool error_detected = psu_poll_fuse_vout_error();
+    assert(error_detected == true);
+
+    // Verify PSU was immediately disabled
+    assert(psu_status.enabled == false);
+    assert(psu_status.error_overcurrent == true);
+    assert(psu_status.error_pending == true);
+
+    // Verify cancellation was immediately requested on the active job
+    assert(bp_job_check_cancelled() == true);
+
+    // Service the cancellation on Core 1
+    assert(bp_job_service(100) == 1);
+
+    // Verify protocol job was automatically cancelled to protect hardware
+    bp_job_state_t jstate;
+    bp_status_t jstatus;
+    uint8_t jpct;
+    assert(bp_job_get_state(job_id, &jstate, &jstatus, &jpct) == BP_STATUS_OK);
+    assert(jstate == BP_JOB_STATE_CANCELLED);
+    assert(bp_job_get_active_id() == 0);
+
+    printf("[PASS] PSU overcurrent trip verified: regulator disabled and active job aborted cleanly\n");
+}
+
+// -------------------------------------------------------------------------
+// Test 5: PSU Undervoltage Debounce and Persistent Short-Circuit Trip
+// -------------------------------------------------------------------------
+static void test_psu_undervoltage_debounce_and_trip(void) {
+    printf("[TEST] PSU undervoltage debounce filtering and persistent trip...\n");
+
+    // Submit an active protocol job
+    uint32_t job_id = 0;
+    assert(bp_job_submit("proto_stream2", BP_JOB_PROTO_TEST, 5000, mock_job_slice, NULL, 0, &job_id) == BP_STATUS_OK);
+    assert(job_id > 0);
+    assert(bp_job_get_active_id() == job_id);
+
+    // Setup active PSU with undervoltage threshold at 500 ADC counts
+    psu_status.enabled = true;
+    psu_status.error_overcurrent = false;
+    psu_status.error_undervoltage = false;
+    psu_status.error_pending = false;
+    psu_status.undervoltage_limit_override = false;
+    psu_status.undervoltage_limit_adc = 500;
+    s_mock_adc_val = 1000; // Normal reading
+
+    // Initial check: all OK
+    assert(!psu_poll_fuse_vout_error());
+    assert(psu_status.enabled == true);
+
+    // Case 1: Transient dip (2 cycles below limit) should NOT trip PSU due to debouncing
+    s_mock_adc_val = 400; // Below 500 limit, but above fuse threshold (300)
+    assert(!psu_poll_fuse_vout_error()); // fail_count = 1 -> no trip
+    assert(psu_status.enabled == true);
+    assert(!psu_poll_fuse_vout_error()); // fail_count = 2 -> no trip
+    assert(psu_status.enabled == true);
+
+    // Reading recovers to normal: debounce counter must reset
+    s_mock_adc_val = 1000;
+    assert(!psu_poll_fuse_vout_error()); // recovered -> fail_count = 0
+    assert(psu_status.enabled == true);
+
+    // Case 2: Persistent undervoltage / short-circuit (4 consecutive cycles below threshold)
+    s_mock_adc_val = 400;
+    assert(!psu_poll_fuse_vout_error()); // cycle 1: fail_count = 1
+    assert(psu_status.enabled == true);
+    assert(!psu_poll_fuse_vout_error()); // cycle 2: fail_count = 2
+    assert(psu_status.enabled == true);
+    assert(!psu_poll_fuse_vout_error()); // cycle 3: fail_count = 3
+    assert(psu_status.enabled == true);
+
+    // Cycle 4: debounce limit reached -> MUST trip!
+    bool error_detected = psu_poll_fuse_vout_error();
+    assert(error_detected == true);
+    assert(psu_status.enabled == false);
+    assert(psu_status.error_undervoltage == true);
+    assert(psu_status.error_overcurrent == false);
+    assert(psu_status.error_pending == true);
+
+    // Verify protocol job was automatically cancelled to protect hardware
+    assert(bp_job_check_cancelled() == true);
+    assert(bp_job_service(100) == 1);
+    bp_job_state_t jstate;
+    bp_status_t jstatus;
+    uint8_t jpct;
+    assert(bp_job_get_state(job_id, &jstate, &jstatus, &jpct) == BP_STATUS_OK);
+    assert(jstate == BP_JOB_STATE_CANCELLED);
+    assert(bp_job_get_active_id() == 0);
+
+    // Clear error flag and verify debounce resets
+    psu_clear_error_flag();
+    assert(psu_status.error_pending == false);
+
+    printf("[PASS] PSU undervoltage debounce filtering & short-circuit trip verified\n");
+}
+
+static void test_psu_undervoltage_calculation(void) {
+    printf("[TEST] PSU undervoltage limit calculations across voltage levels...\n");
+
+    // Test 1.2V with 10% limit: must clamp to 200mV minimum noise floor (1.00V limit)
+    psu_status.voltage_actual_int = 12000;
+    psu_set_undervoltage_limit(&psu_status, 10);
+    assert(psu_status.undervoltage_limit_override == false);
+    assert(psu_status.undervoltage_percent == 10);
+    assert(psu_status.undervoltage_limit_int == 10000); // 1.00V
+    assert(psu_status.undervoltage_limit_adc == (uint16_t)((10000UL * 4096UL) / 66000UL));
+
+    // Test 1.65V with 10% limit: must clamp to 200mV minimum noise floor (1.45V limit)
+    psu_status.voltage_actual_int = 16500;
+    psu_set_undervoltage_limit(&psu_status, 10);
+    assert(psu_status.undervoltage_limit_int == 14500); // 1.45V
+    assert(psu_status.undervoltage_limit_adc == (uint16_t)((14500UL * 4096UL) / 66000UL));
+
+    // Test 3.3V with 10% limit: 330mV drop (> 200mV) -> 2.97V limit
+    psu_status.voltage_actual_int = 33000;
+    psu_set_undervoltage_limit(&psu_status, 10);
+    assert(psu_status.undervoltage_limit_int == 29700); // 2.97V
+    assert(psu_status.undervoltage_limit_adc == (uint16_t)((29700UL * 4096UL) / 66000UL));
+
+    // Test 5.0V with 10% limit: 500mV drop (> 200mV) -> 4.50V limit
+    psu_status.voltage_actual_int = 50000;
+    psu_set_undervoltage_limit(&psu_status, 10);
+    assert(psu_status.undervoltage_limit_int == 45000); // 4.50V
+    assert(psu_status.undervoltage_limit_adc == (uint16_t)((45000UL * 4096UL) / 66000UL));
+
+    // Test 100% (disabled)
+    psu_set_undervoltage_limit(&psu_status, 100);
+    assert(psu_status.undervoltage_limit_override == true);
+
+    printf("[PASS] PSU undervoltage limit calculations verified\n");
+}
+
+int main(void) {
+    printf("=== Running Power Monitor & ADC Subsystem Tests ===\n");
+    amux_init();
+    test_adc_reentrancy();
+    test_adc_multicore_arbitration();
+    test_seqlock_snapshot_concurrency();
+    test_psu_overcurrent_job_abort();
+    test_psu_undervoltage_debounce_and_trip();
+    test_psu_undervoltage_calculation();
+    printf("=== ALL POWER MONITOR & ADC TESTS PASSED ===\n");
+    return 0;
+}

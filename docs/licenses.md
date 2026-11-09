@@ -1,0 +1,113 @@
+# Open Source Licenses
+This file lists all the open source licenses that are being used by this project, and how this project complies with them.  
+
+All the content in this document is copyrighted by the following authors:  
+* Copyright (c) 2024 Lior Shalmay <liorshalmay1@gmail.com>  
+
+## Disclaimer
+All the source code in [this project](https://github.com/DangerousPrototypes/BusPirate5-firmware) is distributed under 
+MIT license (unless specified explicitly otherwise, at the start of the file). This produced does use libraries which are distributed under different licenses, documented in this file.
+
+Any distributed binary derived from this project should be distributed alongside a copy of this document, a copy of all 
+the licenses inside the `docs/third_party_licenses` directory and a copy of MIT license.
+
+You may not need to distribute some of the licenses and claims, if you select to not use certain libraries.
+
+### Copyright notices
+All the people listed below hold copyrights to code in this project:  
+* Copyright (c) 2026 Dawid Konrad Kohnke <dawid.kohnke.cad@gmail.com>
+* Copyright (c) 2023-2024 Ian Lesnet, Where Labs LLC 
+* Copyright (c) 2024 Lior Shalmay <liorshalmay1@gmail.com>
+* Copyright (c) 2019 Ha Thach (tinyusb.org)
+* Copyright (c) 2020-2021 Raspberry Pi (Trading) Ltd.
+* Copyright (c) 2021 Stefan Althöfer
+* Copyright (c) 2013 Daniel Beer <dlbeer@gmail.com>
+* Copyright (c) 2023 Paul Campbell, Moonbase Otago  paul@taniwha.com
+* Copyright (c) 2019, ChaN, all right reserved.
+* Copyright (c) 2022 Kattni Rembor for Adafruit Industries
+* Copyright (c) 2014 Kosma Moczek <kosma@cloudyourcar.com>
+* Copyright (c) 2016 Measurement Specialties. All rights reserved.
+* Copyright (c) 2016-2018, Armink, <armink.ztl@gmail.com>
+* Copyright (c) 2015-2021 LibDriver All rights reserved
+* Copyright (c) 2018-2020 Cesanta Software Limited
+* Copyright (c) 2021 Jaroslav Kysela <perex@perex.cz>
+* Copyright (c) 2014-2019 Marco Paland (info@paland.com), PALANDesign Hannover, Germany
+* Copyright (c) 2017,2019 Two Blue Cubes Ltd. All rights reserved.
+* Copyright (c) 2026 Shapoco (LcdTap)
+* Copyright (c) 2005 John S. Fine (MakeHex IRP encoder)
+* Copyright (c) 2025-2026 geo-tp (ESP32-Bit-Pirate MakeHex port, MIT)
+
+## MIT: LcdTap
+
+The LCD traffic decoder and RP2350 SPI/I2C capture helpers in `src/lib/lcdtap/`
+come from [Shapoco's LcdTap project](https://github.com/shapoco/lcdtap). The
+library is distributed under the MIT license. Its complete license notice is
+included in `docs/third_party_licenses/lcdtap.txt`.
+
+
+## LGPL3
+### Used libraries
+#### [ansi_colours](https://github.com/mina86/ansi_colours)
+##### Files that are being used from the project
+* `ansi256.c`
+* `ansi_colours.h`
+##### Source Files that use this library
+* `ui/ui_term.c`
+##### copyright notice
+Copyright 2018 by Michał Nazarewicz <mina86@mina86.com>
+
+### License Compliance explained
+First of all, we give the copyright notices in all the respective places in this repo.
+Secondly, this project is completely open source and published to the public, and distributed binaries are delivered with a link to this repo.
+Thirdly, the original libraries code is left unmodified, and their code gets fetched by the build system, therefore that code is not part of this project.
+
+Therefore, we comply with all the terms of the LGPL3 license, including section 4.d.0, because by access to this source code, the user can easily use the build system in order to provide a different library that has the same interface.
+
+In conclusion, these are the reasons that we comply with LGPL3 and we can distribute binaries under LGPL3 terms.  
+For further information, please see the discussion at [github](https://github.com/DangerousPrototypes/BusPirate5-firmware/pull/34).
+
+## MakeHex IRP encoder (custom permissive license)
+### Used libraries
+#### [MakeHex](https://github.com/probonopd/MakeHex/) by John S. Fine
+##### Files that are being used from the project
+* `lib/makehex/MakeHex.cpp`
+* `lib/makehex/MakeHex.h`
+* `lib/makehex/irp_definitions.c` (protocol definitions data, adapted from the ESP32-Bit-Pirate project)
+* `lib/makehex/irp_definitions.h`
+##### Source Files that use this library
+* `pirate/ir_protocols.c` (INFRARED mode `send` for the MakeHex protocol set)
+##### copyright notice
+Copyright 2005 John S. Fine. You may use, copy, modify and/or distribute this program for private or
+commercial use provided that: 1) You do not hold him responsible for any damage or negative consequences
+resulting from those activities. 2) You include this copyright notice and disclaimer in any copy of any
+part or all of this program. The full license text is embedded at the top of `lib/makehex/MakeHex.cpp`.
+
+The protocol definition data and the ESP32 adaptation are from the
+[ESP32-Bit-Pirate](https://github.com/geo-tp/ESP32-Bit-Pirate) project (MIT, Copyright (c) 2025-2026 geo-tp).
+
+## BSD 3 Clause
+This license is completely compatible with our MIT license. So BSD components have been directly incorporated into this project.
+
+### List of source files
+- `queue.c`
+- `queue.h`
+- `commands/1wire/`
+    - `demos.c`
+    - `scan.c`
+- `lib/sigrok/pico_sdk_sigrok.c`
+- `mode/logicanalyzer.pio`
+- `pirate/`
+    - `apa102.pio`
+    - `hw1wire_pio.c`
+    - `hw1wire.pio`
+    - `hw2wire_pio.c`
+    - `hw2wire_pio.h`
+    - `hw2wire.pio`
+    _ `hwi2c_pio.c`
+    _ `hwi2c_pio.h`
+    - `hwi2c.pio`
+    - `hwuart.pio`
+    - `ws2812.pio`
+
+
+

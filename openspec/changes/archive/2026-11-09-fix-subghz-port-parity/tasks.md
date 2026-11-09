@@ -1,0 +1,25 @@
+# Tasks: Fix SubGHz Port Parity and Protocol Conformance
+
+- [x] 1. Harden edge capture interrupt teardown in `src/mode/subghz_cap.c` <!-- id: 1 -->
+  - [x] 1.1 Atomic interrupt shutdown and state reset in `subghz_cap_stop()` <!-- id: 1.1 -->
+  - [x] 1.2 Call `gpio_acknowledge_irq()` to clear pending edge flags on GDO0 prior to handler removal <!-- id: 1.2 -->
+- [x] 2. Standardize frequency bounds and preset validation <!-- id: 2 -->
+  - [x] 2.1 Export `cc1101_valid_frequency()` in `src/pirate/cc1101.h` and `src/pirate/cc1101.c` <!-- id: 2.1 -->
+  - [x] 2.2 Align frequency validation across `src/mode/subghz.c` and `src/mode/subghz_file.c` <!-- id: 2.2 -->
+  - [x] 2.3 Verify frequency calculation formula against 26 MHz crystal standards <!-- id: 2.3 -->
+- [x] 3. Verify Flipper `.sub` file format fidelity and protocol parity <!-- id: 3 -->
+  - [x] 3.1 Verify parser and serializer consistency for RAW, BinRAW, and Key formats <!-- id: 3.1 -->
+  - [x] 3.2 Verify Custom_preset_data handling with 8-byte PATABLE and `00 00` terminator <!-- id: 3.2 -->
+  - [x] 3.3 Verify ISM transmission safety gates (`tx_guard()` and `txallow`) <!-- id: 3.3 -->
+- [x] 4. Expand host test suite in `tests/test_subghz.c` <!-- id: 4 -->
+  - [x] 4.1 Add test coverage for frequency calculation, tuning boundaries, and invalid bands <!-- id: 4.1 -->
+  - [x] 4.2 Add test coverage for preset lookup, Flipper aliases, and PATABLE power levels <!-- id: 4.2 -->
+  - [x] 4.3 Add spot-check tests verifying pinned timing constants for key protocols <!-- id: 4.3 -->
+  - [x] 4.4 Run `tests/test_subghz.sh` under AddressSanitizer and UndefinedBehaviorSanitizer <!-- id: 4.4 -->
+- [x] 5. Run full test suite regression and build firmware target <!-- id: 5 -->
+  - [x] 5.1 Run all host tests (`tests/*.sh`) with 0 failures <!-- id: 5.1 -->
+  - [x] 5.2 Build `bus_pirate6.uf2` on RP2350 target and verify RAM ceiling <= 380 KB and 4 KB fixed stacks <!-- id: 5.2 -->
+- [x] 6. OpenSpec validation and archiving <!-- id: 6 -->
+  - [x] 6.1 Validate strictly with `openspec validate fix-subghz-port-parity --strict` <!-- id: 6.1 -->
+  - [x] 6.2 Archive change with `openspec archive fix-subghz-port-parity -y` <!-- id: 6.2 -->
+  - [x] 6.3 Update `openspec/ROADMAP.md` progression table and status board <!-- id: 6.3 -->

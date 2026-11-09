@@ -1,0 +1,36 @@
+// #include <stdio.h>
+#include <string.h>
+#include "pico/stdlib.h"
+#include "pirate.h"
+#include "mode/bp_mode.h"
+
+#include "usb_rx.h"
+#include "usb_tx.h"
+#include "services/bp_bin_transport.h"
+#include "pirate/bio.h"
+#include "system_config.h"
+#include "bytecode.h" //needed because modes.h has some functions that use it TODO: move all the opt args and bytecode stuff to a single helper file
+#include "command_struct.h" //needed for same reason as bytecode and needs same fix
+#include "modes.h"
+
+void script_send(const char* c, uint32_t len) {
+    if (c && len > 0) {
+        bp_bin_transport_write((const uint8_t*)c, len, NULL);
+        bp_bin_transport_tx_flush();
+    }
+}
+
+void script_reset(void) {
+    bp_mode_to_hiz();
+
+    // POWER|PULLUP|AUX|MOSI|CLK|MISO|CS
+    static const char pin_labels[][5] = { "BIO0", "BIO1", "BIO2", "BIO3", "BIO4", "BIO5", "BIO6", "BIO7" };
+    system_bio_update_purpose_and_label(true, BIO0, BP_PIN_MODE, pin_labels[0]);
+    system_bio_update_purpose_and_label(true, BIO1, BP_PIN_MODE, pin_labels[1]);
+    system_bio_update_purpose_and_label(true, BIO2, BP_PIN_MODE, pin_labels[2]);
+    system_bio_update_purpose_and_label(true, BIO3, BP_PIN_MODE, pin_labels[3]);
+    system_bio_update_purpose_and_label(true, BIO4, BP_PIN_MODE, pin_labels[4]);
+    system_bio_update_purpose_and_label(true, BIO5, BP_PIN_MODE, pin_labels[5]);
+    system_bio_update_purpose_and_label(true, BIO6, BP_PIN_MODE, pin_labels[6]);
+    system_bio_update_purpose_and_label(true, BIO7, BP_PIN_MODE, pin_labels[7]);
+}

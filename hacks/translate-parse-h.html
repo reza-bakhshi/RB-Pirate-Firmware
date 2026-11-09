@@ -1,0 +1,55 @@
+<style>
+#line-break-and-tab {
+  white-space: pre-wrap;
+}
+</style>
+<div id="line-break-and-tab"></div>
+
+<script>
+// Note: modify this to prompt to load the translation source files.
+//       Provide a default that obtains the latest version from github directly.
+// BUGBUG: Need to update this to support new JSON format, including planned
+//         transition to storing additional data for each potentially ID.
+var trans=``;
+
+function clean(currentValue, index, arr){
+
+	if(currentValue.substring(0,1)=="#")
+	{
+		return true;
+	}
+}
+
+
+
+function split(currentValue, index, arr){
+	temp=currentValue.replace('#define ','').split(' "');
+	arr[index]=temp;
+}
+
+keys=[];
+values=[];
+
+trans=trans.split(/\r?\n/);
+trans=trans.filter(clean);
+trans.forEach(split);
+
+for(i=0;i<trans.length; i++){
+	trans[i][1]=trans[i][1].substring(0,trans[i][1].length-1);
+}
+
+t_enum="\nenum t_translations{\n";
+t_lang="\nchar const * const english[]={\n";
+for(i=0;i<trans.length; i++){
+	t_enum+="\t" + trans[i][0] + (i==0?"=0,\n":",\n"); 
+	t_lang+="\t[" + trans[i][0] + ']="' + trans[i][1] + "\",\n";
+}
+t_enum+="};\n\n";
+t_lang+="};\n\n";
+console.log(trans);
+document.getElementById('line-break-and-tab').innerHTML = t_enum + t_lang;
+
+
+
+
+</script>

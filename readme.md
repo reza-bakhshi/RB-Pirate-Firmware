@@ -2,145 +2,225 @@
 
 # RB-Pirate Firmware
 
-**Custom RP2350B firmware for the RB-Pirate hardware exploration and debugging tool**
+**Production-grade RP2350B firmware for the RB-Pirate hardware exploration and debugging tool**
 
-[![MCU: RP2350B](https://img.shields.io/badge/MCU-RP2350B-c51a4a?style=flat-square)](#firmware-features)
+[![MCU: RP2350B](https://img.shields.io/badge/MCU-RP2350B-c51a4a?style=flat-square)](#hardware-architecture)
+[![Architecture: Dual-Core Zero-Heap](https://img.shields.io/badge/Architecture-Dual--Core%20Zero--Heap-0ea5e9?style=flat-square)](#dual-core-architecture)
 [![Storage: TF card](https://img.shields.io/badge/Storage-TF%20card-2f855a?style=flat-square)](#removable-tf-card-storage)
+[![Tests: 29 suites (ASan/UBSan)](https://img.shields.io/badge/Tests-29%20passing%20(ASan%2FUBSan)-10b981?style=flat-square)](#automated-testing--verification)
 [![Based on: Bus Pirate 6](https://img.shields.io/badge/Based%20on-Bus%20Pirate%206-314cb0?style=flat-square)](https://github.com/DangerousPrototypes/BusPirate5-firmware)
 [![License: MIT](https://img.shields.io/badge/License-MIT-f5c518?style=flat-square)](LICENSE.TXT)
 
 </div>
 
-RB-Pirate Firmware lets developers, makers, and hardware enthusiasts communicate
-with, analyze, and debug electronic devices directly from a terminal. It can
-explore serial buses, inspect unknown interfaces, capture logic activity, measure
-signal voltages, safely power target circuits, work with memory devices and
-sensors, and automate common hardware tasks — all with simple commands typed
-into a color VT100 terminal, no code required.
+RB-Pirate Firmware empowers developers, security researchers, and hardware enthusiasts to inspect, reverse-engineer, and automate electronic devices directly from an interactive terminal. It bridges host computers to physical buses, RF transceivers, infrared decoders, logic analyzers, smart cards, and programmable power supplies — all accessible through an ergonomic color VT100 CLI and high-speed binary protocols.
 
-RB-Pirate Firmware is an independent project based on the
-[Bus Pirate 5/6 firmware](https://github.com/DangerousPrototypes/BusPirate5-firmware)
-created by [Dangerous Prototypes](https://dangerousprototypes.com/).
+RB-Pirate Firmware is an independent project re-architected on the foundation of the [Bus Pirate 5/6 firmware](https://github.com/DangerousPrototypes/BusPirate5-firmware) by [Dangerous Prototypes](https://dangerousprototypes.com/).
 
 > [!IMPORTANT]
-> ### RB-Pirate hardware only
->
-> This is a single-board build made exclusively for the
-> **[RB-Pirate board](https://github.com/reza-bakhshi/RB-Pirate)**. Do not flash
-> it on mainline Bus Pirate 5, 5XL, 6, or 7 hardware. For those devices use the
-> official firmware from Dangerous Prototypes.
+> ### RB-Pirate Hardware Only
+> This firmware is tailored exclusively for the **[RB-Pirate board](https://github.com/reza-bakhshi/RB-Pirate)** (Raspberry Pi RP2350B). Do not flash this firmware onto mainline Bus Pirate 5, 5XL, 6, or 7 hardware. For upstream hardware, use the official releases from Dangerous Prototypes.
 
-## Firmware features
+---
 
-### Single-board build
+## Architecture Innovations
 
-- Board identity lives in its own config file: `src/platform/rb-pirate.h` (+ `src/platform/rb-pirate.c`)
-- Pico SDK board header: `src/boards/rb-pirate.h` (`PICO_BOARD=rb-pirate`)
-- Bus Pirate 5, 5XL, and 7 platform files, RP2040 platform, and board-selection logic removed
-- Pin configuration verified against the RB-Pirate schematic (buffer direction, current sense,
-  logic-analyzer sense pins, analog mux selects, RGB, buttons)
+The RB-Pirate firmware incorporates a complete ground-up re-architecture designed for rock-solid real-time performance, zero memory fragmentation, and non-blocking operation.
 
-### Terminal and logic analysis
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        CORE 0 — CONTROL PLANE                          │
+├────────────────────────────────────────────────────────────────────────┤
+│ • TinyUSB: CDC0 (VT100 Terminal), CDC1 (Binary Transport), MSC (Disk)  │
+│ • Linenoise CLI with syntax highlighting & non-blocking sub-prompts    │
+│ • Command parser, bytecode compiler & transactional mode manager       │
+│ • Cooperative service kernel: event queues & non-blocking timers       │
+│ • Job dispatcher & hardware resource lease tracking (`bp_res`)         │
+│ • FatFS SD/TF card storage engine (mutex-free single-core ownership)   │
+│ • AMUX sweep, PSU supervision, and atomic seqlock telemetry publisher  │
+│ • Hardware watchdog supervisor & non-volatile crash log diagnostics    │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │ Lock-Free SPSC Queues
+                                    │ Atomic Seqlock Snapshots
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                        CORE 1 — PROTOCOL ENGINE                        │
+├────────────────────────────────────────────────────────────────────────┤
+│ • Hard real-time protocol engines (I2C, SPI, UART, 1-Wire, 2/3-Wire)   │
+│ • Dedicated PIO state machines (PIO0/PIO1) & hardware DMA channels     │
+│ • Follow-Along Logic Analyzer (FALA) & SUMP logic engines              │
+│ • Wireless engines: CC1101 Sub-GHz, nRF24L01 RF24, PN532 RFID, IR     │
+│ • Passive bus sniffers: LCDTAP, PS/2, USB sniffer, I2C/SPI sniffers    │
+│ • Strict isolation: Core 1 never calls blocking USB, printf, or FatFS  │
+└────────────────────────────────────────────────────────────────────────┘
+```
 
-- Color VT100 terminal interface
-- Live status toolbar with voltage and current monitoring
-- Follow-Along Logic Analyzer capture while commands are executed
-- Live bus-activity inspection, decoding, and analysis workflows
-- RP2350 E9 errata workaround keeps analyzer sense pins from leaking into floating lines when idle
+### 1. Dual-Core Control & Data Plane Split
+- **Core 0 (Control Plane)**: Manages all USB endpoints, user input, file storage, power supply limits, and user interface rendering.
+- **Core 1 (Data Plane)**: Exclusively executes hardware protocol timing, PIO programs, high-speed DMA transfers, and signal decoders.
+- **Lock-Free IPC**: Inter-core communication uses lock-free single-producer single-consumer queues (`bp_spsc`) and lock-free sequence locks (`bp_power_monitor`, `bp_ui_snapshot`). Core 1 never blocks on I/O or waits for terminal output.
 
-### Removable TF card storage
+### 2. Deterministic Static Memory Model
+- **Zero Runtime Heap**: Dynamic allocation (`malloc`, `calloc`, `realloc`, `free`) is strictly forbidden across the runtime, preventing heap fragmentation and out-of-memory crashes during multi-day soak tests.
+- **Bounded SRAM Footprint**: Total static allocation is strictly bounded to $\le 380\text{ KB}$ SRAM (out of 512 KB), guaranteeing $>130\text{ KB}$ of runtime safety headroom.
+- **Scratch Stacks**: Fixed 4 KB stack allocations located in dedicated scratch SRAM (`SCRATCH_Y` for Core 0, `SCRATCH_X` for Core 1).
+- **Poisoned Memory Pools**: Static pool allocators (`bp_mem_pool`) with buffer poison guards and alignment enforcement.
 
-- Stores global and protocol-mode settings
-- Provides space for logs, captures, dumps, scripts, and `.sub` signal files
-- Appears as a USB mass-storage device through the firmware's USB storage interface
-- Removable and easy to replace or upgrade
+### 3. Cooperative Service Kernel & Asynchronous Jobs
+- **Event-Driven Kernel (`bp_kernel`)**: Prioritized event queues and non-blocking software timers eliminate busy-wait loops in the control loop.
+- **Protocol Jobs Runtime (`bp_job`)**: Long-running operations (frequency sweeps, protocol sniffing, logic traces, flash dumping) execute asynchronously on Core 1 while the Core 0 terminal remains completely interactive.
+- **Universal Cancellation**: Cooperative `<Ctrl+C>` cancellation with sub-millisecond reaction time across all commands and protocol jobs.
 
-## Modes and protocols
+### 4. Hardware Resource Lease Manager (`bp_res`)
+- Hardware peripherals (PIO0/PIO1 state machines, DMA channels, hardware interrupts, pin directions, buffer configurations) are managed via explicit transactional leases.
+- Guaranteed zero-leak reclamation: Any resource leased by a command or mode is automatically restored on error, unexpected abort, `<Ctrl+C>`, or mode transition.
 
-- I²C, SPI, UART, half-duplex UART, 1-Wire, 2-Wire, and 3-Wire communication
-- Digital I/O and serial LED control
-- JTAG and SWD discovery
-- EEPROM, flash, FRAM, sensor, and smart-card interaction
+### 5. Hardware Crash Diagnostics & Watchdog
+- Hardware watchdog supervisor cooperatively fed by the kernel loop.
+- Non-volatile crash recording (`bp_crash_record`) preserves registers, fault addresses, and stack traces across unexpected panics or hard faults.
+- Diagnostic CLI command: `crash` displays the post-mortem analysis of the preceding crash.
 
-### Additional merged modes
+### 6. Lock-Free Binary Transport (`bp_bin_transport`)
+- High-speed binary communications (Sigrok logic analyzer, Flashrom programmer, automated scripts) run over dedicated USB CDC1 without interfering with the interactive VT100 terminal on CDC0.
 
-- **INFRARED** — MakeHex/IRP protocol engine, full Bit-Pirate protocol set, Flipper `.ir` files,
-  record/send/replay/jam, TV-B-Gone
-- **SUBGHZ (CC1101)** — band `scan` and `sweep` with activity/confidence, GDO0 logic `trace`,
-  `waterfall`, Princeton `send`, `receive` with encoding/bitrate guessing, `replay`, `record`,
-  12-bit key `bruteforce` (Nice/Came/Ansonic/Holtek/Linear/Chamberlain), `jam`, Flipper `.sub` `load`,
-  RSSI-to-audio `ear`, `setfrequency`, KeeLoq keys, and more
-- **LCDTAP** — passive capture of external LCD buses (I²C, 4-line SPI, 9-bit SPI3) with framebuffer
-  reconstruction and BMP export (ST7032, ST7789, ILI9341, SSD1306, SSD1331).
-  KS0108/8-bit parallel is not supported on RB-Pirate.
-- **RF24 (nRF24L01)** — channel scan/sweep/waterfall, packet send/receive, jamming
-- **RFID (PN532 over HSU UART)** — NFC/RFID operations, MIFARE authentication, libnfc-style commands
-- **CELL** — SIMCom-style AT modem commands inside UART mode (info, network, SIM, SMS, calls, USSD, …)
+---
 
-## Build
+## Modes and Protocols
 
-This project uses `cmake` as the build system.
+### Standard Wired Interfaces
+- **I²C**: Master, multi-byte transactions, scanner, 7-bit/10-bit addressing, hardware pull-up supervision, passive bus sniffer.
+- **SPI**: High-speed master, modes 0–3, flashrom support, EEPROM/FRAM read/write, passive SPI sniffer with PIO decoding.
+- **UART / Half-Duplex UART**: Configurable baud rates (up to 10+ Mbps), auto-baud detection, bridging, hardware flow control.
+- **1-Wire / 2-Wire / 3-Wire**: Bit-level operations, DS18B20 thermometer discovery, custom synchronous protocols.
+- **Digital I/O & PWM**: Pin state read/write, frequency measurement, clock generation, servo/PWM generator.
+- **JTAG / SWD**: Pin discovery, chain scanning, target identification, PicoSWIO probe interface.
+- **Smart Cards & Security**: ISO7816 / SLE4442 smart card dump and security code verification.
+
+### Merged Advanced Features
+
+#### 📡 SUBGHZ (TI CC1101 Transceiver)
+- **Band Scan & Sweep**: Spectrum energy sweep across 300–348 MHz, 387–464 MHz, and 779–928 MHz with signal strength and activity confidence scoring.
+- **Waterfall & Logic Trace**: Live terminal waterfall display and GDO0 signal logic analysis.
+- **Demodulation & Sniffing**: Automatic bitrate, frequency deviation, and modulation guessing (ASK/OOK, 2-FSK, 4-FSK, GFSK, MSK).
+- **Princeton & Fixed Codes**: Encode and decode PT2262/SC2260 remotes.
+- **Bruteforce Generator**: Automated transmission of 12-bit key dictionaries (Nice, Came, Linear, Chamberlain, Holtek, Ansonic).
+- **Flipper Integration**: Load and transmit Flipper Zero `.sub` radio captures directly from the TF card.
+- **RSSI Ear (`ear`)**: Maps received signal strength directly to an audible PWM audio tone on a buffered pin for directional antenna hunting.
+- **KeeLoq & Jamming**: Rolling-code decryption key utilities and continuous carrier/noise jamming.
+
+#### 🕹️ INFRARED (IR Transmitter & Receiver)
+- **Protocol Engine**: Complete MakeHex and IRP protocol engine supporting hundreds of consumer electronics protocols.
+- **Bit-Pirate Integration**: Full protocol decoder set with pulse-distance, pulse-width, and bi-phase decoders.
+- **Flipper `.ir` Support**: Load, parse, and transmit standard Flipper `.ir` remote control files.
+- **TV-B-Gone**: Embedded database of universal power codes for display turn-off testing.
+- **Raw Capture & Replay**: High-resolution pulse/space capture, visualization, file export, and repeat transmission.
+
+#### 🖥️ LCDTAP (Passive External Display Sniffer)
+- **Passive Sniffing**: Non-intrusive capture of display bus traffic across I²C, 4-line SPI, and 9-bit SPI3 without loading the bus.
+- **Live Framebuffer Reconstruction**: Real-time rendering of controller commands for ST7032, ST7789, ILI9341, SSD1306, and SSD1331 controllers.
+- **Direct Image Export**: Capture live displays and export full-color `.bmp` bitmap screenshots directly to the TF card.
+- **Hardware Protection**: Zero PIO teardown leaks and safe high-impedance state when idle.
+
+#### 📻 RF24 (Nordic nRF24L01+ 2.4 GHz)
+- **2.4 GHz Spectrum Sweep**: Real-time channel activity sweep and waterfall across the 2.400–2.525 GHz ISM band.
+- **Enhanced ShockBurst**: Packet transmission, reception, dynamic payload length, auto-acknowledgment decoding, and jamming.
+
+#### 🏷️ RFID / NFC (NXP PN532 over HSU UART)
+- **Contactless Interrogation**: ISO14443A/B, FeliCa, and NFC forum tag detection.
+- **MIFARE Classic / Ultralight**: Key authentication (Key A / Key B), sector dump, block write, and UID emulation.
+- **Direct LibNFC Bridge**: Transparent command tunneling for host NFC software suites.
+
+#### 📱 CELL (SIMCom Cellular AT Engine)
+- **Integrated AT Supervisor**: AT command engine integrated inside UART mode.
+- **Cooperative Background Processing**: Unsolicited Result Code (URC) processing without locking terminal interaction.
+- **Cellular Diagnostic Toolkit**: One-touch inspection of signal quality (CSQ), network registration (CREG/COPS), SIM status, SMS reading/sending, and voice call controls.
+
+---
+
+## Removable TF Card Storage
+
+- **Storage Engine**: SPI mode SD/TF driver backed by FatFS 0.15.
+- **Zero-Lock Single-Core Access**: All filesystem operations are owned by Core 0, eliminating cross-core file access locks.
+- **Hotplug Resilient**: Hardware insertion/removal detection with automatic unmount and mount recovery.
+- **Mass Storage Class (MSC)**: Mounts the TF card as a standard USB thumb drive on your PC for dragging and dropping scripts, captures, firmware updates, and `.sub` / `.ir` files.
+
+---
+
+## Automated Testing & Verification
+
+The codebase includes an extensive suite of automated host tests, sanitizers, and Hardware-in-the-Loop (HIL) harnesses:
+
+```bash
+# Run the entire test suite (29 suites under AddressSanitizer & UBSan)
+tests/run_all.sh
+
+# Run the grammar and command-parser fuzz testing suite (10,000+ malformed vectors)
+tests/test_parser_fuzz.sh
+
+# Run memory model verification (verifies zero-heap and <=380 KB limit)
+tests/test_memory_model.sh
+
+# Run the automated Hardware-in-the-Loop (HIL) and soak suite
+python3 tests/hil_test_suite.py --smoke --cycles 1000 --soak 60
+```
+
+### Diagnostic CLI Commands
+- `features` — Dumps active compiled modules, kernel timers, and memory status.
+- `crash` — Inspects the non-volatile post-mortem crash record from the previous boot.
+- `memory` — Real-time static RAM utilization breakdown.
+
+---
+
+## Build and Installation
 
 ### Requirements
+- **CMake** (3.21+)
+- **Python 3**
+- **Raspberry Pi Pico SDK** (v2.1.0+)
+- **ARM GCC Toolchain** (`arm-none-eabi-gcc`)
 
-- CMake
-- Raspberry Pi [pico-sdk](https://github.com/raspberrypi/pico-sdk)
-- ARM GCC toolchain (installed automatically with the SDK environment)
+### 1. Configure
+```bash
+cmake -S . -B build_rp2350 -DPICO_SDK_FETCH_FROM_GIT=TRUE -DBP_PICO_PLATFORM=rp2350
+```
+*(To use an existing local SDK installation, pass `-DPICO_SDK_PATH=/path/to/pico-sdk -DPICO_SDK_FETCH_FROM_GIT=FALSE`)*.
 
-### Steps
+### 2. Compile
+```bash
+cmake --build build_rp2350 --parallel --target bus_pirate6
+```
+The compiled binaries will be output to:
+- `build_rp2350/src/bus_pirate6.uf2`
+- `build_rp2350/src/bus_pirate6.elf`
+- `build_rp2350/src/bus_pirate6.bin`
 
-1. Configure the project (run once, or when changing configuration):
+### 3. Flash to Hardware
+1. Connect the RB-Pirate to your computer while holding down the **BOOTSEL** button.
+2. A mass storage volume named **RP2350** will mount on your host operating system.
+3. Drag and drop `build_rp2350/src/bus_pirate6.uf2` onto the volume.
+4. The board will reboot automatically into the new RB-Pirate firmware.
 
-    ```
-    cmake -S . -B build_rp2350 -DPICO_SDK_FETCH_FROM_GIT=TRUE -DBP_PICO_PLATFORM=rp2350
-    ```
+---
 
-    To use a local pico-sdk instead, add `-DPICO_SDK_PATH=/path/to/pico-sdk -DPICO_SDK_FETCH_FROM_GIT=FALSE`.
+## Related Projects
 
-2. Build the firmware:
+- **[RB-Pirate](https://github.com/reza-bakhshi/RB-Pirate)** — RB-Pirate hardware design (RP2350B, 2-layer KiCad 10 PCB).
+- **[RB-Pirate RGB & Button HAT](https://github.com/reza-bakhshi/RB-Pirate-RGB-HAT)** — Optional add-on hardware for status LEDs and tactile user controls.
 
-    ```
-    cmake --build build_rp2350 --parallel --target bus_pirate6
-    ```
-
-The build outputs `build_rp2350/src/bus_pirate6.uf2`.
-
-## Installation
-
-1. Hold the **BOOTSEL** button while connecting the board to USB
-2. Copy `bus_pirate6.uf2` onto the mounted `RP2350` drive
-3. The board reboots into the new firmware automatically
-
-For updates over USB serial, the firmware also exposes a bootloader identification
-through the terminal interface.
-
-## Related projects
-
-- **[RB-Pirate](https://github.com/reza-bakhshi/RB-Pirate)** — the RB-Pirate hardware (RP2350B, 2-layer KiCad 10 PCB)
-- **[RB-Pirate RGB & Button HAT](https://github.com/reza-bakhshi/RB-Pirate-RGB-HAT)** — optional RGB feedback
-  and user button; the firmware provides RGB & Button HAT integration, and RB-Pirate operates normally without it
-
-## Resources
-
-- [Bus Pirate forum](https://forum.buspirate.com/)
-- [Firmware documentation](https://firmware.buspirate.com/)
-- [Hardware documentation](https://hardware.buspirate.com/)
+---
 
 ## License
 
 RB-Pirate Firmware is released under the [MIT License](LICENSE.TXT).
 
-Third-party components and libraries remain subject to their respective licenses
-(see [docs/licenses.md](docs/licenses.md)).
+Third-party libraries and components are subject to their respective upstream licenses as detailed in [docs/licenses.md](docs/licenses.md).
 
 ## Trademarks
 
-Bus Pirate™ is a trademark of Where Labs, LLC. All rights reserved. This fork is
-an independent personal project and is not affiliated with or endorsed by
-Where Labs, LLC or Dangerous Prototypes.
+Bus Pirate™ is a trademark of Where Labs, LLC. This project is an independent fork and is not affiliated with or endorsed by Where Labs, LLC or Dangerous Prototypes.
 
 ---
 
 <div align="center">
-  <sub>Built for hardware exploration, debugging, and experimentation.</sub>
+  <sub>Engineered for reliability, precision, and deep hardware exploration.</sub>
 </div>

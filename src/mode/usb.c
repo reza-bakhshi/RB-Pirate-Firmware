@@ -1578,13 +1578,16 @@ static int keylog_pio_start(int *out_pio1_sm)
     return pio0_sm;
 }
 
+static void usb_keylog_cleanup(void* ctx, bp_status_t status) {
+    (void)ctx;
+    (void)status;
+    keylog_active = false;
+    usb_pio_release();
+}
+
 static bp_status_t usb_keylog_slice(void* ctx, uint8_t* out_percent) {
     (void)ctx;
-    if (bp_job_check_cancelled()) {
-        keylog_active = false;
-        usb_pio_release();
-        return BP_STATUS_CANCELLED;
-    }
+    if (bp_job_check_cancelled()) return BP_STATUS_CANCELLED;
     if (keylog_ready) {
         uint32_t irq_state = save_and_disable_interrupts();
         volatile uint32_t *done = keylog_fill;
@@ -1663,7 +1666,7 @@ static void keylog_run(void)
     pio_sm_set_enabled(pio1, pio1_sm, true);
 
     uint32_t jid = 0;
-    bp_status_t st = bp_job_dispatch("usb_keylog", BP_JOB_PROTO_CUSTOM, 0, usb_keylog_slice, NULL, &jid);
+    bp_status_t st = bp_job_dispatch_with_cleanup("usb_keylog", BP_JOB_PROTO_CUSTOM, 0, usb_keylog_slice, usb_keylog_cleanup, NULL, &jid);
     if (st == BP_STATUS_OK) {
         printf("USB keylogger job %lu dispatched to Core 1. Press Ctrl+C to exit.\r\n", (unsigned long)jid);
     } else {

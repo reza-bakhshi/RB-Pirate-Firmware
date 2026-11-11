@@ -24,8 +24,10 @@
 // Modified for Bus Pirate 5: C-callable wrapper, fixed the Device= line
 // written when no sub-device is specified, bounded output buffer.
 // Modified by Bus Pirate community contributors (c) 2026
+// Bounded static workspace, checked generation and removal of runtime heap allocation.
 
-#include <vector>
+#include <atomic>
+#include <new>
 #include <cstring>
 #include <cstdlib>
 #include <cctype>
@@ -77,7 +79,15 @@ private:
     int m_pendingBits;
     double m_cumulative;
     unsigned int m_mask[33];
-    std::vector<float> m_hex;
+    float m_hex[512];
+    size_t m_hex_count = 0;
+    char m_strings[2048];
+    size_t m_strings_used = 0;
+    bool m_failed = false;
+    void appendHex(float value) {
+        if (m_hex_count == 512) { m_failed = true; return; }
+        m_hex[m_hex_count++] = value;
+    }
 
 public:
     int m_value[26];
@@ -85,10 +95,15 @@ public:
 
 bool makehex_generate(const char *protocol, int32_t dev, int32_t sub, int32_t func,
                       uint32_t *pairs, uint16_t *count, uint16_t max_pairs, uint32_t *freq_hz) {
+    if (!count || !freq_hz || !pairs || max_pairs == 0) return false;
     *count = 0;
     if (protocol == NULL) {
         return false;
     }
+
+    static std::atomic_flag busy = ATOMIC_FLAG_INIT;
+    if (busy.test_and_set(std::memory_order_acquire)) return false;
+    struct Release { std::atomic_flag& flag; ~Release() { flag.clear(std::memory_order_release); } } release{busy};
 
     // Build the IRP string: device/sub-device/function values + protocol definition
     char irp[512] = "";
@@ -111,6 +126,7 @@ bool makehex_generate(const char *protocol, int32_t dev, int32_t sub, int32_t fu
     int m = 0;
     int l = 0;
     if (sscanf(upper, "RC6-%d-%d", &m, &l) == 2) {
+        if (m < 0 || m > 7 || l < 1 || l > 32) return false;
         char tmp2[64];
         snprintf(tmp2, sizeof(tmp2), "Define M=%d\nDefine L=%d\n", m, l);
         strncat(irp, tmp2, sizeof(irp) - strlen(irp) - 1);
@@ -144,7 +160,11 @@ bool makehex_generate(const char *protocol, int32_t dev, int32_t sub, int32_t fu
     }
 
     // Validate and parse the IRP string
-    IRP irp_parser;
+    // Parser and pulse scratch exceed a 4 KiB stack together. This workspace
+    // is single-user, protected above, and never allocates from the heap.
+    static IRP irp_parser;
+    irp_parser.~IRP();
+    new (&irp_parser) IRP;
     if (!irp_parser.readIrpString(irp)) {
         return false;
     }
@@ -158,12 +178,10 @@ bool makehex_generate(const char *protocol, int32_t dev, int32_t sub, int32_t fu
     // Generate the sequence (bounded)
     int s = 0;
     int r = 0;
-    float seq[512];
+    static float seq[512];
     irp_parser.generate(&s, &r, seq);
     int words = 2 * (s + r);
-    if (words > 512) {
-        words = 512;
-    }
+    if (words > 512 || words / 2 > max_pairs) return false;
     if (words < 2) {
         return false;
     }
@@ -226,23 +244,7 @@ IRP::IRP() :
         m_mask[ndx] = 2 * m_mask[ndx - 1] + 1;
 }
 
-IRP::~IRP() {
-    for (int i = 0; i < 26; ++i) {
-        if (m_def[i]) {
-            free((void *)m_def[i]);
-        }
-    }
-    for (int i = 0; i < 16; ++i) {
-        if (m_digits[i]) {
-            free((void *)m_digits[i]);
-        }
-    }
-    free((void *)m_prefix);
-    free((void *)m_suffix);
-    free((void *)m_rPrefix);
-    free((void *)m_rSuffix);
-    free((void *)m_form);
-}
+IRP::~IRP() = default;
 
 bool IRP::match(const char* master) {
     int len = strlen(master);
@@ -251,9 +253,6 @@ bool IRP::match(const char* master) {
 }
 void IRP::setDigit(int d) {
     if (d >= 0 && d < 16) {
-        if (m_digits[d]) {
-            free((void*)m_digits[d]);
-        }
         m_digits[d] = copy();
     }
     while (d >= m_bitGroup) {
@@ -303,21 +302,21 @@ bool IRP::readIrpString(char* str) {
         } else if (match("THREE=")) {
             setDigit(3);
         } else if (match("PREFIX=")) {
-            if (m_prefix) free((void*)m_prefix);
+
             m_prefix = copy();
         } else if (match("SUFFIX=")) {
-            if (m_suffix) free((void*)m_suffix);
+
             m_suffix = copy();
         } else if (match("R-PREFIX=")) {
-            if (m_rPrefix) free((void*)m_rPrefix);
+
             m_rPrefix = copy();
         } else if (match("R-SUFFIX=")) {
-            if (m_rSuffix) free((void*)m_rSuffix);
+
             m_rSuffix = copy();
         } else if (match("FIRSTBIT=MSB")) {
             m_msb = true;
         } else if (match("FORM=")) {
-            if (m_form) free((void*)m_form);
+
             m_form = copy();
         } else if (match("DEFINE") || match("DEFAULT")) {
             int idx = -1;
@@ -332,7 +331,7 @@ bool IRP::readIrpString(char* str) {
                 idx = m_next[-3] - 'A';
             }
             if (idx >= 0 && idx < 26) {
-                if (m_def[idx]) free((void*)m_def[idx]);
+
                 m_def[idx] = copy();
             }
         } else if (match("DEVICE=")) {
@@ -350,18 +349,16 @@ bool IRP::readIrpString(char* str) {
 
     if (m_device[1] >= 0) {
         if (m_def['S' - 'A']) {
-            free((void*)m_def['S' - 'A']);
             m_def['S' - 'A'] = 0;
         }
     }
     if (m_functions[1] >= 0) {
         if (m_def['N' - 'A']) {
-            free((void*)m_def['N' - 'A']);
             m_def['N' - 'A'] = 0;
         }
     }
 
-    return true;
+    return !m_failed && m_form != nullptr;
 }
 
 void IRP::getPair(int* result) {
@@ -381,7 +378,16 @@ void IRP::getPair(int* result) {
 }
 
 char* IRP::copy() {
-    return strdup(m_next);
+    size_t size = strlen(m_next) + 1;
+    if (size > sizeof(m_strings) - m_strings_used) {
+        m_failed = true;
+        static char empty[] = "";
+        return empty;
+    }
+    char* result = m_strings + m_strings_used;
+    memcpy(result, m_next, size);
+    m_strings_used += size;
+    return result;
 }
 
 void IRP::parseVal(Value& result, char*& in, int prec) {
@@ -501,24 +507,25 @@ void IRP::parseVal(Value& result, char*& in, int prec) {
 }
 
 void IRP::generate(int* s, int* r, float* raw) {
-    m_hex.clear();
+    m_hex_count = 0;
     m_cumulative = 0.0;
     m_pendingBits = (m_msb ? 1 : m_bitGroup);
     int Single = genHex(m_form);
     if (m_cumulative < m_messageTime)
         genHex(m_cumulative - m_messageTime);
-    if (m_hex.size() & 1)
+    if (m_hex_count & 1)
         genHex(-1.0);
     if (Single < 0)
-        Single = m_hex.size();
+        Single = m_hex_count;
     Single >>= 1;
 
+    if (m_failed || m_hex_count == 0 || (m_hex_count & 1)) { *s = *r = 0; return; }
     int unit;
     if (m_frequency) {
         unit = floor(4145146. / m_frequency + 0.5);
     } else {
         float mn = m_hex[0];
-        for (int nIndex = 1; nIndex < (int)m_hex.size(); nIndex++)
+        for (int nIndex = 1; nIndex < (int)m_hex_count; nIndex++)
             if (mn > m_hex[nIndex])
                 mn = m_hex[nIndex];
         unit = 4.145146 * .125 * mn + 0.5;
@@ -528,13 +535,13 @@ void IRP::generate(int* s, int* r, float* raw) {
         unit = 1;
     (void)unit;
 
-    for (int nIndex = 0; nIndex < (int)m_hex.size(); nIndex += 2) {
+    for (int nIndex = 0; nIndex < (int)m_hex_count; nIndex += 2) {
         raw[nIndex] = m_hex[nIndex];
         raw[nIndex + 1] = m_hex[nIndex + 1];
     }
 
     *s = Single;
-    *r = m_hex.size() / 2 - Single;
+    *r = m_hex_count / 2 - Single;
     return;
 }
 
@@ -599,10 +606,10 @@ int IRP::genHex(const char* Pattern) {
             if (m_cumulative < m_messageTime) {
                 genHex(m_cumulative - m_messageTime);
             }
-            if (m_hex.size() & 1) {
+            if (m_hex_count & 1) {
                 genHex(-1.0);
             }
-            Result = m_hex.size();
+            Result = m_hex_count;
             m_cumulative = 0.0;
         } else if (*Pattern != ',')
             break;
@@ -614,17 +621,17 @@ int IRP::genHex(const char* Pattern) {
 void IRP::genHex(float number) {
     if (number == 0.0)
         return;
-    int nHex = m_hex.size();
+    int nHex = m_hex_count;
     if (number > 0) {
         m_cumulative += number;
         if (nHex & 1)
             m_hex[nHex - 1] += number;
         else
-            m_hex.push_back(number);
+            appendHex(number);
     } else if (nHex) {
         m_cumulative -= number;
         if (nHex & 1)
-            m_hex.push_back(-number);
+            appendHex(-number);
         else
             m_hex[nHex - 1] -= number;
     }

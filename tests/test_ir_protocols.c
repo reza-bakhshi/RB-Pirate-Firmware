@@ -387,8 +387,20 @@ static void test_timing_and_loop_bounds(void) {
     }
 }
 
+static void makehex_bounds(void) {
+    uint32_t pairs[2] = {0x12345678, 0xabcdef01}, freq = 0;
+    uint16_t count = 99;
+    assert(!makehex_generate("NEC", 1, -1, 1, pairs, NULL, 1, &freq));
+    assert(!makehex_generate("NEC", 1, -1, 1, NULL, &count, 1, &freq));
+    assert(!makehex_generate("NEC", 1, -1, 1, pairs, &count, 1, NULL));
+    assert(!makehex_generate("NEC", 1, -1, 1, pairs, &count, 1, &freq));
+    assert(count == 0 && pairs[0] == 0x12345678 && pairs[1] == 0xabcdef01);
+    assert(!makehex_generate("RC6-6-9999", 1, -1, 1, pairs, &count, 1, &freq));
+}
+
 int main(void) {
     printf("ir_protocols host tests\r\n");
+    makehex_bounds();
     // part 1: round trips
     // NEC: 8-bit address, extended address, and repeat frame
     round_trip(0, 0x04, 0, 0x08);

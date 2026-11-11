@@ -24,114 +24,7 @@
 #include "pirate.h"
 #include "system_config.h"
 #else
-/* Host test mock declarations */
-#include <stdlib.h>
-#include <time.h>
-
-typedef struct {
-    uint8_t storage_available;
-    uint8_t storage_mount_error;
-    uint8_t storage_fat_type;
-    float storage_size;
-    uint32_t terminal_language;
-} host_system_config_t;
-
-extern host_system_config_t system_config;
-
-#define FR_OK 0
-#define FR_DISK_ERR 1
-#define FR_INT_ERR 2
-#define FR_NOT_READY 3
-#define FR_NO_FILE 4
-#define FR_NO_PATH 5
-#define FR_INVALID_NAME 6
-#define FR_DENIED 7
-#define FR_EXIST 8
-#define FR_INVALID_OBJECT 9
-#define FR_WRITE_PROTECTED 10
-#define FR_INVALID_DRIVE 11
-#define FR_NOT_ENABLED 12
-#define FR_NO_FILESYSTEM 13
-#define FR_MKFS_ABORTED 14
-#define FR_TIMEOUT 15
-#define FR_LOCKED 16
-#define FR_NOT_ENOUGH_CORE 17
-#define FR_TOO_MANY_OPEN_FILES 18
-#define FR_INVALID_PARAMETER 19
-
-typedef int FRESULT;
-typedef unsigned int UINT;
-
-typedef struct {
-    uint8_t fs_type;
-    uint32_t csize;
-    uint32_t n_fatent;
-} FATFS;
-
-typedef struct {
-    uint32_t fsize;
-    char fname[64];
-    uint8_t fattrib;
-} FILINFO;
-
-typedef struct {
-    uint32_t dummy;
-} FIL;
-
-typedef struct {
-    uint32_t dummy;
-} DIR;
-
-#define FA_READ 0x01
-#define FA_WRITE 0x02
-#define FA_OPEN_EXISTING 0x00
-#define FA_CREATE_ALWAYS 0x08
-
-#define BP_FLASH_DISK_BLOCK_SIZE 512
-#define FLASH_STORAGE_CS 0
-#define GPIO_FUNC_SIO 0
-#define GPIO_OUT 1
-#define count_of(a) (sizeof(a)/sizeof((a)[0]))
-
-static inline void gpio_set_function(uint32_t p, uint32_t f) { (void)p; (void)f; }
-static inline void gpio_put(uint32_t p, uint32_t v) { (void)p; (void)v; }
-static inline void gpio_set_dir(uint32_t p, uint32_t d) { (void)p; (void)d; }
-
-static inline FRESULT f_mount(FATFS *fs, const char *path, uint8_t opt) {
-    (void)path; (void)opt;
-    fs->fs_type = 2; // FAT16
-    fs->csize = 8;
-    fs->n_fatent = 32768;
-    return FR_OK;
-}
-static inline FRESULT f_unmount(const char *path) { (void)path; return FR_OK; }
-static inline FRESULT f_mkfs(const char *path, uint8_t opt, void *work, uint32_t len) {
-    (void)path; (void)opt; (void)work; (void)len; return FR_OK;
-}
-static inline FRESULT f_setlabel(const char *label) { (void)label; return FR_OK; }
-static inline FRESULT f_open(FIL *fp, const char *path, uint8_t mode) { (void)fp; (void)path; (void)mode; return FR_OK; }
-static inline FRESULT f_close(FIL *fp) { (void)fp; return FR_OK; }
-static inline FRESULT f_read(FIL *fp, void *buff, uint32_t btr, UINT *br) {
-    (void)fp; (void)btr;
-    const char *mock_json = "{\"terminal_language\": 1}\n";
-    size_t len = strlen(mock_json);
-    memcpy(buff, mock_json, len);
-    *br = len;
-    return FR_OK;
-}
-static inline FRESULT f_write(FIL *fp, const void *buff, uint32_t btw, UINT *bw) {
-    (void)fp; (void)buff; (void)btw; *bw = btw; return FR_OK;
-}
-static inline FRESULT f_sync(FIL *fp) { (void)fp; return FR_OK; }
-static inline FRESULT f_unlink(const char *path) { (void)path; return FR_OK; }
-static inline FRESULT f_rename(const char *old, const char *newn) { (void)old; (void)newn; return FR_OK; }
-static inline int disk_ioctl(uint8_t pdrv, uint8_t cmd, void *buff) { (void)pdrv; (void)cmd; (void)buff; return 0; }
-#define CTRL_SYNC 0
-
-static inline const char *ui_term_color_error(void) { return ""; }
-static inline const char *ui_term_color_info(void) { return ""; }
-static inline const char *ui_term_color_reset(void) { return ""; }
-
+#include "../../tests/stubs/storage_fs.h"
 #endif // BP_HOST_TEST
 
 #define STORAGE_DEBOUNCE_THRESHOLD 5
@@ -142,6 +35,7 @@ static inline const char *ui_term_color_reset(void) { return ""; }
 #define CONFIG_FILENAME_BP "rbconfig.bp"
 #define CONFIG_FILENAME_LEGACY "bpconfig.bp"
 #define CONFIG_TEMP_FILENAME "rbconfig.tmp"
+#define CONFIG_BACKUP_FILENAME "rbconfig.bak"
 
 /* Static FatFS filesystem instance */
 static FATFS s_fs;
@@ -362,7 +256,8 @@ static void bp_storage_process_single_rpc(const bp_storage_rpc_req_t *req, bp_st
                 return;
             }
             bp_storage_file_opened();
-            fr = f_read(&fil, req->data, req->size, &br);
+            fr = f_lseek(&fil, req->offset);
+            if (fr == FR_OK) fr = f_read(&fil, req->data, req->size, &br);
             f_close(&fil);
             bp_storage_file_closed();
             if (fr != FR_OK) {
@@ -383,11 +278,12 @@ static void bp_storage_process_single_rpc(const bp_storage_rpc_req_t *req, bp_st
                 return;
             }
             bp_storage_file_opened();
-            fr = f_write(&fil, req->data, req->size, &bw);
-            f_sync(&fil);
-            f_close(&fil);
+            fr = f_lseek(&fil, req->offset);
+            if (fr == FR_OK) fr = f_write(&fil, req->data, req->size, &bw);
+            FRESULT sync_result = f_sync(&fil);
+            FRESULT close_result = f_close(&fil);
             bp_storage_file_closed();
-            if (fr != FR_OK) {
+            if (fr != FR_OK || bw != req->size || sync_result != FR_OK || close_result != FR_OK) {
                 resp->status = BP_STATUS_ERROR;
                 s_stats.write_errors++;
             } else {
@@ -398,10 +294,7 @@ static void bp_storage_process_single_rpc(const bp_storage_rpc_req_t *req, bp_st
         }
 
         case BP_STORAGE_RPC_APPEND: {
-            fr = f_open(&fil, req->path, FA_WRITE | FA_OPEN_EXISTING);
-            if (fr != FR_OK) {
-                fr = f_open(&fil, req->path, FA_WRITE | FA_CREATE_ALWAYS);
-            }
+            fr = f_open(&fil, req->path, FA_WRITE | FA_OPEN_APPEND);
             if (fr != FR_OK) {
                 resp->status = BP_STATUS_ERROR;
                 s_stats.write_errors++;
@@ -409,15 +302,15 @@ static void bp_storage_process_single_rpc(const bp_storage_rpc_req_t *req, bp_st
             }
             bp_storage_file_opened();
             fr = f_write(&fil, req->data, req->size, &bw);
-            f_sync(&fil);
-            f_close(&fil);
+            FRESULT sync_result = f_sync(&fil);
+            FRESULT close_result = f_close(&fil);
             bp_storage_file_closed();
-            if (fr != FR_OK) {
+            resp->bytes_transferred = bw;
+            if (fr != FR_OK || bw != req->size || sync_result != FR_OK || close_result != FR_OK) {
                 resp->status = BP_STATUS_ERROR;
                 s_stats.write_errors++;
             } else {
                 resp->status = BP_STATUS_OK;
-                resp->bytes_transferred = bw;
             }
             break;
         }
@@ -649,10 +542,22 @@ bp_status_t bp_storage_save_config(void) {
         return res;
     }
 
-    /* 2. Atomic replace */
-    f_unlink(CONFIG_FILENAME);
-    FRESULT fr = f_rename(CONFIG_TEMP_FILENAME, CONFIG_FILENAME);
+    /* FAT rename cannot replace a destination. Preserve the last valid file
+     * until the new file is committed; recover .bak after interrupted saves. */
+    FILINFO info;
+    FRESULT fr = f_stat(CONFIG_FILENAME, &info);
+    if (fr == FR_OK) {
+        FRESULT remove_result = f_unlink(CONFIG_BACKUP_FILENAME);
+        if (remove_result != FR_OK && remove_result != FR_NO_FILE) return BP_STATUS_ERROR;
+        fr = f_rename(CONFIG_FILENAME, CONFIG_BACKUP_FILENAME);
+        if (fr != FR_OK) return BP_STATUS_ERROR;
+    } else if (fr != FR_NO_FILE) {
+        return BP_STATUS_ERROR;
+    }
+    fr = f_rename(CONFIG_TEMP_FILENAME, CONFIG_FILENAME);
     if (fr != FR_OK) {
+        /* Leave .bak intact even if restoration fails. */
+        f_rename(CONFIG_BACKUP_FILENAME, CONFIG_FILENAME);
         s_stats.write_errors++;
         return BP_STATUS_ERROR;
     }
@@ -667,6 +572,8 @@ bp_status_t bp_storage_load_config(void) {
 
     bp_status_t res = bp_storage_load_mode(CONFIG_FILENAME, system_config_json, system_config_json_count);
     if (res != BP_STATUS_OK) {
+        res = bp_storage_load_mode(CONFIG_BACKUP_FILENAME, system_config_json, system_config_json_count);
+        if (res == BP_STATUS_OK) return res;
         /* Fall back to temp file if present */
         res = bp_storage_load_mode(CONFIG_TEMP_FILENAME, system_config_json, system_config_json_count);
         if (res == BP_STATUS_OK) {
@@ -707,24 +614,34 @@ bp_status_t bp_storage_save_mode(const char *filename, const mode_config_t *conf
 
     char line[128];
     UINT bw = 0;
-
-    f_write(&fil, "{\n", 2, &bw);
-    for (uint8_t i = 0; i < count; i++) {
+    bool first = true;
+    fr = f_write(&fil, "{\n", 2, &bw);
+    bool ok = fr == FR_OK && bw == 2;
+    for (uint8_t i = 0; ok && i < count; i++) {
         if (!config[i].config) continue;
         const char *tag = (config[i].tag[0] == '$' && config[i].tag[1] == '.') ? &config[i].tag[2] : config[i].tag;
-        const char *comma = (i == (count - 1)) ? "" : ",";
+        int len;
         if (config[i].formatted_as == MODE_CONFIG_FORMAT_HEXSTRING) {
-            snprintf(line, sizeof(line), "\"%s\": \"0x%06X\"%s\n", tag, (unsigned)*config[i].config, comma);
+            len = snprintf(line, sizeof(line), "%s\"%s\": \"0x%06X\"", first ? "" : ",\n", tag, (unsigned)*config[i].config);
         } else {
-            snprintf(line, sizeof(line), "\"%s\": %u%s\n", tag, (unsigned)*config[i].config, comma);
+            len = snprintf(line, sizeof(line), "%s\"%s\": %u", first ? "" : ",\n", tag, (unsigned)*config[i].config);
         }
-        f_write(&fil, line, strlen(line), &bw);
+        if (len < 0 || (size_t)len >= sizeof(line)) { ok = false; break; }
+        fr = f_write(&fil, line, (UINT)len, &bw);
+        ok = fr == FR_OK && bw == (UINT)len;
+        first = false;
     }
-    f_write(&fil, "}\n", 2, &bw);
-
-    f_sync(&fil);
-    f_close(&fil);
+    if (ok) {
+        fr = f_write(&fil, "\n}\n", 3, &bw);
+        ok = fr == FR_OK && bw == 3;
+    }
+    FRESULT sync_result = f_sync(&fil);
+    FRESULT close_result = f_close(&fil);
     bp_storage_file_closed();
+    if (!ok || sync_result != FR_OK || close_result != FR_OK) {
+        s_stats.write_errors++;
+        return BP_STATUS_ERROR;
+    }
     return BP_STATUS_OK;
 }
 

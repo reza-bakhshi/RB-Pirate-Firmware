@@ -214,19 +214,18 @@ void bp_bin_transport_get_stats(bp_bin_transport_stats_t* stats) {
 void bp_bin_transport_service(void) {
     if (!s_initialized) bp_bin_transport_init();
 
-    /* Core 0 service tasks: discard stale TX bytes if CDC1 has been disconnected */
-    if (!bp_bin_transport_is_connected()) {
-        if (spsc_queue_free(&s_bin_tx_q) == 0) {
-            uint8_t dummy;
-            while (spsc_queue_try_remove(&s_bin_tx_q, &dummy)) {
-                s_tx_dropped++;
-            }
-        }
-    }
+    /* Queue consumption belongs exclusively to the USB service on Core 1. */
 }
 
 void bp_bin_transport_usb_service(void) {
     if (!s_initialized) bp_bin_transport_init();
+
+    /* Disconnect cleanup uses the same consumer as normal USB transmission. */
+    if (!bp_bin_transport_is_connected()) {
+        uint8_t dummy;
+        while (spsc_queue_try_remove(&s_bin_tx_q, &dummy)) s_tx_dropped++;
+        s_tx_flush_pending = false;
+    }
 
 #if !defined(BP_HOST_TEST)
     /* 1. Pull inbound bytes from CDC1 into RX ring */

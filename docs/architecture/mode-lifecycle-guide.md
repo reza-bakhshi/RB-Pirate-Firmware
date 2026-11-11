@@ -1,46 +1,23 @@
-# Mode Lifecycle Architecture
+# Mode lifecycle
 
-> Developer guide to hardware protocol modes in RB-Pirate: registration, transactional initialization, runtime execution, and fault rollback.
+Mode configuration and hardware setup/cleanup currently run on Core 0 in
+`src/mode/bp_mode.c`; see [core ownership](dual_core_guide.md).
 
----
+`bp_mode_switch()` rejects changes while a job is queued, running or finishing.
+Cancel the job and let Core 0 complete its cleanup before switching. The command
+reports BUSY instead of freeing state still used by Core 1.
 
-## 1. Mode Design Philosophy
+For an idle engine, switching cleans the outgoing mode, releases its leases,
+floats BIO pins, prompts/configures the new mode and activates hardware. A failed
+setup falls back to HiZ. A successful change posts events to both cores.
+This is not an acknowledged Core 1 teardown/init mailbox protocol.
 
-In RB-Pirate, hardware protocol modes (such as 1-WIRE, UART, I2C, SPI, 2WIRE, 3WIRE, and LCDTAP) run under explicit contracts:
-- **Zero Heap**: Modes allocate state statically or acquire temporary scratch memory from the managed `Big Buffer` (128 KB) via `bp_res`.
-- **Transactional State Transitions**: Moving between modes never leaves hardware pins in an indeterminate floating or driven state.
+Jobs that own driver state use `bp_job_dispatch_with_cleanup()`. Core 1 stops
+slicing and publishes FINISHING; `bp_job_finalize()` on Core 0 runs cleanup,
+releases leases and publishes the terminal state. This keeps IRQ teardown on the
+core that installed the IRQs. Cleanup must not block on Core 1 or submit a new job.
+Resource writes are serialized with an SDK hardware spinlock; initialize the
+resource manager at boot before launching Core 1. Host tests use an atomic lock.
 
----
-
-## 2. Mode Contract & Function Table
-
-Each mode provides a standardized descriptor `struct _mode_t` defined in `src/mode/bp_mode.h`:
-
-```c
-typedef struct _mode_t {
-    const char* name;
-    uint32_t (*protocol_init)(void);
-    uint32_t (*protocol_cleanup)(void);
-    void (*protocol_settings)(void);
-    void (*protocol_help)(void);
-    void (*protocol_periodic)(void);
-    uint32_t (*protocol_read)(void);
-    uint32_t (*protocol_write)(uint32_t data);
-    void (*protocol_start)(void);
-    void (*protocol_stop)(void);
-} mode_t;
-```
-
----
-
-## 3. Transactional Mode Transition Sequence
-
-When a user switches modes (e.g., typing `m 5` for SPI):
-
-1. **Active Job Pre-check**: Core 0 verifies that no background capture, dump, or sniffer job is actively streaming. Any active job is cancelled and its leases reclaimed.
-2. **Peripheral Teardown**: Core 1 invokes `protocol_cleanup()` of the outgoing mode:
-   - PIO programs are uninstalled from instruction memory.
-   - PIO state machines, DMA channels, and IRQs are released back to `bp_res`.
-   - Dedicated IO buffer directions are set back to HiZ.
-3. **Hardware Initialization**: Core 1 invokes `protocol_init()` of the incoming mode.
-4. **Failure Rollback**: If `protocol_init()` fails or returns an error, Core 1 automatically invokes HiZ mode initialization (`hiz_init()`), ensuring pins return to high impedance without user intervention.
+Host mode tests cover rollback, active-job rejection and repeated switches.
+Electrical pin state, PIO timing and cancellation under USB load require hardware.

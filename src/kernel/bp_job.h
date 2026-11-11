@@ -21,6 +21,7 @@ typedef enum bp_job_state {
     BP_JOB_STATE_CANCELLED  = 4,
     BP_JOB_STATE_TIMEOUT    = 5,
     BP_JOB_STATE_ERROR      = 6,
+    BP_JOB_STATE_FINISHING  = 7,
 } bp_job_state_t;
 
 typedef enum bp_job_proto {
@@ -44,6 +45,9 @@ typedef enum bp_job_proto {
  */
 typedef bp_status_t (*bp_job_slice_fn_t)(void* ctx, uint8_t* out_percent);
 
+/* Runs once on Core 0 (IRQ/setup owner) before leases are released and terminal state is published. */
+typedef void (*bp_job_cleanup_fn_t)(void* ctx, bp_status_t status);
+
 typedef struct bp_job {
     uint32_t           id;
     char               name[BP_JOB_NAME_MAX];
@@ -55,6 +59,7 @@ typedef struct bp_job {
     uint32_t           timeout_ms;
     bp_job_slice_fn_t  slice_fn;
     void*              ctx;
+    bp_job_cleanup_fn_t cleanup_fn;
     volatile bool      cancel_requested;
 } bp_job_t;
 
@@ -92,6 +97,13 @@ bp_status_t bp_job_dispatch(const char* name, uint8_t proto, uint32_t timeout_ms
                             bp_job_slice_fn_t slice_fn, void* ctx,
                             uint32_t* out_job_id);
 
+/* Extended submission APIs install cleanup before publishing the queued job. */
+bp_status_t bp_job_submit_with_cleanup(const char* name, uint8_t proto, uint32_t timeout_ms,
+    bp_job_slice_fn_t slice_fn, bp_job_cleanup_fn_t cleanup_fn, void* ctx,
+    uint32_t now_ms, uint32_t* out_job_id);
+bp_status_t bp_job_dispatch_with_cleanup(const char* name, uint8_t proto, uint32_t timeout_ms,
+    bp_job_slice_fn_t slice_fn, bp_job_cleanup_fn_t cleanup_fn, void* ctx, uint32_t* out_job_id);
+
 /**
  * @brief Request cancellation of a running job.
  */
@@ -124,6 +136,9 @@ bool bp_job_check_cancelled(void);
  * @return 1 if job slice executed, 0 if idle.
  */
 uint32_t bp_job_service(uint32_t now_ms);
+
+/* Core 0 completes driver teardown after Core 1 stops executing slices. */
+void bp_job_finalize(void);
 
 /**
  * @brief Get human readable description of job state.

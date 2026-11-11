@@ -12,6 +12,7 @@
 
 #include "system_config.h"
 #include "kernel/bp_resource.h"
+#include "kernel/bp_job.h"
 #include "kernel/bp_event.h"
 #include "kernel/bp_kernel.h"
 #include "modes.h"
@@ -111,6 +112,9 @@ bp_status_t bp_mode_switch(uint8_t new_mode) {
     if (!bp_mode_registry_initialized) {
         bp_mode_init();
     }
+
+    /* Cleanup cannot reclaim hardware or buffers while Core 1 still uses them. */
+    if (bp_job_get_active_id() != 0) return BP_STATUS_BUSY;
 
     uint8_t current_mode = system_config.mode;
 

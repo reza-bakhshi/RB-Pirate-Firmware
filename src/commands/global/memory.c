@@ -92,6 +92,6 @@ void memory_handler(struct command_result* res) {
     printf("  SubGHz Protocols:  Static Pool (64 decoders, 4 encoders, zero heap)\r\n");
     printf("  BPIO FlatCC:       Static packet copy buffer (zero heap)\r\n");
     printf("  LCDTap Engine:     Placement new + Big Buffer frame (zero heap)\r\n");
-    printf("  Dynamic Heap:      0 bytes active (Strict Static Memory Model)\r\n");
+    printf("  Dynamic Heap:      Not instrumented; legacy builder allocation remains\r\n");
     printf("===================================================================\r\n\r\n");
 }

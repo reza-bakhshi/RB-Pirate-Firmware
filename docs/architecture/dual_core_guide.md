@@ -1,64 +1,42 @@
-# Dual-Core Architecture
+# Dual-core architecture
 
-> Developer guide to the RP2350 dual-core architecture in RB-Pirate firmware: Control Plane (Core 0) and Protocol Data Plane (Core 1) separation, inter-core communication via lock-free SPSC queues, seqlock snapshots, and transactional lifecycle management.
+The current firmware has a hybrid core layout. USB has not migrated to Core 0.
+Protocol jobs share Core 1 with USB and monitoring, so a slow slice delays those services.
 
----
+| Work | Current owner | Source |
+| --- | --- | --- |
+| CLI, command parsing, syntax execution, mode setup/cleanup | Core 0 | `pirate.c`, `syntax_run.c`, `mode/bp_mode.c` |
+| Service storage RPC and config files | Core 0 | `services/bp_storage.c` |
+| TinyUSB task, CDC RX/TX, MSC callbacks | Core 1 | `pirate.c:core1_infinite_loop` |
+| AMUX/PSU monitoring, toolbar updates | Core 1 | `pirate.c:core1_infinite_loop` |
+| Asynchronous protocol job slices | Core 1 | `kernel/bp_kernel.c`, `kernel/bp_job.c` |
+| Watchdog supervisor, CLI snapshot service | Core 0 | `pirate.c`, `kernel/bp_kernel.c` |
 
-## 1. Architectural Division of Responsibilities
+## Writing protocol jobs
 
-RB-Pirate strictly decouples the asynchronous user control plane from the real-time protocol execution plane:
+Keep every slice bounded. The scheduler checks cancellation and deadlines between slices;
+it cannot preempt a blocking callback. Use `bp_job_dispatch_with_cleanup()` when a job
+owns driver state or loaded PIO programs. Cleanup runs exactly once on Core 0 for success,
+error, cancellation (including before the first slice), or timeout. Core 1 publishes FINISHING and stops slicing; `bp_job_finalize()` on Core 0 disables
+the IRQs on their setup core. Cleanup runs before generic
+lease release and before a terminal state becomes visible to Core 0. Cleanup must be
+bounded and must not submit a replacement job or wait on the control core.
 
-```
-+------------------------------------------+    +------------------------------------------+
-|            CORE 0 (CONTROL PLANE)        |    |          CORE 1 (PROTOCOL ENGINE)        |
-+------------------------------------------+    +------------------------------------------+
-| - TinyUSB Stack (CDC0, CDC1, MSC)        |    | - Real-time Protocol Engines             |
-| - Terminal I/O & Linenoise Editor        |    | - PIO State Machines (PIO0 / PIO1)       |
-| - Command Parser & Bytecode Compiler     |    | - Protocol DMA & Hardware IRQs           |
-| - Mode Lifecycle Manager (Transactional) |    | - High-Speed Logic Analyzer (FALA)       |
-| - Protocol Job Dispatcher & Leases       |    | - Sniffers & Decoders (SPI, I2C, UART)   |
-| - Storage Subsystem (FatFS, SD, Flash)   |    | - LCDTAP / IR / RF24 / SubGHz / RFID     |
-| - Power Supervision & AMUX Sweeps        |    | - CDC1 Binary Mode Packet Processing     |
-| - Atomic Snapshot Publisher (Seqlock)    |    | - Fixed-Size Inter-Core Log Ring         |
-| - Watchdog Hardware Supervisor           |    | - Cooperative Worker Slice Execution     |
-+------------------------------------------+    +------------------------------------------+
-                     |                                               ^
-                     |====== Transactional Mode Control FIFO ========|
-                     |====== Lock-Free SPSC Binary Queues ===========|
-                     |====== Atomic Seqlock UI/Power Snapshots =====>|
-                     |<===== Lock-Free Inter-Core Log Ring ==========|
-```
+Use the Core 1 text ring for output. The printf character sink routes Core 1 text through
+`bp_term_core1_putc()`; Core 0 drains it into the terminal TX queue. Saturation can drop text.
+The binary TX ring has one consumer: the USB service on Core 1, including disconnect cleanup.
 
-### Core Invariants
+## Switching modes
 
-1. **No TinyUSB on Core 1**: All `tud_*` calls and USB endpoint service loops execute exclusively on Core 0. Core 1 communicates with the host over CDC1 binary mode strictly via typed, lock-free SPSC queues (`bp_bin_transport`).
-2. **No FatFS on Core 1**: All `f_*` FatFS filesystem calls execute on Core 0. Protocol engines requiring file streaming (captures, dumps, replay) submit storage RPC packets or lease memory buffers.
-3. **No Direct `printf` on Core 1**: Unsynchronized `printf` on Core 1 causes terminal race conditions. Core 1 posts structured log records into a dedicated ring buffer for Core 0 formatting.
-4. **No Unbounded Blocking Waits**: Every wait loop has a timeout and returns an error status code.
-5. **Memory Stacks**: Each core runs with a dedicated 4 KB stack located in scratch SRAM (`SCRATCH_Y` for Core 0, `SCRATCH_X` for Core 1) with zero runtime dynamic heap allocation.
+`bp_mode_switch()` currently runs cleanup, pin reset, configuration and hardware setup on
+Core 0, with rollback to HiZ on failure. It posts mode-change events after successful setup.
+It does not implement an acknowledged Core 1 teardown/init mailbox transaction.
+Do not switch modes while a protocol job is still running.
 
----
+## Remaining isolation work
 
-## 2. Inter-Core Communication Mechanisms
-
-### 2.1 Hardware Mailbox (ICM FIFO)
-The RP2350 SIO inter-core FIFO is used for high-priority lifecycle signals:
-- Mode transition requests (`BP_ICM_SET_MODE`, `BP_ICM_EXIT_MODE`)
-- Hardware synchronization and heartbeat notifications
-- Terminal toolbar update broadcasts
-
-### 2.2 Lock-Free SPSC Queues
-Binary transport between Core 0 USB endpoints and Core 1 protocol engines uses lock-free single-producer single-consumer ring buffers (`bp_spsc_queue.h`). Memory barriers (`__dmb()`) ensure sequential consistency without disabling interrupts or acquiring spinlocks.
-
-### 2.3 Atomic Snapshot Publication (Seqlock)
-Power monitor readings (pin voltages, Vreg, Vout, current sense, fuse status) and system configuration updates are published to an atomic snapshot structure (`bp_ui_snapshot_t`). Readers verify the 32-bit sequence counter before and after copying to ensure torn reads are never consumed.
-
----
-
-## 3. Transactional Mode Lifecycle
-
-Mode changes are transactional:
-1. **Core 0 Request**: Core 0 verifies parameters, halts any active protocol jobs, and dispatches an exit message to Core 1.
-2. **Core 1 Teardown**: Core 1 safely releases all claimed PIO state machines, DMA channels, and IRQs back to the resource tracker (`bp_res`).
-3. **Core 1 Init**: Core 1 initializes the requested mode hardware.
-4. **Rollback on Error**: If the new mode fails to initialize, Core 1 rolls back to HiZ mode, ensuring the board never hangs in an intermediate state.
+Moving USB to Core 0 requires changing its initialization/IRQ ownership, FIFO producers and
+consumers, MSC storage serialization, and blocking CLI wait paths together. Moving monitoring
+also requires ADC/PSU ownership validation. These changes require hardware tests with USB
+traffic, capture load, cancellation, PSU faults, and repeated mode transitions. A passing host
+suite does not establish real-time isolation or electrical protocol correctness.

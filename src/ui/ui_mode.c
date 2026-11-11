@@ -171,7 +171,11 @@ void ui_mode_enable_args(struct command_result* res) {
         modes[mode].protocol_name);
 
     // Run transactional mode switch (stop old, release leases, float pins, configure, start, rollback on fail)
-    bp_mode_switch(mode);
+    bp_status_t status = bp_mode_switch(mode);
+    if (status != BP_STATUS_OK) {
+        res->error = true;
+        if (status == BP_STATUS_BUSY) printf("\r\nCancel the active job and wait for cleanup before switching modes.\r\n");
+    }
 }
 
 /*

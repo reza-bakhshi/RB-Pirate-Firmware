@@ -12,7 +12,7 @@ extern "C" {
 /* ==========================================================================
  * Fixed-Block Static Memory Pool (bp_pool_t)
  *
- * Deterministic O(1) allocation and deallocation for fixed-size objects.
+ * O(1) allocation and bounded O(capacity) checked deallocation for fixed-size objects.
  * Intrusive free-list stored directly within idle blocks; zero overhead.
  * ========================================================================== */
 
@@ -47,7 +47,7 @@ bool bp_pool_init(bp_pool_t *pool, void *buffer, size_t buffer_size, size_t bloc
 void *bp_pool_alloc(bp_pool_t *pool);
 
 /**
- * @brief Return a block to the pool in O(1) time.
+ * @brief Return a block to the pool after bounded duplicate-free validation.
  * @param pool Pointer to initialized pool.
  * @param ptr Pointer previously returned by bp_pool_alloc().
  * @return true if freed, false if ptr is NULL or outside pool bounds.

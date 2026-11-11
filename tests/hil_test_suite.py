@@ -5,12 +5,12 @@ RB-Pirate Automated Hardware-in-the-Loop (HIL) and Soak Test Suite
 Automates firmware stability validation over USB serial CDC:
 - Phase 1: Smoke checks (Boot, Info screen, Health, Fault, Memory, Features)
 - Phase 2: Mode cycling (1000 mode transitions without deadlock or leak)
-- Phase 3: Binary transport & framing stress (CDC1 binary interface)
+- CDC1 binary transport stress is not implemented; run a separate hardware test.
 - Phase 4: Fault injection & cancellation recovery (Ctrl+C, timeout abort)
 - Phase 5: Long-run soak runner with error counter drift and stack watermark monitoring
 
-Supports real hardware when connected (auto-detected or via HIL_PORT) and
-includes an internal simulation loop for headless CI execution.
+Supports real hardware selected via --port, HIL_PORT, or opt-in --auto-detect and
+includes an explicitly selected mock mode that tests the harness only.
 """
 
 import os
@@ -19,6 +19,8 @@ import time
 import argparse
 import json
 import re
+
+SKIP_EXIT_CODE = 77
 
 # Optional pyserial
 try:
@@ -52,33 +54,24 @@ class MockSerialPort:
             # Mode switch
             parts = cmd.split()
             if len(parts) > 1:
-                modes = ["HiZ", "1-WIRE", "UART", "I2C", "SPI", "2WIRE", "3WIRE", "LCDTAP"]
-                try:
-                    idx = int(parts[1]) - 1
-                    if 0 <= idx < len(modes):
-                        self.current_mode = modes[idx]
-                except ValueError:
-                    pass
+                self.current_mode = parts[1]
             resp = f"\r\nMode selected: {self.current_mode}\r\n{self.current_mode}> "
             self.in_buf.extend(resp.encode("latin1"))
         elif cmd == "health":
-            self.health_tx += 10
-            self.health_rx += 1
-            resp = (
-                f"\r\n=== Health Counters ===\r\n"
-                f"Terminal TX frames: {self.health_tx}\r\n"
-                f"Terminal RX frames: {self.health_rx}\r\n"
-                f"Binary dropped: 0\r\n"
-                f"Storage errors: 0\r\n"
-                f"Core 0 heartbeat: OK\r\n"
-                f"Core 1 heartbeat: OK\r\n"
-                f"{self.current_mode}> "
-            )
+            self.health_tx += 1
+            resp = (f"Terminal TX level: 0 / 4096 bytes free\r\n"
+                    f"Binary TX level: 0 / 4096 bytes free (dropped: 0)\r\n"
+                    f"Binary RX level: 0 / 2048 bytes free (dropped: 0)\r\n"
+                    f"Watchdog feeds: {self.health_tx}\r\n"
+                    f"Core 0 ticks: {self.health_tx}, missed: 0\r\n"
+                    f"Core 1 ticks: {self.health_tx}, missed: 0\r\n"
+                    f"Core 0 stack free: 2048 bytes\r\nCore 1 stack free: 2048 bytes\r\n"
+                    f"{self.current_mode}> ")
             self.in_buf.extend(resp.encode("latin1"))
         elif cmd == "fault":
             resp = (
                 f"\r\n=== Fault & Crash Record ===\r\n"
-                f"Boot magic: 0x52425430 (CLEAN_BOOT)\r\n"
+                f"Last boot was clean. No crash recorded.\r\n"
                 f"Fault count: 0\r\n"
                 f"Last fault: NONE\r\n"
                 f"{self.current_mode}> "
@@ -87,7 +80,7 @@ class MockSerialPort:
         elif cmd == "memory":
             resp = (
                 f"\r\n=== Memory Model & Stack Budgets ===\r\n"
-                f"SRAM budget: 358172 / 389120 bytes (LEGAL)\r\n"
+                f"Static Allocation: 358172 bytes (349 KB) / 380 KB Budget\r\n"
                 f"Heap allocations: 0 (ZERO_DYNAMIC_ALLOC)\r\n"
                 f"Core 0 stack headroom: 2840 bytes\r\n"
                 f"Core 1 stack headroom: 3120 bytes\r\n"
@@ -96,9 +89,9 @@ class MockSerialPort:
             self.in_buf.extend(resp.encode("latin1"))
         elif cmd == "features":
             resp = (
-                f"\r\n=== Features Conformance Matrix ===\r\n"
+                f"\r\n=== Feature Conformance & Port Status ===\r\n"
                 f"Total tracked features: 125\r\n"
-                f"Status: 100% verified\r\n"
+                f"Status: mock harness response only\r\n"
                 f"{self.current_mode}> "
             )
             self.in_buf.extend(resp.encode("latin1"))
@@ -141,7 +134,7 @@ class HilHarness:
         self.port_name = port_name
         self.baud = baud
         self.transport = None
-        self.results = {}
+        self.results = {"transport": "mock" if mock else "hardware"}
 
     def connect(self):
         if not self.mock and self.port_name and HAS_SERIAL:
@@ -154,10 +147,12 @@ class HilHarness:
             self.transport.write(b"\r\n")
             time.sleep(0.1)
             self.transport.read(self.transport.in_waiting or 100)
-        else:
+        elif self.mock:
             print("[HIL] Using simulated transport harness (Mock Mode)...")
             self.transport = MockSerialPort()
             self.mock = True
+        else:
+            raise RuntimeError("Physical HIL requires a serial port and pyserial; use --mock explicitly for harness tests")
 
     def send_cmd(self, cmd: str, timeout=1.0) -> str:
         payload = (cmd + "\r").encode("latin1")
@@ -169,25 +164,33 @@ class HilHarness:
             chunk = self.transport.read(512)
             if chunk:
                 out.extend(chunk)
-                if b"> " in out or b"OK" in out:
+                if re.search(rb"(?:^|[\r\n])[^\r\n]*> $", out):
                     break
             else:
                 time.sleep(0.02)
-        return out.decode("latin1", errors="replace")
+        return re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", out.decode("latin1", errors="replace"))
 
     def run_smoke(self) -> bool:
         print("\n--- Phase 1: Smoke Tests ---")
         cmds = [
             ("i", "Bus Pirate", "Info banner check"),
-            ("health", "Health", "Health counters check"),
-            ("fault", "CLEAN_BOOT", "Fault record check"),
-            ("memory", "LEGAL", "Memory & stack watermark check"),
-            ("features", "Features Conformance Matrix", "Features command check")
+            ("health", "Core 1 ticks:", "Health counters check"),
+            ("fault", "No crash recorded.", "Fault record check"),
+            ("memory", "Static Allocation:", "Static memory budget check"),
+            ("features", "Feature Conformance & Port Status", "Features command check")
         ]
         all_ok = True
         for cmd, expected, desc in cmds:
             resp = self.send_cmd(cmd)
             ok = expected in resp
+            if ok and cmd == "health":
+                try:
+                    self.health_sample(resp)
+                except ValueError:
+                    ok = False
+            if ok and cmd == "memory":
+                match = re.search(r"Static Allocation:\s+(\d+) bytes", resp)
+                ok = bool(match and int(match.group(1)) <= 389120)
             status = "PASS" if ok else "FAIL"
             print(f"  [{status}] {desc} ('{cmd}')")
             if not ok:
@@ -197,15 +200,15 @@ class HilHarness:
 
     def run_mode_cycling(self, count=100) -> bool:
         print(f"\n--- Phase 2: Mode Cycling ({count} transitions) ---")
-        # Cycle between HiZ (1), UART (3), I2C (4), SPI (5), 2WIRE (6)
-        modes = [1, 3, 4, 5, 6, 1]
+        # Named modes with speed flags select defaults without interactive setup.
+        modes = [("HiZ", "HiZ"), ("UART -b 9600", "UART"), ("SPI -s 100", "SPI"), ("HiZ", "HiZ")]
         t0 = time.time()
         transitions_done = 0
         all_ok = True
         for i in range(count):
-            target_mode = modes[i % len(modes)]
-            resp = self.send_cmd(f"m {target_mode}", timeout=0.5)
-            if ">" not in resp:
+            target_mode, expected_mode = modes[i % len(modes)]
+            resp = self.send_cmd(f"m {target_mode}", timeout=2.0)
+            if not resp.rstrip().endswith(expected_mode + ">") or "Error" in resp:
                 print(f"  [FAIL] Failed transition at cycle {i} (target m {target_mode})")
                 all_ok = False
                 break
@@ -215,38 +218,68 @@ class HilHarness:
 
         elapsed = time.time() - t0
         rate = transitions_done / elapsed if elapsed > 0 else 0
-        print(f"  [PASS] Completed {transitions_done} transitions in {elapsed:.2f}s ({rate:.1f} transitions/sec)")
+        print(f"  [{'PASS' if all_ok else 'FAIL'}] Completed {transitions_done} transitions in {elapsed:.2f}s ({rate:.1f} transitions/sec)")
         self.results["mode_cycling"] = all_ok
         return all_ok
 
     def run_fault_recovery(self) -> bool:
-        print("\n--- Phase 4: Fault Injection & Job Cancellation ---")
+        print("\n--- Idle Ctrl+C responsiveness (no fault injection) ---")
         # Send Ctrl+C
         self.transport.write(b"\x03")
         time.sleep(0.05)
         resp = self.transport.read(512).decode("latin1", errors="replace")
         ok = ("^C" in resp) or ("cancelled" in resp) or (">" in resp)
         print(f"  [{'PASS' if ok else 'FAIL'}] Asynchronous Ctrl+C interrupt handled without deadlock")
-        self.results["fault_recovery"] = ok
+        # This is an idle interrupt responsiveness check, not active-job teardown proof.
+        self.results["idle_ctrl_c"] = ok
         return ok
 
+    @staticmethod
+    def health_sample(resp):
+        patterns = {
+            "feeds": r"Watchdog feeds: (\d+)",
+            "core0": r"Core 0 ticks: (\d+), missed: (\d+)",
+            "core1": r"Core 1 ticks: (\d+), missed: (\d+)",
+            "tx": r"Binary TX level: .*?dropped: (\d+)",
+            "rx": r"Binary RX level: .*?dropped: (\d+)",
+            "stack0": r"Core 0 stack free: (\d+)",
+            "stack1": r"Core 1 stack free: (\d+)",
+        }
+        sample = {}
+        for key, pattern in patterns.items():
+            match = re.search(pattern, resp)
+            if not match:
+                raise ValueError("Missing health field: " + key)
+            sample[key] = tuple(int(v) for v in match.groups())
+        if sample["stack0"][0] < 256 or sample["stack1"][0] < 256:
+            raise ValueError("Stack watermark below 256 bytes")
+        return sample
+
     def run_soak(self, duration_sec=10) -> bool:
-        print(f"\n--- Phase 5: Soak Testing (Duration: {duration_sec}s) ---")
-        t_end = time.time() + duration_sec
-        samples = 0
+        print(f"\n--- Soak response/counter checks ({duration_sec}s) ---")
+        previous = None
+        deadline = time.monotonic() + duration_sec
         all_ok = True
-        while time.time() < t_end:
-            resp = self.send_cmd("health", timeout=0.5)
-            if "Heartbeat: OK" in resp or "Health" in resp:
-                samples += 1
-            else:
+        while time.monotonic() < deadline:
+            try:
+                current = self.health_sample(self.send_cmd("health", timeout=2.0))
+                if previous:
+                    for key in ("feeds", "core0", "core1"):
+                        if current[key][0] <= previous[key][0]:
+                            raise ValueError(key + " stalled or reset")
+                    for key in ("tx", "rx"):
+                        if current[key] != previous[key]:
+                            raise ValueError(key + " drop counter changed")
+                    for key in ("core0", "core1"):
+                        if current[key][1] != previous[key][1]:
+                            raise ValueError(key + " missed counter changed")
+                previous = current
+            except ValueError as error:
+                print("  [FAIL] " + str(error))
                 all_ok = False
                 break
-            time.sleep(1.0)
-            print(f"  ... soak tick {samples}/{duration_sec}s: health telemetry stable, 0 errors")
-
+            time.sleep(1)
         self.results["soak"] = all_ok
-        print(f"  [PASS] Soak test completed: {samples} samples recorded, zero watchdog triggers")
         return all_ok
 
     def close(self):
@@ -258,6 +291,7 @@ def main():
     parser = argparse.ArgumentParser(description="RB-Pirate HIL & Soak Test Suite")
     parser.add_argument("--port", help="Serial port to use (auto-detected if omitted)")
     parser.add_argument("--baud", type=int, default=115200, help="Baud rate (default 115200)")
+    parser.add_argument("--auto-detect", action="store_true", help="Opt into serial device discovery")
     parser.add_argument("--mock", action="store_true", help="Force simulated mock transport")
     parser.add_argument("--smoke", action="store_true", help="Run smoke test phase")
     parser.add_argument("--cycles", type=int, default=100, help="Mode cycling iteration count")
@@ -266,8 +300,16 @@ def main():
 
     args = parser.parse_args()
 
-    port = args.port or find_bus_pirate_port()
-    harness = HilHarness(port_name=port, baud=args.baud, mock=args.mock or (port is None))
+    port = args.port or os.environ.get("HIL_PORT")
+    if args.auto_detect and not port:
+        port = find_bus_pirate_port()
+    if not args.mock and (port is None or not HAS_SERIAL):
+        print("SKIP: Physical HIL unavailable (requires a serial port and pyserial).")
+        if args.json_out:
+            with open(args.json_out, "w") as f:
+                json.dump({"transport": "unavailable", "status": "skipped"}, f)
+        return SKIP_EXIT_CODE
+    harness = HilHarness(port_name=port, baud=args.baud, mock=args.mock)
 
     try:
         harness.connect()
@@ -288,7 +330,7 @@ def main():
 
         overall = smoke_ok and mode_ok and fault_ok and soak_ok
         print("\n=======================================================")
-        print(f" HIL & Soak Suite Result: {'ALL PASS' if overall else 'FAILED'}")
+        print(f" {'MOCK HARNESS' if harness.mock else 'PHYSICAL HIL'} Result: {'ALL PASS' if overall else 'FAILED'}")
         print("=======================================================\n")
 
         if args.json_out:
@@ -301,4 +343,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

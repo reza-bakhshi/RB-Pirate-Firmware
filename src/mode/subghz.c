@@ -2723,8 +2723,11 @@ static void send_handler(struct command_result *res) {
         return;
     }
 
-    char binraw_text[1024] = { 0 };
-    if (bp_cmd_get_string(&send_def, 'B', binraw_text, sizeof(binraw_text))) {
+    /* Core 0 command scratch: the two input forms are mutually exclusive.
+     * Keep their text off the 4 KiB call stack. */
+    static union { char binraw[1024]; char raw[2048]; } text;
+    char *binraw_text = text.binraw;
+    if (bp_cmd_get_string(&send_def, 'B', binraw_text, sizeof(text.binraw))) {
         uint8_t bytes[SUBGHZ_BINRAW_MAX_BYTES];
         size_t nbytes = 0;
         if (!parse_hex_bytes(binraw_text, bytes, &nbytes, sizeof(bytes))) {
@@ -2754,8 +2757,8 @@ static void send_handler(struct command_result *res) {
         return;
     }
 
-    char raw_text[2048] = { 0 };
-    if (bp_cmd_get_string(&send_def, 'w', raw_text, sizeof(raw_text))) {
+    char *raw_text = text.raw;
+    if (bp_cmd_get_string(&send_def, 'w', raw_text, sizeof(text.raw))) {
         static int32_t tx_timings[1024];
         uint32_t n = 0;
         if (!parse_signed_timings(raw_text, tx_timings, &n, count_of(tx_timings))) {

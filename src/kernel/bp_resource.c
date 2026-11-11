@@ -28,20 +28,30 @@ static uint8_t s_big_buffer[BP_BIG_BUFFER_SIZE] __attribute__((aligned(4)));
 
 static bool s_initialized = false;
 
-/* Interrupt / critical section guard */
+/* Initialized on Core 0 during kernel startup, before Core 1 is launched.
+ * A local IRQ mask alone does not protect shared leases against the other core. */
+#if defined(HAVE_PICO_SDK)
+static spin_lock_t *s_resource_lock;
+#else
+static uint8_t s_host_resource_lock;
+#endif
+
+/* Interrupt / cross-core critical section guard */
 static inline uint32_t bp_res_enter_critical(void) {
 #if defined(HAVE_PICO_SDK)
-    return save_and_disable_interrupts();
+    return spin_lock_blocking(s_resource_lock);
 #else
+    while (__atomic_test_and_set(&s_host_resource_lock, __ATOMIC_ACQUIRE)) {}
     return 0;
 #endif
 }
 
 static inline void bp_res_exit_critical(uint32_t status) {
 #if defined(HAVE_PICO_SDK)
-    restore_interrupts(status);
+    spin_unlock(s_resource_lock, status);
 #else
     (void)status;
+    __atomic_clear(&s_host_resource_lock, __ATOMIC_RELEASE);
 #endif
 }
 
@@ -57,6 +67,9 @@ static inline PIO bp_res_get_pio_hw(uint32_t pio_idx) {
 #endif
 
 bp_status_t bp_res_init(void) {
+#if defined(HAVE_PICO_SDK)
+    if (!s_resource_lock) s_resource_lock = spin_lock_init(spin_lock_claim_unused(true));
+#endif
     uint32_t ints = bp_res_enter_critical();
 
     memset(s_pio_sm, 0, sizeof(s_pio_sm));
@@ -136,6 +149,7 @@ bp_status_t bp_res_acquire(bp_res_class_t res_class, uint32_t res_id,
                            uint32_t owner_id, const char* name) {
     if (owner_id == BP_RES_OWNER_NONE) return BP_STATUS_INVALID_PARAM;
 
+    if (!s_initialized) bp_res_init();
     uint32_t ints = bp_res_enter_critical();
     bp_res_lease_t* lease = bp_res_lookup(res_class, res_id);
     if (!lease) {
@@ -183,6 +197,7 @@ bp_status_t bp_res_acquire(bp_res_class_t res_class, uint32_t res_id,
 
 bp_status_t bp_res_release(bp_res_class_t res_class, uint32_t res_id,
                            uint32_t owner_id) {
+    if (!s_initialized) bp_res_init();
     uint32_t ints = bp_res_enter_critical();
     bp_res_lease_t* lease = bp_res_lookup(res_class, res_id);
     if (!lease) {
@@ -234,8 +249,8 @@ bp_status_t bp_res_claim_unused_pio_sm(uint32_t pio_idx, uint32_t owner_id,
         return BP_STATUS_INVALID_PARAM;
     }
 
-    uint32_t ints = bp_res_enter_critical();
     if (!s_initialized) bp_res_init();
+    uint32_t ints = bp_res_enter_critical();
 
 #if defined(HAVE_PICO_SDK)
     PIO pio = bp_res_get_pio_hw(pio_idx);
@@ -281,8 +296,8 @@ bp_status_t bp_res_claim_unused_dma_ch(uint32_t owner_id, const char* name,
         return BP_STATUS_INVALID_PARAM;
     }
 
-    uint32_t ints = bp_res_enter_critical();
     if (!s_initialized) bp_res_init();
+    uint32_t ints = bp_res_enter_critical();
 
     for (uint32_t ch = 0; ch < BP_RES_MAX_DMA_CHANNELS; ch++) {
         bp_res_lease_t* lease = &s_dma_ch[ch];
@@ -401,8 +416,8 @@ bp_status_t bp_res_acquire_buffer(uint32_t owner_id, const char* name,
         return BP_STATUS_INVALID_PARAM;
     }
 
-    uint32_t ints = bp_res_enter_critical();
     if (!s_initialized) bp_res_init();
+    uint32_t ints = bp_res_enter_critical();
 
     if (s_big_buffer_lease.acquired) {
         bp_res_exit_critical(ints);
@@ -428,6 +443,7 @@ bp_status_t bp_res_release_buffer(uint32_t owner_id, uint8_t* ptr) {
         return BP_STATUS_INVALID_PARAM;
     }
 
+    if (!s_initialized) bp_res_init();
     uint32_t ints = bp_res_enter_critical();
     if (!s_big_buffer_lease.acquired) {
         bp_res_exit_critical(ints);
@@ -457,8 +473,8 @@ bp_status_t bp_res_acquire_irq(uint32_t irq_num, uint32_t owner_id,
         return BP_STATUS_INVALID_PARAM;
     }
 
-    uint32_t ints = bp_res_enter_critical();
     if (!s_initialized) bp_res_init();
+    uint32_t ints = bp_res_enter_critical();
 
     if (s_irq[irq_num].acquired) {
         bp_res_exit_critical(ints);

@@ -128,8 +128,34 @@ static void test_arena_overflow(void) {
     printf("[PASS] test_arena_overflow\n");
 }
 
+static void test_allocator_invalid_sizes(void) {
+    _Alignas(void*) uint8_t buffer[128];
+    bp_pool_t pool;
+    assert(!bp_pool_init(&pool, buffer, sizeof(buffer), SIZE_MAX));
+    assert(!bp_pool_init(&pool, buffer + 1, sizeof(buffer) - 1, 16));
+    assert(bp_pool_init(&pool, buffer, sizeof(buffer), 16));
+    void *p = bp_pool_alloc(&pool);
+    assert(bp_pool_free(&pool, p));
+    assert(!bp_pool_free(&pool, p));
+    void *blocks[8];
+    for (unsigned i = 0; i < 8; i++) {
+        blocks[i] = bp_pool_alloc(&pool);
+        for (unsigned j = 0; j < i; j++) assert(blocks[j] != blocks[i]);
+    }
+    assert(bp_pool_alloc(&pool) == NULL);
+    bp_arena_t arena;
+    assert(bp_arena_init(&arena, buffer, sizeof(buffer)));
+    assert(bp_arena_alloc(&arena, 8, 8));
+    size_t used = arena.offset;
+    assert(bp_arena_alloc(&arena, SIZE_MAX, 8) == NULL);
+    assert(bp_arena_alloc(&arena, 8, 3) == NULL);
+    assert(arena.offset == used);
+    puts("[PASS] Overflow, alignment, duplicate-free and state preservation");
+}
+
 int main(void) {
     printf("=== Memory Pool & Arena Test Suite ===\n");
+    test_allocator_invalid_sizes();
     test_pool_basic();
     test_pool_exhaustion_and_bounds();
     test_arena_basic();

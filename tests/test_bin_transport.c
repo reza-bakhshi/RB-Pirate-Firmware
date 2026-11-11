@@ -169,6 +169,14 @@ static void test_timeout_and_connection(void) {
     /* Connection state */
     bp_bin_transport_mock_set_connected(false);
     assert(bp_bin_transport_is_connected() == false);
+    assert(bp_bin_transport_putc('Z') == BP_STATUS_OK);
+    bp_bin_transport_service();
+    bp_bin_transport_stats_t stats;
+    bp_bin_transport_get_stats(&stats);
+    assert(stats.tx_level == 1); /* Core 0 must not act as a second consumer. */
+    bp_bin_transport_usb_service();
+    bp_bin_transport_get_stats(&stats);
+    assert(stats.tx_level == 0 && stats.tx_dropped == 1);
 
     bp_bin_transport_mock_set_connected(true);
     assert(bp_bin_transport_is_connected() == true);

@@ -105,7 +105,7 @@ static const bp_feature_row_t s_features[] = {
         .name = "KERNEL",
         .origin = "RB-Pirate",
         .capability = "kernel",
-        .status = "verified",
+        .status = "host-tested",
         .test_suite = "test_kernel.sh",
         .description = "Dual-core split, cooperative scheduler, seqlock UI snapshots, static memory model"
     },
@@ -202,6 +202,7 @@ void cmd_features_handler(struct command_result* res) {
         }
     }
 
+    printf("\r\nHost tests do not verify electrical behavior or physical HIL.\r\n");
     printf("\r\nTotal Ported Features: %lu | Run all tests: 'tests/run_all.sh'\r\n\r\n",
            (unsigned long)s_features_count);
 }

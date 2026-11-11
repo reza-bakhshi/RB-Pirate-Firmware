@@ -10,13 +10,7 @@
 #include "services/bp_storage.h"
 #include "kernel/bp_status.h"
 
-typedef struct {
-    uint8_t storage_available;
-    uint8_t storage_mount_error;
-    uint8_t storage_fat_type;
-    float storage_size;
-    uint32_t terminal_language;
-} host_system_config_t;
+#include "../src/services/bp_storage.c"
 
 host_system_config_t system_config;
 
@@ -27,17 +21,17 @@ const mode_config_t system_config_json[1] = {
 const uint8_t system_config_json_count = 1;
 
 /* Mock mem_alloc / mem_free */
-void* mem_alloc(size_t size, uint32_t type) {
+uint8_t* mem_alloc(size_t size, uint32_t type) {
     (void)type;
     return malloc(size);
 }
 
-void mem_free(void* ptr) {
+void mem_free(uint8_t* ptr) {
     free(ptr);
 }
 
 /* Mock watchdog */
-void bp_watchdog_heartbeat(uint8_t core_id) {
+void bp_watchdog_heartbeat(uint32_t core_id) {
     (void)core_id;
 }
 
@@ -227,8 +221,53 @@ static void test_blockdev_lock(void) {
     printf("[PASS] Block device lock verified\n");
 }
 
+static void test_storage_integrity(void) {
+    bp_storage_init(); bp_storage_mount();
+    memset(mock_files, 0, sizeof(mock_files));
+    assert(bp_storage_save_config() == BP_STATUS_OK);
+    unsigned char original[4096];
+    int slot = mock_find(CONFIG_FILENAME);
+    unsigned size = mock_files[slot].size;
+    memcpy(original, mock_files[slot].data, size);
+    int *faults[] = {&mock_write_error, &mock_short_write, &mock_sync_error, &mock_close_error, &mock_rename_error};
+    for (unsigned i = 0; i < sizeof(faults)/sizeof(faults[0]); i++) {
+        *faults[i] = 1;
+        assert(bp_storage_save_config() == BP_STATUS_ERROR);
+        *faults[i] = 0;
+        slot = mock_find(CONFIG_FILENAME);
+        assert(slot >= 0 && mock_files[slot].size == size);
+        assert(memcmp(original, mock_files[slot].data, size) == 0);
+        assert(bp_storage_get_open_count() == 0);
+    }
+    /* Simulate a reset between moving the old config and committing the new one. */
+    f_unlink(CONFIG_BACKUP_FILENAME);
+    assert(f_rename(CONFIG_FILENAME, CONFIG_BACKUP_FILENAME) == FR_OK);
+    assert(bp_storage_load_config() == BP_STATUS_OK);
+
+    uint8_t data[] = "abc";
+    bp_storage_rpc_req_t req = {.type = BP_STORAGE_RPC_WRITE, .path = "rpc.bin", .data = data, .size = 3};
+    bp_storage_rpc_resp_t resp;
+    bp_storage_process_single_rpc(&req, &resp);
+    assert(resp.status == BP_STATUS_OK);
+    req.type = BP_STORAGE_RPC_APPEND;
+    bp_storage_process_single_rpc(&req, &resp);
+    assert(resp.status == BP_STATUS_OK);
+    slot = mock_find("rpc.bin");
+    assert(mock_files[slot].size == 6 && memcmp(mock_files[slot].data, "abcabc", 6) == 0);
+    uint8_t readback[3] = {0};
+    req.type = BP_STORAGE_RPC_READ; req.offset = 2; req.size = 3; req.data = readback;
+    bp_storage_process_single_rpc(&req, &resp);
+    assert(resp.status == BP_STATUS_OK && resp.bytes_transferred == 3);
+    assert(memcmp(readback, "cab", 3) == 0);
+    req.type = BP_STORAGE_RPC_APPEND; mock_short_write = 1;
+    bp_storage_process_single_rpc(&req, &resp);
+    assert(resp.status == BP_STATUS_ERROR); mock_short_write = 0;
+    puts("[PASS] Storage failure preservation, recovery, append and offsets");
+}
+
 int main(void) {
     printf("=== Running Storage Service Unit Tests ===\n");
+    test_storage_integrity();
     test_init_and_mount();
     test_guarded_unmount();
     test_card_detect_debouncing();

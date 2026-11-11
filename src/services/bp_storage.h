@@ -205,7 +205,7 @@ bp_status_t bp_storage_stream_close(void);
 /* --- Configuration Persistence & Fallback --- */
 
 /**
- * @brief Atomically save system configuration to flash.
+ * @brief Save checked staging data with recoverable FAT backup/rename.
  */
 bp_status_t bp_storage_save_config(void);
 

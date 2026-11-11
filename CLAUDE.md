@@ -7,8 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 RB-Pirate firmware — embedded C firmware exclusively for the Raspberry Pi **RP2350** microcontroller (Bus Pirate 6 / RB-Pirate). RP2040 and legacy Bus Pirate 5 targets are completely out of scope. Universal serial interface supporting 1-Wire, I2C, SPI, UART, JTAG, infrared, Sub-GHz, RFID, and other protocols.
 
 ### Dual-Core Architecture
-- **Core 0 (Control Plane)**: TinyUSB CDC0 (terminal), CDC1 (binary I/O), MSC (storage); Linenoise CLI with syntax highlighting and non-blocking sub-prompts; command parser & syntax compiler; transactional mode lifecycle manager; cooperative job dispatcher with resource leases (`bp_job`, `bp_res`); FatFS flash and SD storage; AMUX sweep & PSU supervision; seqlock snapshot publisher (`bp_ui_snapshot`); hardware watchdog supervisor.
-- **Core 1 (Protocol Engine)**: Real-time protocol execution; PIO state machines (PIO0/PIO1); protocol DMA channels and hardware IRQs; captures and decoders; SUMP and BPIO binary engines; FALA follow-along logic analyzer; LCDTAP, IR, Sub-GHz, RFID, and RF24 transceiver engines; fixed-size inter-core log ring.
+Current implementation is hybrid, not a completed control/data split:
+- Core 0: CLI, syntax execution, mode lifecycle, storage service, watchdog supervisor.
+- Core 1: TinyUSB task/CDC I/O/MSC callbacks, monitoring, toolbars, protocol job slices.
+- Keep slices bounded; USB and monitoring share Core 1. Use cleanup-enabled job submission
+  for driver state; final cleanup runs on Core 0 after slices stop. See `docs/architecture/dual_core_guide.md` for current ownership and limits.
 
 ### Memory Model
 Strict static memory model: zero runtime `malloc`, `calloc`, `realloc`, or `free`. Static allocation bounded to $\le 380\text{ KB}$ SRAM with dedicated 4 KB stacks in scratch SRAM (`SCRATCH_Y` for Core 0, `SCRATCH_X` for Core 1).
@@ -28,7 +31,7 @@ Output: `.elf`, `.uf2`, `.bin` files in `build_rp2350/src/`.
 ## Tests
 
 ```bash
-# Run all unified test suites under AddressSanitizer and UBSan
+# Run regression suites (hardware tests report SKIP without a device)
 tests/run_all.sh
 
 # Run individual suites

@@ -6,8 +6,8 @@
 
 ## 1. Storage Architecture Overview
 
-All filesystem operations are centralized on **Core 0 (Control Plane)** under `src/services/bp_storage.c`:
-- **Single-Core FatFS Execution**: Core 1 never calls FatFS (`f_*`) or low-level block device functions directly.
+The storage service runs on **Core 0** under `src/services/bp_storage.c`; MSC callbacks run on Core 1:
+- **Block-device serialization**: MSC and service storage access require locking across cores.
 - **Hot-Plug Detection**: Card insertion and removal are monitored via debounced analog card detect sensing and published as system events.
 - **Guarded Unmount**: Unmounting checks for open file handles and active USB MSC transactions to prevent filesystem corruption.
 
@@ -34,8 +34,12 @@ All filesystem operations are centralized on **Core 0 (Control Plane)** under `s
 
 ## 3. Configuration Persistence
 
-Configuration settings (`bpconfig.bp`) are persisted through a crash-safe staging mechanism:
-1. New configuration JSON is written to a temporary staging file (`staging.bp`).
-2. Staging data is synced to disk via `f_sync()`.
-3. The staging file is atomically renamed to replace the target configuration file.
-4. If a crash or power cut occurs during save, the previous valid configuration remains intact.
+Configuration settings (`rbconfig.rb`) use checked staging and backup recovery:
+1. Write JSON to `rbconfig.tmp`; require complete writes and successful sync and close.
+2. Move an existing primary to `rbconfig.bak` before committing the staged file.
+3. Rename the staged file to the primary. On failure, attempt restoration and retain the backup.
+4. At boot, try primary, then backup, then staging, followed by legacy names.
+
+This is a recoverable FAT update sequence, not an atomic filesystem transaction. A power
+failure can still damage FAT metadata. A failed or short write never authorizes replacement
+of the previous primary. Host tests inject write, short-write, sync, close and rename errors.

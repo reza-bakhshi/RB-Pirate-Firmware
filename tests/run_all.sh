@@ -28,13 +28,10 @@ for script in $SCRIPTS; do
     TOTAL=$((TOTAL + 1))
     printf "[%2d] Running %-35s ... " "$TOTAL" "$TEST_NAME"
 
-    # Make sure script is executable
-    chmod +x "$script"
-
     START_TIME=$(date +%s%N 2>/dev/null || date +%s)
     OUTPUT_LOG="/tmp/${TEST_NAME}.log"
 
-    if "$script" > "$OUTPUT_LOG" 2>&1; then
+    if bash "$script" > "$OUTPUT_LOG" 2>&1; then
         END_TIME=$(date +%s%N 2>/dev/null || date +%s)
         # Compute elapsed ms if nanoseconds supported, otherwise s
         if [ "$START_TIME" -gt 1000000000000 ] 2>/dev/null; then
@@ -46,6 +43,14 @@ for script in $SCRIPTS; do
         PASSED=$((PASSED + 1))
         rm -f "$OUTPUT_LOG"
     else
+        TEST_EXIT=$?
+        if [ "$TEST_EXIT" -eq 77 ]; then
+            printf "SKIP (hardware/build prerequisite unavailable)\n"
+            SKIPPED=$((SKIPPED + 1))
+            cat "$OUTPUT_LOG"
+            rm -f "$OUTPUT_LOG"
+            continue
+        fi
         printf "\033[0;31mFAIL\033[0m\n"
         FAILED=$((FAILED + 1))
         FAILED_TESTS+=("$TEST_NAME")
@@ -62,6 +67,7 @@ echo "==========================================================================
 echo " Test Summary"
 echo "=============================================================================="
 printf " Total Suites : %d\n" "$TOTAL"
+printf " Skipped      : %d\n" "$SKIPPED"
 printf " \033[0;32mPassed\033[0m       : %d\n" "$PASSED"
 if [ "$FAILED" -gt 0 ]; then
     printf " \033[0;31mFailed\033[0m       : %d\n" "$FAILED"
@@ -72,7 +78,7 @@ if [ "$FAILED" -gt 0 ]; then
     exit 1
 else
     printf " \033[0;31mFailed\033[0m       : %d\n" "$FAILED"
-    echo " Result       : ALL SUITES PASSED CLEANLY"
+    echo " Result       : ALL EXECUTED SUITES PASSED (see skipped count)"
     echo "=============================================================================="
     exit 0
 fi

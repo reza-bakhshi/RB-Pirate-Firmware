@@ -7,7 +7,7 @@
 [![MCU: RP2350B](https://img.shields.io/badge/MCU-RP2350B-c51a4a?style=flat-square)](#hardware-architecture)
 [![Architecture: Dual-Core Zero-Heap](https://img.shields.io/badge/Architecture-Dual--Core%20Zero--Heap-0ea5e9?style=flat-square)](#dual-core-architecture)
 [![Storage: TF card](https://img.shields.io/badge/Storage-TF%20card-2f855a?style=flat-square)](#removable-tf-card-storage)
-[![Tests: 29 suites (ASan/UBSan)](https://img.shields.io/badge/Tests-29%20passing%20(ASan%2FUBSan)-10b981?style=flat-square)](#automated-testing--verification)
+[![Tests: host regression suites](https://img.shields.io/badge/Tests-host%20regression%20suites-10b981?style=flat-square)](#automated-testing--verification)
 [![Based on: Bus Pirate 6](https://img.shields.io/badge/Based%20on-Bus%20Pirate%206-314cb0?style=flat-square)](https://github.com/DangerousPrototypes/BusPirate5-firmware)
 [![License: MIT](https://img.shields.io/badge/License-MIT-f5c518?style=flat-square)](LICENSE.TXT)
 
@@ -27,49 +27,26 @@ RB-Pirate Firmware is an independent project re-architected on the foundation of
 
 The RB-Pirate firmware incorporates a complete ground-up re-architecture designed for rock-solid real-time performance, zero memory fragmentation, and non-blocking operation.
 
-```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        CORE 0 — CONTROL PLANE                          │
-├────────────────────────────────────────────────────────────────────────┤
-│ • TinyUSB: CDC0 (VT100 Terminal), CDC1 (Binary Transport), MSC (Disk)  │
-│ • Linenoise CLI with syntax highlighting & non-blocking sub-prompts    │
-│ • Command parser, bytecode compiler & transactional mode manager       │
-│ • Cooperative service kernel: event queues & non-blocking timers       │
-│ • Job dispatcher & hardware resource lease tracking (`bp_res`)         │
-│ • FatFS SD/TF card storage engine (mutex-free single-core ownership)   │
-│ • AMUX sweep, PSU supervision, and atomic seqlock telemetry publisher  │
-│ • Hardware watchdog supervisor & non-volatile crash log diagnostics    │
-└───────────────────────────────────┬────────────────────────────────────┘
-                                    │ Lock-Free SPSC Queues
-                                    │ Atomic Seqlock Snapshots
-                                    ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                        CORE 1 — PROTOCOL ENGINE                        │
-├────────────────────────────────────────────────────────────────────────┤
-│ • Hard real-time protocol engines (I2C, SPI, UART, 1-Wire, 2/3-Wire)   │
-│ • Dedicated PIO state machines (PIO0/PIO1) & hardware DMA channels     │
-│ • Follow-Along Logic Analyzer (FALA) & SUMP logic engines              │
-│ • Wireless engines: CC1101 Sub-GHz, nRF24L01 RF24, PN532 RFID, IR     │
-│ • Passive bus sniffers: LCDTAP, PS/2, USB sniffer, I2C/SPI sniffers    │
-│ • Strict isolation: Core 1 never calls blocking USB, printf, or FatFS  │
-└────────────────────────────────────────────────────────────────────────┘
-```
+The current firmware uses a hybrid dual-core layout:
 
-### 1. Dual-Core Control & Data Plane Split
-- **Core 0 (Control Plane)**: Manages all USB endpoints, user input, file storage, power supply limits, and user interface rendering.
-- **Core 1 (Data Plane)**: Exclusively executes hardware protocol timing, PIO programs, high-speed DMA transfers, and signal decoders.
-- **Lock-Free IPC**: Inter-core communication uses lock-free single-producer single-consumer queues (`bp_spsc`) and lock-free sequence locks (`bp_power_monitor`, `bp_ui_snapshot`). Core 1 never blocks on I/O or waits for terminal output.
+| Core | Current responsibilities |
+| --- | --- |
+| Core 0 | CLI, command parsing and syntax execution, mode lifecycle, storage service, watchdog supervision |
+| Core 1 | TinyUSB CDC/MSC, terminal transport, toolbars, AMUX/PSU monitoring, asynchronous protocol slices |
+
+Protocol jobs share Core 1 with USB and monitoring. Slices must remain bounded;
+strict control/data isolation is not complete. See the [architecture guide](docs/architecture/dual_core_guide.md).
 
 ### 2. Deterministic Static Memory Model
-- **Zero Runtime Heap**: Dynamic allocation (`malloc`, `calloc`, `realloc`, `free`) is strictly forbidden across the runtime, preventing heap fragmentation and out-of-memory crashes during multi-day soak tests.
+- **Zero Runtime Heap**: New runtime code uses fixed storage. The memory guard checks selected migrated modules, including MakeHex; legacy FlatCC builder allocation still requires migration. Global zero-heap operation is not yet established.
 - **Bounded SRAM Footprint**: Total static allocation is strictly bounded to $\le 380\text{ KB}$ SRAM (out of 512 KB), guaranteeing $>130\text{ KB}$ of runtime safety headroom.
 - **Scratch Stacks**: Fixed 4 KB stack allocations located in dedicated scratch SRAM (`SCRATCH_Y` for Core 0, `SCRATCH_X` for Core 1).
 - **Poisoned Memory Pools**: Static pool allocators (`bp_mem_pool`) with buffer poison guards and alignment enforcement.
 
 ### 3. Cooperative Service Kernel & Asynchronous Jobs
 - **Event-Driven Kernel (`bp_kernel`)**: Prioritized event queues and non-blocking software timers eliminate busy-wait loops in the control loop.
-- **Protocol Jobs Runtime (`bp_job`)**: Long-running operations (frequency sweeps, protocol sniffing, logic traces, flash dumping) execute asynchronously on Core 1 while the Core 0 terminal remains completely interactive.
-- **Universal Cancellation**: Cooperative `<Ctrl+C>` cancellation with sub-millisecond reaction time across all commands and protocol jobs.
+- **Protocol Jobs Runtime (`bp_job`)**: Frequency sweeps and selected sniffers execute as Core 1 jobs. Other command paths still execute synchronously on Core 0.
+- **Universal Cancellation**: Cooperative `<Ctrl+C>` cancellation is checked between job slices; latency depends on the active callback.
 
 ### 4. Hardware Resource Lease Manager (`bp_res`)
 - Hardware peripherals (PIO0/PIO1 state machines, DMA channels, hardware interrupts, pin directions, buffer configurations) are managed via explicit transactional leases.
@@ -140,7 +117,7 @@ The RB-Pirate firmware incorporates a complete ground-up re-architecture designe
 ## Removable TF Card Storage
 
 - **Storage Engine**: SPI mode SD/TF driver backed by FatFS 0.15.
-- **Zero-Lock Single-Core Access**: All filesystem operations are owned by Core 0, eliminating cross-core file access locks.
+- **Serialized Storage Access**: The storage service runs on Core 0; MSC callbacks run on Core 1 and require block-device serialization.
 - **Hotplug Resilient**: Hardware insertion/removal detection with automatic unmount and mount recovery.
 - **Mass Storage Class (MSC)**: Mounts the TF card as a standard USB thumb drive on your PC for dragging and dropping scripts, captures, firmware updates, and `.sub` / `.ir` files.
 
@@ -151,7 +128,7 @@ The RB-Pirate firmware incorporates a complete ground-up re-architecture designe
 The codebase includes an extensive suite of automated host tests, sanitizers, and Hardware-in-the-Loop (HIL) harnesses:
 
 ```bash
-# Run the entire test suite (29 suites under AddressSanitizer & UBSan)
+# Run the entire test suite (host suites; physical HIL is skipped without HIL_PORT)
 tests/run_all.sh
 
 # Run the grammar and command-parser fuzz testing suite (10,000+ malformed vectors)
@@ -160,7 +137,7 @@ tests/test_parser_fuzz.sh
 # Run memory model verification (verifies zero-heap and <=380 KB limit)
 tests/test_memory_model.sh
 
-# Run the automated Hardware-in-the-Loop (HIL) and soak suite
+# Select a device for physical HIL; use --mock only for harness testing
 python3 tests/hil_test_suite.py --smoke --cycles 1000 --soak 60
 ```
 

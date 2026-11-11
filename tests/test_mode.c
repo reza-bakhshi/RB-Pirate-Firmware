@@ -6,6 +6,7 @@
 #include <stdbool.h>
 
 #include "kernel/bp_status.h"
+#include "kernel/bp_job.h"
 #include "kernel/bp_resource.h"
 #include "kernel/bp_event.h"
 #include "kernel/bp_kernel.h"
@@ -253,8 +254,25 @@ static void test_protocol_data_plane_and_heartbeat(void) {
     printf("[PASS] Protocol data plane telemetry, heartbeat, and recovery verified\n");
 }
 
+static bp_status_t busy_slice(void* ctx, uint8_t* percent) {
+    (void)ctx; (void)percent; return BP_STATUS_BUSY;
+}
+static void test_active_job_blocks_teardown(void) {
+    reset_test_state(); setup_mock_modes(); bp_job_subsystem_init();
+    assert(bp_job_submit("mode_guard", 0, 0, busy_slice, NULL, 1, NULL) == BP_STATUS_OK);
+    assert(bp_mode_switch(HWUART) == BP_STATUS_BUSY);
+    assert(s_mock_cleanup_called[HIZ] == 0 && !s_bio_init_called);
+    assert(bp_protocol_recover() == BP_STATUS_BUSY);
+    assert(s_mock_cleanup_called[HIZ] == 0 && !s_bio_init_called);
+    bp_job_service(2);
+    assert(bp_job_get_active_id() == 0);
+    assert(bp_mode_switch(HWUART) == BP_STATUS_OK);
+    puts("[PASS] Mode teardown waits for job cancellation acknowledgement");
+}
+
 int main(void) {
     printf("=== Running Core Separation & Mode Lifecycle Tests ===\n");
+    test_active_job_blocks_teardown();
     test_mode_registry();
     test_mode_switch_transactional();
     test_mode_rollback_on_setup_cancel();

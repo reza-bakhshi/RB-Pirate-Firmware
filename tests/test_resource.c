@@ -4,6 +4,7 @@
 #include <string.h>
 #include <assert.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 #include "kernel/bp_status.h"
 #include "kernel/bp_resource.h"
@@ -275,8 +276,31 @@ static void test_mode_switch_soak(void) {
     printf("[PASS] 1000 mode-switch soak test passed with ZERO leaked resources\n");
 }
 
+static uint8_t concurrent_channel[BP_RES_MAX_DMA_CHANNELS];
+static void* lease_worker(void* arg) {
+    uint32_t owner = (uint32_t)(uintptr_t)arg;
+    for (unsigned i = 0; i < 10000; i++) {
+        uint32_t channel;
+        bp_status_t st = bp_res_claim_unused_dma_ch(owner, "stress", &channel);
+        assert(st == BP_STATUS_OK);
+        assert(!__atomic_exchange_n(&concurrent_channel[channel], 1, __ATOMIC_ACQ_REL));
+        __atomic_store_n(&concurrent_channel[channel], 0, __ATOMIC_RELEASE);
+        assert(bp_res_release(BP_RES_CLASS_DMA_CH, channel, owner) == BP_STATUS_OK);
+    }
+    return NULL;
+}
+static void test_concurrent_leases(void) {
+    bp_res_init(); /* Firmware also initializes before launching the second core. */
+    pthread_t workers[2];
+    for (unsigned i = 0; i < 2; i++) assert(!pthread_create(&workers[i], NULL, lease_worker, (void*)(uintptr_t)(100 + i)));
+    for (unsigned i = 0; i < 2; i++) assert(!pthread_join(workers[i], NULL));
+    assert(bp_res_count_owned(100) == 0 && bp_res_count_owned(101) == 0);
+    puts("[PASS] Two concurrent owners: 20,000 DMA lease/release operations");
+}
+
 int main(void) {
     printf("=== Bus Pirate Hardware Resource Lease Manager Test Suite ===\n");
+    test_concurrent_leases();
     test_init_state();
     test_pio_sm_acquire_release();
     test_pio_sm_claim_unused();

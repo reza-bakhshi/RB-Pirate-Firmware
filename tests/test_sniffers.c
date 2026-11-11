@@ -356,24 +356,31 @@ static void test_usb_sniffer_lifecycle_100_cycles(void) {
     printf("  -> USB sniffer: 100 cycles passed cleanly with exact clock restoration & 0 leaks.\n");
 }
 
+/* Exercise the real scheduler rather than asserting a simulated boolean. */
+static unsigned cancel_cleanup_calls;
+static bp_status_t cancellation_slice(void *ctx, uint8_t *pct) {
+    (void)ctx; *pct = 1; return BP_STATUS_BUSY;
+}
+static void cancellation_cleanup(void *ctx, bp_status_t status) {
+    (void)ctx; assert(status == BP_STATUS_CANCELLED); cancel_cleanup_calls++;
+}
 static void test_usb_cancellation_and_trigger_mock(void) {
-    printf("[test_sniffers] Testing non-blocking trigger and cooperative cancellation...\n");
-    bp_res_init();
-
-    // Trigger wait simulation
-    bool cancelled = true;
-    assert(cancelled == true); // Cancelled trigger returns false immediately
-
-    // Job cancellation simulation
     bp_job_subsystem_init();
+    uint32_t jid;
+    assert(bp_job_submit_with_cleanup("sniffer_cancel", 0, 0, cancellation_slice,
+        cancellation_cleanup, NULL, 1, &jid) == BP_STATUS_OK);
+    bp_job_service(2);
     assert(bp_job_cancel_active() == BP_STATUS_OK);
-
-    printf("  -> Non-blocking polling & cancellation checks verified.\n");
+    bp_job_service(3);
+    bp_job_finalize();
+    assert(cancel_cleanup_calls == 1);
+    assert(bp_job_get_active_id() == 0);
+    puts("[PASS] Production scheduler cancellation invokes cleanup");
 }
 
 int main(void) {
     printf("=========================================\n");
-    printf("Running Sniffers Parity & Teardown Tests\n");
+    printf("Running Sniffer Resource Model Tests (driver HIL still required)\n");
     printf("=========================================\n");
 
     test_ps2_sniff_lifecycle_100_cycles();

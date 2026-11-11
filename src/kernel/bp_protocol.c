@@ -64,6 +64,12 @@ bool bp_protocol_is_healthy(uint32_t now_ms, uint32_t max_stall_ms) {
 }
 
 bp_status_t bp_protocol_recover(void) {
+    uint32_t active = bp_job_get_active_id();
+    if (active != 0) {
+        bp_job_cancel(active);
+        /* Retry after Core 1 acknowledges cancellation and finishes teardown. */
+        return BP_STATUS_BUSY;
+    }
     bp_proto_telem.state = BP_PROTO_STATE_FAULT;
     bp_proto_telem.faults++;
 
@@ -78,7 +84,8 @@ bp_status_t bp_protocol_recover(void) {
     bio_init();
 
     // Fall back to safe HiZ
-    bp_mode_to_hiz();
+    bp_status_t status = bp_mode_to_hiz();
+    if (status != BP_STATUS_OK) return status;
 
     bp_proto_telem.state = BP_PROTO_STATE_IDLE;
     bp_proto_telem.active_job_id = 0;

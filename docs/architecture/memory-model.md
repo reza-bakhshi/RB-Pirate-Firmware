@@ -5,6 +5,14 @@
 
 ---
 
+## Current verification limits
+
+The 380 KiB link-time budget covers static main RAM, including reserved heap and alignment.
+It does not measure live heap or worst-case combined call stacks. Legacy FlatCC default
+builder/emitter paths still reference heap allocation; zero heap is a migration target,
+not a verified property of the whole firmware. MakeHex now uses bounded static workspace
+with a single-user guard instead of vectors/strdup and large stack scratch.
+
 ## 1. Why
 
 The firmware is a long-running embedded device with two cores and timing-sensitive I/O. A general

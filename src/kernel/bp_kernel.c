@@ -99,6 +99,7 @@ uint32_t bp_service(uint8_t core) {
 
     if (core == 0) {
         bp_health_record_core0_tick();
+        bp_job_finalize();
 
 #ifdef HAVE_PICO_SDK
         static uint32_t s_last_timer_ms = 0;

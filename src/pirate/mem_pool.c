@@ -13,6 +13,7 @@ bool bp_pool_init(bp_pool_t *pool, void *buffer, size_t buffer_size, size_t bloc
     }
 
     size_t align = sizeof(void *);
+    if ((uintptr_t)buffer % _Alignof(bp_pool_node_t) != 0 || block_size > SIZE_MAX - (align - 1)) return false;
     size_t aligned_block = ALIGN_UP(block_size, align);
     if (aligned_block < sizeof(bp_pool_node_t)) {
         aligned_block = sizeof(bp_pool_node_t);
@@ -60,16 +61,21 @@ bool bp_pool_free(bp_pool_t *pool, void *ptr) {
         return false;
     }
 
-    uint8_t *p = (uint8_t *)ptr;
-    if (p < pool->buffer || p >= pool->buffer + pool->capacity * pool->block_size) {
+    uintptr_t p = (uintptr_t)ptr;
+    uintptr_t base = (uintptr_t)pool->buffer;
+    if (p < base || p - base >= pool->capacity * pool->block_size) {
         return false; /* Pointer outside pool buffer */
     }
 
-    size_t offset = (size_t)(p - pool->buffer);
+    size_t offset = (size_t)(p - base);
     if ((offset % pool->block_size) != 0) {
         return false; /* Misaligned pointer */
     }
 
+    /* Reject duplicate frees instead of creating a cyclic freelist. */
+    for (bp_pool_node_t *free_node = pool->free_list; free_node; free_node = free_node->next) {
+        if (free_node == ptr) return false;
+    }
     bp_pool_node_t *node = (bp_pool_node_t *)ptr;
     node->next = pool->free_list;
     pool->free_list = node;
@@ -118,11 +124,11 @@ void *bp_arena_alloc(bp_arena_t *arena, size_t size, size_t align) {
         align = sizeof(void *);
     }
 
-    size_t current_addr = (size_t)(arena->buffer + arena->offset);
-    size_t aligned_addr = ALIGN_UP(current_addr, align);
-    size_t padding = aligned_addr - current_addr;
-
-    if (arena->offset + padding + size > arena->capacity) {
+    if ((align & (align - 1)) != 0 || arena->offset > arena->capacity) return NULL;
+    uintptr_t current_addr = (uintptr_t)(arena->buffer + arena->offset);
+    size_t padding = (-(uintptr_t)current_addr) & (align - 1);
+    size_t remaining = arena->capacity - arena->offset;
+    if (padding > remaining || size > remaining - padding) {
         return NULL; /* Out of space */
     }
 

@@ -1004,13 +1004,16 @@ static void ps2_process_packets(void)
     }
 }
 
+static void ps2_sniff_cleanup(void* ctx, bp_status_t status) {
+    (void)ctx;
+    (void)status;
+    ps2_irq_teardown();
+    ps2_pio_release();
+}
+
 static bp_status_t ps2_sniff_slice(void* ctx, uint8_t* out_percent) {
     (void)ctx;
-    if (bp_job_check_cancelled()) {
-        ps2_irq_teardown();
-        ps2_pio_release();
-        return BP_STATUS_CANCELLED;
-    }
+    if (bp_job_check_cancelled()) return BP_STATUS_CANCELLED;
     ps2_process_packets();
     *out_percent = 50;
     return BP_STATUS_BUSY;
@@ -1162,7 +1165,7 @@ void ps2_handler(struct command_result* res) {
     ps2_pio_initialized = true;
 
     uint32_t jid = 0;
-    bp_status_t st = bp_job_dispatch("ps2_sniff", BP_JOB_PROTO_CUSTOM, 0, ps2_sniff_slice, NULL, &jid);
+    bp_status_t st = bp_job_dispatch_with_cleanup("ps2_sniff", BP_JOB_PROTO_CUSTOM, 0, ps2_sniff_slice, ps2_sniff_cleanup, NULL, &jid);
     if (st == BP_STATUS_OK) {
         printf("PS/2 sniffer job %lu dispatched to Core 1. Press Ctrl+C or 'q' to stop.\r\n", (unsigned long)jid);
     } else {

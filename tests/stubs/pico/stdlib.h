@@ -16,6 +16,19 @@
 
 typedef unsigned int uint;
 
+#ifndef _BP_GPIO_GET_DEFINED
+#define _BP_GPIO_GET_DEFINED
+__attribute__((weak)) bool s_mock_gpio_fuse_tripped = false;
+static inline bool gpio_get(uint g) {
+    if (g == 17) {
+        return !s_mock_gpio_fuse_tripped;
+    }
+    return true;
+}
+#endif
+static inline void gpio_pull_up(uint g) { (void)g; }
+static inline void gpio_disable_pulls(uint g) { (void)g; }
+static inline void gpio_set_input_enabled(uint g, bool enabled) { (void)g; (void)enabled; }
 static inline void gpio_put(uint g, bool val) { (void)g; (void)val; }
 static inline void gpio_set_function(uint g, uint f) { (void)g; (void)f; }
 static inline void gpio_set_dir(uint g, bool out) { (void)g; (void)out; }

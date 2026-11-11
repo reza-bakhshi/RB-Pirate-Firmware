@@ -48,11 +48,11 @@ static void psu_fuse_reset(void) {
     // reset current trigger
     #if BP_HW_IOEXP_595
         shift_clear_set_wait(CURRENT_RESET, 0); // low to activate the pnp
-        busy_wait_ms(1);
+        busy_wait_ms(5);
         shift_clear_set_wait(0, CURRENT_RESET); // high to disable    
     #elif BP_HW_IOEXP_NONE
         gpio_put(CURRENT_RESET, 0);
-        busy_wait_ms(1);
+        busy_wait_ms(5);
         gpio_put(CURRENT_RESET, 1);
     #else
         #error "Platform not speficied in psu.c"
@@ -208,8 +208,15 @@ bool psu_fuse_ok(void) {
         return false;
     }
     uint32_t fuse = amux_read(HW_ADC_MUX_CURRENT_DETECT);
-    //printf("Fuse: %d\r\n",fuse);
+    psu_status.last_fuse_adc = (uint16_t)fuse;
+    psu_status.last_fuse_sample_valid = true;
+#ifdef CURRENT_FUSE_DETECT
+    psu_status.last_fuse_gpio = gpio_get(CURRENT_FUSE_DETECT);
+    // Fuse is OK when CURRENT_DETECT is HIGH (> 300 ADC counts and/or direct GPIO HIGH)
+    return (fuse > 300) || psu_status.last_fuse_gpio;
+#else
     return (fuse > 300);
+#endif
 }
 
 /// @brief Check whether Vout is above the configured undervoltage limit
@@ -352,10 +359,9 @@ void psu_disable(void) {
     psu_status.enabled = false;
     s_undervoltage_fail_count = 0;
     psu_vreg_enable(false);
-    psu_dac_set(PWM_TOP, 0);
     psu_current_limit_override(false);
-    busy_wait_ms(1);
-    psu_fuse_reset(); // reset fuse so it isn't draining current from the opamp    
+    psu_dac_set(PWM_TOP, 0);
+    busy_wait_ms(5);
 }
 
 /// @brief Enable and configure the PSU with requested settings
@@ -364,6 +370,14 @@ void psu_disable(void) {
 /// @param  current_limit_override  true to disable current limiting, false to enforce limit
 /// @param  undervoltage_percent    Undervoltage threshold percent (1-100), 100 to disable
 /// @return PSU_OK on success or an error code (PSU_ERROR_*) on failure
+static uint8_t psu_control_levels(void) {
+#if BP_HW_IOEXP_NONE
+    return gpio_get(CURRENT_RESET) | (gpio_get(CURRENT_EN) << 1) | (gpio_get(CURRENT_EN_OVERRIDE) << 2);
+#else
+    return 0;
+#endif
+}
+
 uint32_t psu_enable(float volts, float current, bool current_limit_override, uint8_t undervoltage_percent) {
 
     // setup the config struct
@@ -373,6 +387,7 @@ uint32_t psu_enable(float volts, float current, bool current_limit_override, uin
     psu_status.error_undervoltage = false;
     psu_status.error_pending = false;
 
+    psu_status.last_fuse_sample_valid = false;
     psu_set_v(volts, &psu_status);
     if (!current_limit_override) {
         psu_set_i(current, &psu_status);
@@ -382,20 +397,32 @@ uint32_t psu_enable(float volts, float current, bool current_limit_override, uin
 
     psu_set_undervoltage_limit(&psu_status, undervoltage_percent);
 
-    // printf("V dac: 0x%04X I dac: 0x%04X\r\n",psu_status.voltage_dac_value, psu_status.current_dac_value);
-    // start with override engaged because the inrush will often trip the fuse on low limits
+    // 1. Start with override engaged to power output and absorb inrush
     psu_current_limit_override(true);
-    psu_dac_set(psu_status.voltage_dac_value, PWM_TOP);
-    psu_fuse_reset();
+    psu_dac_set(psu_status.voltage_dac_value, psu_status.current_dac_value);
     psu_vreg_enable(true);
-    busy_wait_ms(10);
+    // Allow capacitors to charge and inrush current to settle (50ms)
+    busy_wait_ms(50);
 
-    // after some settling time, engage the current limit system
+    // 2. Reset the fuse latch now that inrush has settled to 0mA
+    psu_fuse_reset();
+    busy_wait_ms(5);
+
+    psu_status.startup_controls = psu_control_levels();
+    psu_status.startup_vreg_adc = amux_read(HW_ADC_MUX_VREG_OUT);
+    psu_status.startup_vout_adc = amux_read(HW_ADC_MUX_VREF_VOUT);
+    psu_status.startup_current_adc = amux_read_current();
+    psu_status.startup_fuse_adc = amux_read(HW_ADC_MUX_CURRENT_DETECT);
+
+    // 3. After settling time, engage normal current limit system if override not requested
     if (!current_limit_override) {
         psu_current_limit_override(false);
-        psu_dac_set(psu_status.voltage_dac_value, psu_status.current_dac_value);
-        busy_wait_ms(500);
+        busy_wait_ms(50);
         if (!psu_fuse_ok()) { // did the fuse blow?
+            psu_status.fault_controls = psu_control_levels();
+            psu_status.fault_vreg_adc = amux_read(HW_ADC_MUX_VREG_OUT);
+            psu_status.fault_vout_adc = amux_read(HW_ADC_MUX_VREF_VOUT);
+            psu_status.fault_current_adc = amux_read_current();
             psu_disable();
             return PSU_ERROR_FUSE_TRIPPED;
         }
@@ -440,6 +467,13 @@ void psu_init(void) {
         gpio_set_function(CURRENT_EN_OVERRIDE, GPIO_FUNC_SIO);
         gpio_set_dir(CURRENT_EN_OVERRIDE, GPIO_OUT);
         gpio_put(CURRENT_EN_OVERRIDE, 0);
+
+#ifdef CURRENT_FUSE_DETECT
+        gpio_set_function(CURRENT_FUSE_DETECT, GPIO_FUNC_SIO);
+        gpio_set_dir(CURRENT_FUSE_DETECT, GPIO_IN);
+        gpio_set_input_enabled(CURRENT_FUSE_DETECT, true);
+        gpio_pull_up(CURRENT_FUSE_DETECT);
+#endif
         #endif
 
         // pin and PWM setup

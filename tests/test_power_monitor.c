@@ -20,6 +20,10 @@
 
 // Hardware stubs and variables for host execution
 uint16_t s_mock_adc_val = 1000;
+uint16_t s_mock_current_amux_channel = 0;
+uint16_t s_mock_channel_adc[16] = {0};
+bool s_mock_use_channel_adc = false;
+bool s_mock_gpio_fuse_tripped = false;
 static spin_lock_t s_mock_spin_lock = 0;
 
 static int8_t s_test_core_id = 0;
@@ -222,15 +226,19 @@ static void test_psu_overcurrent_job_abort(void) {
     psu_status.error_undervoltage = false;
     psu_status.error_pending = false;
     psu_status.undervoltage_limit_adc = 500;
-    s_mock_adc_val = 1000; // Normal reading > 300
+    s_mock_use_channel_adc = true;
+    s_mock_channel_adc[HW_ADC_MUX_CURRENT_DETECT] = 2000; // Normal fuse ADC (> 300)
+    s_mock_channel_adc[HW_ADC_MUX_VREF_VOUT] = 1000;    // Normal Vout (> 500)
+    s_mock_gpio_fuse_tripped = false;                    // GPIO high = fuse OK
 
     // Normal poll with fuse OK: no error
     assert(!psu_poll_fuse_vout_error());
     assert(psu_status.enabled == true);
     assert(bp_job_get_active_id() == job_id);
 
-    // Simulate overcurrent fuse blowing (ADC read <= 300)
-    s_mock_adc_val = 50;
+    // Simulate overcurrent fuse blowing (ADC read < 300, GPIO low = fuse tripped)
+    s_mock_channel_adc[HW_ADC_MUX_CURRENT_DETECT] = 80;
+    s_mock_gpio_fuse_tripped = true;
     bool error_detected = psu_poll_fuse_vout_error();
     assert(error_detected == true);
 
@@ -238,6 +246,8 @@ static void test_psu_overcurrent_job_abort(void) {
     assert(psu_status.enabled == false);
     assert(psu_status.error_overcurrent == true);
     assert(psu_status.error_pending == true);
+    assert(psu_status.last_fuse_sample_valid);
+    assert(psu_status.last_fuse_adc == 80);
 
     // Verify cancellation was immediately requested on the active job
     assert(bp_job_check_cancelled() == true);
@@ -275,26 +285,29 @@ static void test_psu_undervoltage_debounce_and_trip(void) {
     psu_status.error_pending = false;
     psu_status.undervoltage_limit_override = false;
     psu_status.undervoltage_limit_adc = 500;
-    s_mock_adc_val = 1000; // Normal reading
+    s_mock_use_channel_adc = true;
+    s_mock_channel_adc[HW_ADC_MUX_CURRENT_DETECT] = 2000; // Normal fuse (> 300)
+    s_mock_channel_adc[HW_ADC_MUX_VREF_VOUT] = 1000;    // Normal Vout (> 500)
+    s_mock_gpio_fuse_tripped = false;
 
     // Initial check: all OK
     assert(!psu_poll_fuse_vout_error());
     assert(psu_status.enabled == true);
 
     // Case 1: Transient dip (2 cycles below limit) should NOT trip PSU due to debouncing
-    s_mock_adc_val = 400; // Below 500 limit, but above fuse threshold (300)
+    s_mock_channel_adc[HW_ADC_MUX_VREF_VOUT] = 400; // Below 500 limit
     assert(!psu_poll_fuse_vout_error()); // fail_count = 1 -> no trip
     assert(psu_status.enabled == true);
     assert(!psu_poll_fuse_vout_error()); // fail_count = 2 -> no trip
     assert(psu_status.enabled == true);
 
     // Reading recovers to normal: debounce counter must reset
-    s_mock_adc_val = 1000;
+    s_mock_channel_adc[HW_ADC_MUX_VREF_VOUT] = 1000;
     assert(!psu_poll_fuse_vout_error()); // recovered -> fail_count = 0
     assert(psu_status.enabled == true);
 
     // Case 2: Persistent undervoltage / short-circuit (4 consecutive cycles below threshold)
-    s_mock_adc_val = 400;
+    s_mock_channel_adc[HW_ADC_MUX_VREF_VOUT] = 400;
     assert(!psu_poll_fuse_vout_error()); // cycle 1: fail_count = 1
     assert(psu_status.enabled == true);
     assert(!psu_poll_fuse_vout_error()); // cycle 2: fail_count = 2

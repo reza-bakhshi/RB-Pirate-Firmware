@@ -216,7 +216,6 @@ static void main_system_initialization(void) {
     // configure the defaults for shift register attached hardware
     shift_clear_set_wait(CURRENT_EN_OVERRIDE, (AMUX_S3 | AMUX_S1 | CURRENT_EN));
 #elif (BP_HW_IOEXP_NONE)
-    // todo: current detect
     gpio_setup(CURRENT_RESET, GPIO_OUT, 1);
     gpio_setup(CURRENT_EN_OVERRIDE, GPIO_OUT, 0);
     gpio_setup(AMUX_S0, GPIO_OUT, 0);
@@ -224,6 +223,11 @@ static void main_system_initialization(void) {
     gpio_setup(AMUX_S2, GPIO_OUT, 0);
     gpio_setup(AMUX_S3, GPIO_OUT, 1);
     gpio_setup(CURRENT_EN, GPIO_OUT, 1);
+#ifdef CURRENT_FUSE_DETECT
+    gpio_setup(CURRENT_FUSE_DETECT, GPIO_IN, 0);
+    gpio_set_input_enabled(CURRENT_FUSE_DETECT, true);
+    gpio_pull_up(CURRENT_FUSE_DETECT);
+#endif
     gpio_setup(LA_BPIO0, GPIO_IN, 0);
     gpio_setup(LA_BPIO1, GPIO_IN, 0);
     gpio_setup(LA_BPIO2, GPIO_IN, 0);

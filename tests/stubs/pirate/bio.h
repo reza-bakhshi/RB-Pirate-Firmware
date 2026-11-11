@@ -27,6 +27,9 @@ static inline void bio_input(uint8_t bio) { (void)bio; }
 static inline void bio_put(uint8_t bio, bool val) { (void)bio; (void)val; }
 static inline void gpio_set_outover(unsigned int pin, unsigned int val) { (void)pin; (void)val; }
 static inline void gpio_set_inover(unsigned int pin, unsigned int val) { (void)pin; (void)val; }
+#ifndef _BP_GPIO_GET_DEFINED
+#define _BP_GPIO_GET_DEFINED
 static inline bool gpio_get(unsigned int pin) { (void)pin; return true; }
+#endif
 
 #endif

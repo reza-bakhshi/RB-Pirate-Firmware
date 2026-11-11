@@ -44,6 +44,12 @@ struct psu_status_t {
     uint16_t undervoltage_limit_adc;     ///< Undervoltage limit as raw ADC counts for fast comparison
     bool current_limit_override;         ///< true if current limiting is disabled
     bool undervoltage_limit_override;    ///< true if undervoltage monitoring is disabled
+    uint16_t startup_vreg_adc, startup_vout_adc, startup_current_adc, startup_fuse_adc;
+    uint16_t fault_vreg_adc, fault_vout_adc, fault_current_adc;
+    uint8_t startup_controls, fault_controls;
+    uint16_t last_fuse_adc;             ///< Raw fuse ADC from last actual fuse check, retained after shutdown
+    bool last_fuse_sample_valid;        ///< A fuse sample has been taken since last enable attempt
+    bool last_fuse_gpio;                ///< Direct fuse input at the same check (diagnostic only)
     bool enabled;                        ///< true if PSU is currently enabled
     bool error_overcurrent;              ///< true if overcurrent fault detected
     bool error_undervoltage;             ///< true if undervoltage fault detected
@@ -60,6 +66,8 @@ extern struct psu_status_t psu_status;
  * @note Must be called before any other PSU operations.
  */
 void psu_init(void);
+
+void psu_dac_set(uint16_t v_dac, uint16_t i_dac);
 
 /**
  * @brief Enable PSU with specified voltage, current limit, and protection settings.

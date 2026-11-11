@@ -3,6 +3,7 @@
  * @brief Central toolbar registry and layout manager implementation.
  */
 
+/* Legacy update_core1 callback fields now execute on Core 0. */
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -13,6 +14,7 @@
 #include "ui/ui_term.h"
 #include "ui/ui_toolbar.h"
 #include "usb_tx.h"
+#include "services/bp_control.h"
 #include "tusb.h"
 #include "pirate/intercore_helpers.h"
 #include "lib/vt100_keys/vt100_keys.h"
@@ -20,10 +22,10 @@
 static toolbar_t* toolbar_registry[TOOLBAR_MAX_COUNT];
 static uint8_t toolbar_count = 0;
 
-/* ── Core1 state (declared early so toolbar_draw_prepare can reference) ───── */
+/* ── control service state (declared early so toolbar_draw_prepare can reference) ───── */
 
 /**
- * @brief Core1 toolbar-update states.
+ * @brief control service toolbar-update states.
  * @details IDLE → RENDERING → DRAINING → RENDERING → … → IDLE
  */
 enum {
@@ -114,7 +116,7 @@ void toolbar_teardown(toolbar_t* tb) {
 
     /* Redraw all remaining toolbars at their new positions.
      * We're inside a prepare/release envelope (pause=true), so only
-     * paint Core0 toolbars here.  Core1 toolbars are kicked after
+     * paint Core0 toolbars here.  control service toolbars are kicked after
      * draw_release() lifts the pause. */
     bool need_core1_update = false;
     uint16_t width = system_config.terminal_ansi_columns;
@@ -251,18 +253,18 @@ void toolbar_redraw_all(void) {
             /* Note: don't call toolbar_update_blocking() per-toolbar here.
              * We're inside a prepare/release envelope (pause=true), so the
              * periodic path won't fire.  A single blocking call after the
-             * loop handles all Core1 toolbars in one cycle. */
+             * loop handles all control service toolbars in one cycle. */
             need_core1_update = true;
         }
     }
 
     ui_term_cursor_restore();
-    toolbar_draw_release();     /* clears pause — Core1 can run again */
+    toolbar_draw_release();     /* clears pause — control service can run again */
 
-    /* Now that pause is lifted, kick one full Core1 render cycle.
-     * toolbar_update_blocking() sends BP_ICM_UPDATE_TOOLBARS to Core1,
-     * which calls toolbar_core1_begin_update(UI_UPDATE_ALL).  The state
-     * machine iterates all Core1 toolbars in subsequent service() calls. */
+    /* Now that pause is lifted, kick one full control service render cycle.
+     * toolbar_update_blocking() executes BP_ICM_UPDATE_TOOLBARS on Core 0,
+     * which calls toolbar_begin_update(UI_UPDATE_ALL).  The state
+     * machine iterates all control service toolbars in subsequent service() calls. */
     if (need_core1_update) {
         toolbar_update_blocking();
     }
@@ -270,16 +272,17 @@ void toolbar_redraw_all(void) {
 
 void toolbar_draw_prepare(void) {
     system_config.terminal_toolbar_pause = true;
-    /* Spin until Core1 finishes any in-progress render cycle.
+    /* Spin until control service finishes any in-progress render cycle.
      * Setting toolbar_pause above prevents new cycles from starting;
      * we just need to wait for a running one to reach TB_C1_IDLE.
      * Timeout after ~50 ms to avoid freezing Core0 if USB CDC has
-     * backpressure and Core1 is stuck draining tx_tb_buf. */
+     * backpressure and control service is stuck draining tx_tb_buf. */
     absolute_time_t deadline = make_timeout_time_ms(50);
     while (tb_c1_state != TB_C1_IDLE) {
         if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
-            break; /* timed out — proceed anyway, Core1 will catch up */
+            break; /* timed out — proceed anyway, control service will catch up */
         }
+        bp_control_poll();
         tight_loop_contents();
     }
     system_config.terminal_hide_cursor = true;
@@ -324,7 +327,7 @@ void toolbar_print_registry(void) {
     for (uint8_t i = 0; i < toolbar_count; i++) {
         toolbar_t* tb = toolbar_registry[i];
         uint16_t start = toolbar_get_start_row(tb);
-        printf("  [%u] \"%s\"  height=%u  enabled=%u  row=%u..%u  draw=%s  core1=%s\r\n",
+        printf("  [%u] \"%s\"  height=%u  enabled=%u  row=%u..%u  draw=%s  periodic=%s\r\n",
                i, tb->def->name, tb->height, tb->enabled,
                start, start + tb->height - 1,
                tb->def->draw ? "yes" : "no",
@@ -338,9 +341,9 @@ void toolbar_update_blocking(void) {
     if (!tud_cdc_n_connected(0)) return;
     icm_core0_send_message_synchronous(BP_ICM_UPDATE_TOOLBARS);
 }
-/* ── Core1 cooperative state machine ──────────────────────────────────── */
+/* ── control service cooperative state machine ──────────────────────────────────── */
 
-void toolbar_core1_begin_update(uint32_t update_flags) {
+void toolbar_begin_update(uint32_t update_flags) {
     if (tb_c1_state != TB_C1_IDLE) {
         return; /* previous cycle still running — skip this tick */
     }
@@ -349,7 +352,7 @@ void toolbar_core1_begin_update(uint32_t update_flags) {
     tb_c1_state = TB_C1_RENDERING;
 }
 
-void toolbar_core1_service(void) {
+void toolbar_service(void) {
     if (tb_c1_state == TB_C1_IDLE) {
         return;
     }
@@ -364,7 +367,7 @@ void toolbar_core1_service(void) {
         /* fall through to RENDERING */
     }
 
-    /* RENDERING: find the next toolbar with a Core1 callback and render it. */
+    /* RENDERING: find the next toolbar with a control service callback and render it. */
     if (!tud_cdc_n_connected(0)) {
         tb_c1_state = TB_C1_IDLE;
         return; /* no USB connection — abort cycle */

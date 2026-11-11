@@ -54,6 +54,15 @@ uint32_t adc_get_nest_count(void) {
  * 
  * @param enable true to acquire lock, false to release
  */
+bool adc_try_acquire(void) {
+    int8_t core = (int8_t)get_core_num();
+    uint32_t save = spin_lock_blocking(adc_spin_lock);
+    bool acquired = s_adc_owner_core == -1;
+    if (acquired) { s_adc_owner_core = core; s_adc_nest_count++; }
+    spin_unlock(adc_spin_lock, save);
+    return acquired;
+}
+
 void adc_busy_wait(bool enable) {
     int8_t core = (int8_t)get_core_num();
 

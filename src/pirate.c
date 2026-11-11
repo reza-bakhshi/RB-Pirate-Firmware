@@ -21,6 +21,7 @@
 #include "pirate/button.h"
 #include "pirate/storage.h"
 #include "services/bp_storage.h"
+#include "services/bp_control.h"
 #include "pirate/amux.h"
 #include "pirate/mcu.h"
 #include "ui/ui_init.h"
@@ -44,6 +45,9 @@
 #include "ui/ui_statusbar.h"
 #include "ui/ui_toolbar.h"
 #include "lib/vt100_keys/vt100_keys.h"
+static void core0_control_poll(void);
+static bool core0_control_request(uint8_t request);
+
 
 
 #include "tusb.h"
@@ -396,6 +400,11 @@ static void main_system_initialization(void) {
     BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
         "Init: Launching Core1\n"
         );
+    /* Install USB and timer IRQs on their control-core owner. */
+    if (system_config.terminal_usb_enable || system_config.binmode_usb_rx_queue_enable) tusb_init();
+    if (system_config.terminal_uart_enable) rx_uart_init_irq();
+    system_tick_enable(BP_SYSTEM_TICK_MS);
+    bp_control_init(core0_control_poll, core0_control_request);
     multicore_launch_core1(core1_entry);
 
     // turn everything off
@@ -470,6 +479,7 @@ static void core0_infinite_loop(void) {
     while (1) {
         bp_watchdog_heartbeat(0);
         bp_watchdog_service();
+        bp_control_poll();
         bp_service(0);
 
         static bool clean_uptime_checked = false;
@@ -479,8 +489,7 @@ static void core0_infinite_loop(void) {
         }
 
         // co-op multitask **when not actively doing anything**
-        // core 2 handles USB and other sensitive stuff, so it's not critical to co-op multitask
-        // but the terminal will not be responsive if the service is blocking
+        // USB and monitoring are pumped by bounded I/O waits on Core 0.
         binmode_service();
 
         //if not connected to a terminal, then check for button presses to allow user to execute button scripts without a terminal connected
@@ -752,7 +761,7 @@ int main(void) {
 }
 
 // Periodic service flag, set by the timer and serviced outside interrupt context.
-bool system_tick_request = false;
+volatile bool system_tick_request = false;
 
 // begin of code execution for the second core (core1)
 static void core1_initialization(void) {
@@ -780,30 +789,6 @@ static void core1_initialization(void) {
     // OK, system_config is valid (loaded from storage, if available)
     // //////////////////////////////////////////////////////////////////////
 
-    if (system_config.terminal_usb_enable) {
-        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
-            "Init: Core1: tusb_init()\n"
-            );
-        tusb_init();
-    } else {
-        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_WARNING, BP_DEBUG_CAT_EARLY_BOOT,
-            "Init: Core1: USB ***DISABLED*** by config\n"
-            );
-    }
-
-    BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
-        "Init: Core1: system_tick_enable()\n"
-        );
-    system_tick_enable(BP_SYSTEM_TICK_MS);
-
-    // terminal debug uart enable
-    if (system_config.terminal_uart_enable) {
-        BP_DEBUG_PRINT(BP_DEBUG_LEVEL_WARNING, BP_DEBUG_CAT_EARLY_BOOT,
-            "Init: Core1: UART terminal ***ENABLED*** by config\n"
-            );
-        rx_uart_init_irq();
-    }
-
     BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
         "Init: Core1: icm_core1_notify_completion(0x%08x)\n",
         raw_init_message.raw
@@ -818,7 +803,7 @@ static void assert_error()
 
 static void tud_cdc_rx_task() {
 
-    BP_ASSERT_CORE1(); // RX FIFO (whether from UART, CDC, RTT, ...) should only be added to from core1 (deadlock risk)
+    BP_ASSERT_CORE0(); // RX FIFO (whether from UART, CDC, RTT, ...) is produced by the Core 0 control pump
 
     uint8_t buf[64];
     uint32_t available = 0;
@@ -834,6 +819,82 @@ static void tud_cdc_rx_task() {
         }
     }
 }
+/* Core 0 alone owns USB tasks/IRQs, UART ingress, UI and monitoring. */
+static void core0_control_poll(void) {
+    BP_ASSERT_CORE0();
+    bp_watchdog_heartbeat(0);
+    bp_watchdog_service();
+    if (blockdev_is_busy()) return; /* No nested MSC callback into storage. */
+    // service (thread safe) tinyusb tasks
+    if (system_config.terminal_usb_enable || system_config.binmode_usb_rx_queue_enable) {
+        tud_task(); // tinyusb device task
+        tud_cdc_rx_task();
+    }
+
+    // service the terminal TX queue
+    tx_fifo_service();
+    // service one step of the toolbar control state machine
+    toolbar_service();
+    // service the binary mode transport queues
+    bp_bin_transport_usb_service();
+    // also receive input from RTT, if available
+    rx_uart_service();
+    rx_from_rtt_terminal();
+
+    if (adc_try_acquire()) {
+        bool fault = psu_poll_fuse_vout_error();
+        adc_busy_wait(false);
+        if (fault) psucmd_irq_callback();
+    }
+
+    if (system_tick_request) {
+        monitor(); // TODO: fix monitor to return bool up_volts and up_current
+        uint32_t update_flags = 0;
+        if (system_config.pin_changed) {
+            update_flags |= UI_UPDATE_LABELS | UI_UPDATE_VOLTAGES; // pin labels + values (type may have changed)
+        }
+        if (monitor_voltage_changed()) {
+            update_flags |= UI_UPDATE_VOLTAGES; // pin voltages
+        }
+        if (psu_status.enabled && monitor_current_changed()) {
+            update_flags |= UI_UPDATE_CURRENT; // psu current sense
+        }
+        if (system_config.info_bar_changed) {
+            update_flags |= UI_UPDATE_INFOBAR; // info bar
+        }
+
+        if (system_config.terminal_ansi_color &&
+            toolbar_count_registered() &&
+            !system_config.terminal_toolbar_pause) {
+            toolbar_begin_update(update_flags);
+        }
+
+        #ifdef BP_HW_STORAGE_TFCARD
+            bool card_present = (hw_adc_raw[HW_ADC_MUX_CARD_DETECT] < 100);
+            bp_storage_notify_card_detect(card_present);
+        #endif
+
+        freq_measure_period_irq(); // update frequency periodically
+        monitor_reset();
+        system_tick_request = false;
+    }
+
+
+}
+
+static bool core0_control_request(uint8_t request) {
+    BP_ASSERT_CORE0();
+    switch (request) {
+        case BP_ICM_UPDATE_TOOLBARS: toolbar_begin_update(UI_UPDATE_ALL); break;
+        case BP_ICM_DISABLE_SYSTEM_TICK: system_tick_disable(); system_tick_request = false; break;
+        case BP_ICM_ENABLE_SYSTEM_TICK: system_tick_enable(BP_SYSTEM_TICK_MS); system_tick_request = true; break;
+        case BP_ICM_ENABLE_RGB_UPDATES: rgb_irq_enable(false); break;
+        case BP_ICM_DISABLE_RGB_UPDATES: rgb_irq_enable(true); break;
+        default: return false;
+    }
+    return true;
+}
+
 static void core1_infinite_loop(void) {
 
     //uint32_t core0_requested_update_flags = 0;
@@ -841,83 +902,6 @@ static void core1_infinite_loop(void) {
         bp_watchdog_heartbeat(1);
         bp_service(1);
 
-        // service (thread safe) tinyusb tasks
-        if (system_config.terminal_usb_enable || system_config.binmode_usb_rx_queue_enable) {
-            tud_task(); // tinyusb device task
-            tud_cdc_rx_task();
-        }
-
-        // service the terminal TX queue
-        tx_fifo_service();
-        // service one step of the toolbar Core1 state machine
-        toolbar_core1_service();
-        // service the binary mode transport queues
-        bp_bin_transport_usb_service();
-        // also receive input from RTT, if available
-        rx_from_rtt_terminal();
-
-        if (psu_poll_fuse_vout_error()) {
-            psucmd_irq_callback();
-        }
-
-        if (system_tick_request) {
-            monitor(); // TODO: fix monitor to return bool up_volts and up_current
-            uint32_t update_flags = 0;
-            if (system_config.pin_changed) {
-                update_flags |= UI_UPDATE_LABELS | UI_UPDATE_VOLTAGES; // pin labels + values (type may have changed)
-            }
-            if (monitor_voltage_changed()) {
-                update_flags |= UI_UPDATE_VOLTAGES; // pin voltages
-            }
-            if (psu_status.enabled && monitor_current_changed()) {
-                update_flags |= UI_UPDATE_CURRENT; // psu current sense
-            }
-            if (system_config.info_bar_changed) {
-                update_flags |= UI_UPDATE_INFOBAR; // info bar
-            }
-
-            if (system_config.terminal_ansi_color &&
-                toolbar_count_registered() &&
-                !system_config.terminal_toolbar_pause) {
-                toolbar_core1_begin_update(update_flags);
-            }
-
-            #ifdef BP_HW_STORAGE_TFCARD
-                bool card_present = (hw_adc_raw[HW_ADC_MUX_CARD_DETECT] < 100);
-                bp_storage_notify_card_detect(card_present);
-            #endif
-
-            freq_measure_period_irq(); // update frequency periodically
-            monitor_reset();
-            system_tick_request = false;
-        }
-
-        // service any requests with priority
-        while (multicore_fifo_rvalid()) {
-            bp_icm_raw_message_t raw_message = icm_core1_get_raw_message();
-            switch (get_embedded_message(raw_message)) {
-                case BP_ICM_UPDATE_TOOLBARS:
-                    toolbar_core1_begin_update(UI_UPDATE_ALL);
-                    break;
-                case BP_ICM_DISABLE_SYSTEM_TICK:
-                    system_tick_disable();
-                    system_tick_request = false;
-                    break;
-                case BP_ICM_ENABLE_SYSTEM_TICK:
-                    system_tick_enable(BP_SYSTEM_TICK_MS);
-                    system_tick_request = true;
-                    break;
-                case BP_ICM_ENABLE_RGB_UPDATES:
-                    rgb_irq_enable(false);
-                    break;
-                case BP_ICM_DISABLE_RGB_UPDATES:
-                    rgb_irq_enable(true);
-                    break;
-                default:
-                    break;
-            }
-            icm_core1_notify_completion(raw_message);
-        }
 
     } // while(1)
 }

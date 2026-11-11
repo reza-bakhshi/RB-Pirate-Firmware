@@ -18,6 +18,8 @@
 #include "syntax_internal.h"
 #include "pirate/bio.h"
 #include "pirate/amux.h"
+#include "pirate/watchdog.h"
+#include "kernel/bp_job.h"
 
 // #define SYNTAX_DEBUG
 
@@ -42,6 +44,12 @@ static void syntax_run_write(struct _syntax_io *io, uint32_t pos) {
         return;
     }
     for (uint32_t j = 0; j < io->out[pos].repeat; j++) {
+        bp_watchdog_heartbeat(1);
+        if (bp_job_check_cancelled()) {
+            io->in[io->in_cnt].error = SERR_ERROR;
+            io->in[io->in_cnt].error_message = "Cancelled";
+            return;
+        }
         if (j > 0) {
             io->in_cnt++;
             io->in[io->in_cnt] = io->out[pos];
@@ -61,6 +69,12 @@ static void syntax_run_read(struct _syntax_io *io, uint32_t pos) {
            io->out[pos].repeat, pos, io->out[pos].command);
 #endif
     for (uint32_t j = 0; j < io->out[pos].repeat; j++) {
+        bp_watchdog_heartbeat(1);
+        if (bp_job_check_cancelled()) {
+            io->in[io->in_cnt].error = SERR_ERROR;
+            io->in[io->in_cnt].error_message = "Cancelled";
+            return;
+        }
         if (j > 0) {
             io->in_cnt++;
             io->in[io->in_cnt] = io->out[pos];
@@ -94,7 +108,11 @@ static void syntax_run_delay_us(struct _syntax_io *io, uint32_t pos) {
 }
 
 static void syntax_run_delay_ms(struct _syntax_io *io, uint32_t pos) {
-    busy_wait_ms(io->out[pos].repeat);
+    for (uint32_t ms = 0; ms < io->out[pos].repeat; ms++) {
+        if (bp_job_check_cancelled()) return;
+        bp_watchdog_heartbeat(1);
+        busy_wait_ms(1);
+    }
 }
 
 static inline void _syntax_run_aux_output(uint8_t bio, bool direction) {
@@ -125,6 +143,12 @@ static void syntax_run_adc(struct _syntax_io *io, uint32_t pos) {
 
 static void syntax_run_tick_clock(struct _syntax_io *io, uint32_t pos) {
     for (uint32_t j = 0; j < io->out[pos].repeat; j++) {
+        bp_watchdog_heartbeat(1);
+        if (bp_job_check_cancelled()) {
+            io->in[io->in_cnt].error = SERR_ERROR;
+            io->in[io->in_cnt].error_message = "Cancelled";
+            return;
+        }
         modes[system_config.mode].protocol_tick_clock(&io->in[io->in_cnt], NULL);
     }
 }
@@ -147,6 +171,12 @@ static void syntax_run_set_dat_low(struct _syntax_io *io, uint32_t pos) {
 
 static void syntax_run_read_dat(struct _syntax_io *io, uint32_t pos) {
     for (uint32_t j = 0; j < io->out[pos].repeat; j++) {
+        bp_watchdog_heartbeat(1);
+        if (bp_job_check_cancelled()) {
+            io->in[io->in_cnt].error = SERR_ERROR;
+            io->in[io->in_cnt].error_message = "Cancelled";
+            return;
+        }
         modes[system_config.mode].protocol_bitr(&io->in[io->in_cnt], NULL);
     }
 }
@@ -185,6 +215,7 @@ syntax_run_func_ptr_t syntax_run_func[] = {
  */
 
 SYNTAX_STATUS syntax_run(void) {
+    BP_ASSERT_CORE1();
     if (!syntax_io.out_cnt) {
         return SSTATUS_ERROR;
     }
@@ -192,6 +223,8 @@ SYNTAX_STATUS syntax_run(void) {
     syntax_io.in_cnt = 0;
 
     for (uint32_t pos = 0; pos < syntax_io.out_cnt; pos++) {
+        bp_watchdog_heartbeat(1);
+        if (bp_job_check_cancelled()) return SSTATUS_ERROR;
         syntax_io.in[syntax_io.in_cnt] = syntax_io.out[pos];
 
         if (syntax_io.out[pos].command >= count_of(syntax_run_func)) {

@@ -744,6 +744,8 @@ bp_status_t bp_storage_load_mode(const char *filename, const mode_config_t *conf
 #if !defined(BP_HOST_TEST)
 static mutex_t s_blockdev_mutex;
 static bool s_blockdev_mutex_initialized = false;
+static bool s_blockdev_busy;
+bool blockdev_is_busy(void) { return s_blockdev_busy; }
 
 void blockdev_lock_acquire(void) {
     if (!s_blockdev_mutex_initialized) {
@@ -751,14 +753,17 @@ void blockdev_lock_acquire(void) {
         s_blockdev_mutex_initialized = true;
     }
     mutex_enter_blocking(&s_blockdev_mutex);
+    s_blockdev_busy = true;
 }
 
 void blockdev_lock_release(void) {
     if (s_blockdev_mutex_initialized) {
+        s_blockdev_busy = false;
         mutex_exit(&s_blockdev_mutex);
     }
 }
 #else
+bool blockdev_is_busy(void) { return false; }
 void blockdev_lock_acquire(void) {}
 void blockdev_lock_release(void) {}
 #endif

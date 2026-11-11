@@ -18,6 +18,7 @@ void rx_fifo_init(void);
  * @brief Initialize UART receive IRQ.
  */
 void rx_uart_init_irq(void);
+void rx_uart_service(void);
 
 /**
  * @brief Initialize USB receive.

@@ -5,6 +5,7 @@
 #include "command_struct.h"
 #include "pirate/watchdog.h"
 #include "pirate/mem.h"
+#include "services/bp_flatcc_memory.h"
 #include "ui/ui_term.h"
 #include "ui/ui_help.h"
 #include "lib/bp_args/bp_cmd.h"
@@ -92,6 +93,8 @@ void memory_handler(struct command_result* res) {
     printf("  SubGHz Protocols:  Static Pool (64 decoders, 4 encoders, zero heap)\r\n");
     printf("  BPIO FlatCC:       Static packet copy buffer (zero heap)\r\n");
     printf("  LCDTap Engine:     Placement new + Big Buffer frame (zero heap)\r\n");
-    printf("  Dynamic Heap:      Not instrumented; legacy builder allocation remains\r\n");
+    printf("  Dynamic Heap:      Not instrumented; FlatCC uses fixed block pools\r\n");
+    printf("  FlatCC pool:       %lu live blocks, %lu allocation failures\r\n",
+           (unsigned long)bp_flatcc_live_blocks(), (unsigned long)bp_flatcc_allocation_failures());
     printf("===================================================================\r\n\r\n");
 }

@@ -69,6 +69,7 @@ void amux_sweep(void);
  * @param enable true to acquire lock, false to release
  */
 void adc_busy_wait(bool enable);
+bool adc_try_acquire(void);
 
 /**
  * @brief Get currently owning core of the ADC lock

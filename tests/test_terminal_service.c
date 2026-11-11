@@ -208,6 +208,18 @@ static void test_idle_input_preservation(void) {
     printf("[PASS] Idle shell input preserved: \"%s\"\n", shell_in);
 }
 
+static void test_job_input_does_not_leak(void) {
+    bp_term_init(); bp_job_subsystem_init();
+    uint32_t id;
+    assert(bp_job_submit("old", 0, 0, dummy_slice_fn, NULL, 1, &id) == BP_STATUS_OK);
+    bp_term_mock_inject_rx('q'); bp_term_service();
+    assert(bp_job_cancel(id) == BP_STATUS_OK); bp_job_service(2);
+    assert(bp_job_submit("next", 0, 0, dummy_slice_fn, NULL, 3, &id) == BP_STATUS_OK);
+    char key;
+    assert(bp_term_job_getc(&key) == BP_STATUS_QUEUE_EMPTY);
+    puts("[PASS] A stale stop key cannot cancel the next protocol transaction");
+}
+
 int main(void) {
     printf("=== Bus Pirate Terminal Service Test Suite ===\n");
     test_terminal_init();
@@ -215,6 +227,7 @@ int main(void) {
     test_core1_text_streaming();
     test_ctrl_c_cancellation_interception();
     test_interactive_job_input_routing();
+    test_job_input_does_not_leak();
     test_idle_input_preservation();
 
     printf("\n=== ALL TERMINAL SERVICE TESTS PASSED ===\n");

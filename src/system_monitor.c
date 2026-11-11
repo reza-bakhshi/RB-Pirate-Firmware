@@ -124,7 +124,9 @@ bool monitor(void) {
         return 0;
     }
 
+    if (!adc_try_acquire()) return false;
     amux_sweep();
+    adc_busy_wait(false);
 
     for (uint8_t i = 0; i < count_of(voltages_value); i++) {
         c = ((*hw_pin_voltage_ordered[i]) / 1000) + 0x30; // TODO: really do the +0x30 here????

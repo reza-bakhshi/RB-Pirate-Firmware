@@ -13,6 +13,7 @@
 #include "ui/ui_help.h"
 #include "pirate/hwspi.h"
 #include "usb_rx.h"
+#include "services/bp_terminal.h"
 #include "pirate/psu.h"
 #include "commands/global/w_psu.h"
 #include "commands/global/p_pullups.h"
@@ -1587,7 +1588,9 @@ static void usb_keylog_cleanup(void* ctx, bp_status_t status) {
 
 static bp_status_t usb_keylog_slice(void* ctx, uint8_t* out_percent) {
     (void)ctx;
-    if (bp_job_check_cancelled()) return BP_STATUS_CANCELLED;
+    char key;
+    if (bp_job_check_cancelled() ||
+        (bp_term_job_getc(&key) == BP_STATUS_OK && (key == 'q' || key == 0x03))) return BP_STATUS_CANCELLED;
     if (keylog_ready) {
         uint32_t irq_state = save_and_disable_interrupts();
         volatile uint32_t *done = keylog_fill;

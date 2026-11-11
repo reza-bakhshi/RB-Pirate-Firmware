@@ -235,6 +235,8 @@ void blockdev_lock_acquire(void);
  * @brief Release block device serialization lock.
  */
 void blockdev_lock_release(void);
+/* Prevent nested USB/MSC callbacks while a storage transfer holds its lock. */
+bool blockdev_is_busy(void);
 
 #ifdef __cplusplus
 }

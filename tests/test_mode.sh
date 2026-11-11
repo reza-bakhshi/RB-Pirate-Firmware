@@ -11,6 +11,7 @@ gcc -O2 -Wall -Wextra -Wno-unused-variable -std=c11 -DBP_HOST_TEST -Isrc \
     src/kernel/bp_config.c \
     src/kernel/bp_resource.c \
     src/kernel/bp_event.c \
+    src/services/bp_control.c \
     src/kernel/bp_kernel.c \
     src/kernel/bp_timer.c \
     src/kernel/bp_work.c \
@@ -33,6 +34,7 @@ gcc -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wno-unused-vari
     src/kernel/bp_config.c \
     src/kernel/bp_resource.c \
     src/kernel/bp_event.c \
+    src/services/bp_control.c \
     src/kernel/bp_kernel.c \
     src/kernel/bp_timer.c \
     src/kernel/bp_work.c \

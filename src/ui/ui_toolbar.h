@@ -51,8 +51,8 @@ typedef struct toolbar_def {
     void (*draw)(toolbar_t* tb, uint16_t start_row, uint16_t width);
 
     /**
-     * @brief Core1 periodic update — render into a buffer (no printf!).
-     * @details Called from the Core1 toolbar state machine.  Must use only
+     * @brief Core 0 control service periodic update — render into a buffer (no printf!).
+     * @details Called from the Core 0 control service toolbar state machine.  Must use only
      *          `_buf()` variants and snprintf.  Cursor save/hide and
      *          restore/show are handled by the caller.
      * @param tb           This toolbar.
@@ -166,7 +166,7 @@ void toolbar_apply_scroll_region(void);
 void toolbar_redraw_all(void);
 
 /**
- * @brief Pause Core1 toolbar updates and hide the cursor.
+ * @brief Pause Core 0 control service toolbar updates and hide the cursor.
  * @details Pauses the statusbar update loop, waits 1 ms for any in-flight
  *          render to drain, then hides the cursor.  Pairs with
  *          toolbar_draw_release().  Used by any Core0 code that needs to
@@ -175,20 +175,20 @@ void toolbar_redraw_all(void);
 void toolbar_draw_prepare(void);
 
 /**
- * @brief Resume Core1 toolbar updates and restore the cursor.
+ * @brief Resume Core 0 control service toolbar updates and restore the cursor.
  * @details Undoes toolbar_draw_prepare().
  */
 void toolbar_draw_release(void);
 
 /**
- * @brief Pause Core1 toolbar updates (no cursor change).
+ * @brief Pause Core 0 control service toolbar updates (no cursor change).
  * @details Used by subsystems (bridges, monitors, progress bars) that stream
  *          raw data and need to prevent VT100 escape interleaving.
  */
 void toolbar_pause_updates(void);
 
 /**
- * @brief Resume Core1 toolbar updates (no cursor change).
+ * @brief Resume Core 0 control service toolbar updates (no cursor change).
  * @details Undoes toolbar_pause_updates().
  */
 void toolbar_resume_updates(void);
@@ -200,29 +200,28 @@ void toolbar_print_registry(void);
 
 /**
  * @brief Request a full toolbar update from Core0 (blocking).
- * @details Sends BP_ICM_UPDATE_TOOLBARS to Core1 which kicks the
- *          cooperative state machine with UI_UPDATE_ALL.  Core0 blocks
- *          until Core1 acknowledges receipt (not until rendering completes).
+ * @details Executes the control request locally and starts a buffered update
+ *          with UI_UPDATE_ALL. Returns before queued rendering finishes.
  */
 void toolbar_update_blocking(void);
 
 /**
- * @brief Begin a Core1 toolbar update cycle.
- * @details Called from the Core1 main loop when the periodic system tick fires.
+ * @brief Begin a Core 0 control service toolbar update cycle.
+ * @details Called from the Core 0 control service main loop when the periodic system tick fires.
  *          Starts the cooperative state machine that renders each toolbar
  *          with a `.update_core1` callback, one per service call.
  * @param update_flags  UI_UPDATE_* bitmask from the monitor subsystem.
  */
-void toolbar_core1_begin_update(uint32_t update_flags);
+void toolbar_begin_update(uint32_t update_flags);
 
 /**
- * @brief Service one step of the Core1 toolbar state machine.
- * @details Call every iteration of the Core1 main loop (after tx_fifo_service).
+ * @brief Service one step of the Core 0 control service toolbar state machine.
+ * @details Call every iteration of the Core 0 control service main loop (after tx_fifo_service).
  *          - IDLE: returns immediately.
  *          - RENDERING: renders the next toolbar into tx_tb_buf, starts drain.
  *          - DRAINING: checks if drain is complete, advances to next toolbar.
  */
-void toolbar_core1_service(void);
+void toolbar_service(void);
 
 /**
  * @brief Find the next focusable toolbar in the registry.

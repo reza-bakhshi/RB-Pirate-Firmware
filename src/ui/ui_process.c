@@ -17,12 +17,26 @@
 #include "lib/bp_args/bp_cmd.h"
 #include "string.h"
 #include "syntax.h"
+#include "services/bp_protocol_call.h"
 #include "pirate/intercore_helpers.h"
 #include "binmode/binmodes.h"
 #include "binmode/fala.h"
 
 // const structs are init'd with 0s, we'll make them here and copy in the main loop
 static const struct command_result result_blank;
+
+static bp_status_t syntax_transaction(void* ctx, uint8_t* percent) {
+    BP_ASSERT_CORE1();
+    *(SYNTAX_STATUS*)ctx = syntax_run();
+    if (modes[system_config.mode].protocol_wait_done) modes[system_config.mode].protocol_wait_done();
+    *percent = 100;
+    if (bp_job_check_cancelled()) {
+        struct _bytecode stop = {0};
+        if (modes[system_config.mode].protocol_stop) modes[system_config.mode].protocol_stop(&stop, NULL);
+        return BP_STATUS_CANCELLED;
+    }
+    return BP_STATUS_OK;
+}
 
 SYNTAX_STATUS ui_process_syntax(void) {
 
@@ -40,11 +54,7 @@ SYNTAX_STATUS ui_process_syntax(void) {
     // follow along logic analyzer hook
     fala_start_hook();
 
-    result = syntax_run();
-
-    if (modes[system_config.mode].protocol_wait_done) {
-        modes[system_config.mode].protocol_wait_done();
-    }
+    if (bp_protocol_call("syntax", syntax_transaction, &result) != BP_STATUS_OK) result = SSTATUS_ERROR;
 
     // follow along logic analyzer hook
     fala_stop_hook();

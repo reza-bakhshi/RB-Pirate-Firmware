@@ -78,6 +78,14 @@ if printf "%s\n" "$symbols" | grep -E ' U (malloc|calloc|realloc|free|strdup|ope
     exit 1
 fi
 
+# All FlatCC runtime backends, including aligned finalization, must use fixed pools.
+echo "[CHECK] FlatCC runtime heap elimination..."
+symbols=$(arm-none-eabi-nm -u "$OBJDIR/builder.c.o" "$OBJDIR/emitter.c.o" "$OBJDIR/refmap.c.o" "$OBJDIR/json_parser.c.o" "$OBJDIR/json_printer.c.o")
+if printf "%s\n" "$symbols" | grep -E ' U (malloc|calloc|realloc|free|aligned_alloc|aligned_free|posix_memalign)$'; then
+    echo "FAIL: FlatCC runtime references libc heap"
+    exit 1
+fi
+
 # 7. Verify static RAM consumption <= 380 KB budget (389,120 bytes)
 sections=$(arm-none-eabi-size -A "$ELF")
 # Include vector table, alignment gaps and reserved heap; exclude scratch stacks.

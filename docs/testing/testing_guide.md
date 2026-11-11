@@ -48,3 +48,19 @@ It checks appended/read-back bytes, read offsets, write/short-write/sync/close/r
 preservation of previous settings and backup recovery. The fake is test-only.
 `test_job.sh` checks cleanup exactly once for queued/running cancellation, deadlines, success
 and errors, including that the job slot remains unavailable until Core 0 acknowledges deferred cleanup.
+
+## Core ownership and FlatCC allocation
+
+`test_control_service.sh` tests the actual dispatcher and job engine with threads.
+Control polling continues with a blocked worker, rejects wrong-core entry, suppresses
+recursion, and returns results after 1,000 worker transactions. Kernel tests also
+verify control hooks run only from `bp_service(0)`.
+
+`test_flatcc_memory.sh` compiles real schema-generated builders and the FlatCC runtime
+with embedded allocation hooks under normal builds and ASan/UBSan. It tests 1,000
+512-byte responses, status vectors, aligned finalization, pool exhaustion, realloc
+preservation, repeated setup/clear, oversized requests and Core 1 rejection. The
+memory-model guard scans all FlatCC runtime backend objects for libc heap references.
+
+These tests validate the ownership and allocation implementation. Physical USB/MSC,
+protocol timing, PSU trips and watchdog recovery still require a selected device.

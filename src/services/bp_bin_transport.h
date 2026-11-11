@@ -56,7 +56,7 @@ void bp_bin_transport_service(void);
 /**
  * @brief Service the binary USB CDC1 hardware endpoints.
  *
- * Must be called from the core that owns tud_task() (currently Core 1).
+ * Must be called from the core that owns tud_task() (Core 0).
  * Transfers bytes between CDC1 hardware FIFOs and the SPSC transport rings.
  */
 void bp_bin_transport_usb_service(void);
@@ -64,7 +64,7 @@ void bp_bin_transport_usb_service(void);
 /**
  * @brief Check if CDC1 (binary endpoint) is connected to a host application.
  *
- * Safe to call from either core.
+ * Control-core API; protocol workers return results through bp_protocol_call().
  *
  * @return true if connected, false otherwise.
  */

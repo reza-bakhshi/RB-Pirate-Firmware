@@ -9,6 +9,8 @@
 
 static bp_job_t s_active_job;
 static uint32_t s_next_job_id = 1;
+static void (*s_input_reset)(void);
+void bp_job_set_input_reset_hook(void (*reset)(void)) { s_input_reset = reset; }
 static bp_job_state_t s_finish_state;
 static bp_status_t s_finish_status;
 static const char* s_finish_text;
@@ -37,6 +39,7 @@ bp_status_t bp_job_submit_with_cleanup(const char* name, uint8_t proto, uint32_t
         return BP_STATUS_BUSY;
     }
 
+    if (s_input_reset) s_input_reset();
     uint32_t jid = s_next_job_id++;
     if (s_next_job_id == 0) s_next_job_id = 1;
 
@@ -49,8 +52,8 @@ bp_status_t bp_job_submit_with_cleanup(const char* name, uint8_t proto, uint32_t
     }
 
     s_active_job.proto = proto;
-    s_active_job.status = BP_STATUS_OK;
-    s_active_job.percent = 0;
+    __atomic_store_n(&s_active_job.status, BP_STATUS_OK, __ATOMIC_RELAXED);
+    __atomic_store_n(&s_active_job.percent, 0, __ATOMIC_RELAXED);
     s_active_job.start_time_ms = now_ms;
     s_active_job.timeout_ms = timeout_ms;
     s_active_job.slice_fn = slice_fn;
@@ -88,8 +91,9 @@ bp_status_t bp_job_dispatch(const char* name, uint8_t proto, uint32_t timeout_ms
 }
 
 bp_status_t bp_job_cancel(uint32_t job_id) {
+    uint8_t state = __atomic_load_n(&s_active_job.state, __ATOMIC_ACQUIRE);
     if (s_active_job.id == job_id &&
-        (s_active_job.state == BP_JOB_STATE_QUEUED || s_active_job.state == BP_JOB_STATE_RUNNING)) {
+        (state == BP_JOB_STATE_QUEUED || state == BP_JOB_STATE_RUNNING)) {
         __atomic_thread_fence(__ATOMIC_RELEASE);
         __atomic_store_n(&s_active_job.cancel_requested, true, __ATOMIC_RELEASE);
         return BP_STATUS_OK;
@@ -105,15 +109,15 @@ bp_status_t bp_job_get_state(uint32_t job_id, bp_job_state_t* out_state,
 
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     if (out_state)   *out_state = (bp_job_state_t)__atomic_load_n(&s_active_job.state, __ATOMIC_ACQUIRE);
-    if (out_status)  *out_status = (bp_status_t)s_active_job.status;
-    if (out_percent) *out_percent = s_active_job.percent;
+    if (out_status)  *out_status = (bp_status_t)__atomic_load_n(&s_active_job.status, __ATOMIC_RELAXED);
+    if (out_percent) *out_percent = __atomic_load_n(&s_active_job.percent, __ATOMIC_RELAXED);
 
     return BP_STATUS_OK;
 }
 
 bp_status_t bp_job_emit_progress(uint8_t percent, const char* text) {
-    uint32_t head = s_output_head;
-    uint32_t tail = s_output_tail;
+    uint32_t head = __atomic_load_n(&s_output_head, __ATOMIC_ACQUIRE);
+    uint32_t tail = __atomic_load_n(&s_output_tail, __ATOMIC_ACQUIRE);
 
     if ((head - tail) >= BP_JOB_OUTPUT_RING_SIZE) {
         return BP_STATUS_QUEUE_FULL;
@@ -130,15 +134,15 @@ bp_status_t bp_job_emit_progress(uint8_t percent, const char* text) {
     }
 
     __atomic_thread_fence(__ATOMIC_RELEASE);
-    s_output_head = head + 1;
+    __atomic_store_n(&s_output_head, head + 1, __ATOMIC_RELEASE);
     return BP_STATUS_OK;
 }
 
 bp_status_t bp_job_poll_output(bp_job_output_t* out_rec) {
     if (!out_rec) return BP_STATUS_INVALID_PARAM;
 
-    uint32_t tail = s_output_tail;
-    uint32_t head = s_output_head;
+    uint32_t tail = __atomic_load_n(&s_output_tail, __ATOMIC_ACQUIRE);
+    uint32_t head = __atomic_load_n(&s_output_head, __ATOMIC_ACQUIRE);
 
     if (tail == head) {
         return BP_STATUS_QUEUE_EMPTY;
@@ -147,7 +151,7 @@ bp_status_t bp_job_poll_output(bp_job_output_t* out_rec) {
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     *out_rec = s_output_ring[tail & (BP_JOB_OUTPUT_RING_SIZE - 1)];
     __atomic_thread_fence(__ATOMIC_RELEASE);
-    s_output_tail = tail + 1;
+    __atomic_store_n(&s_output_tail, tail + 1, __ATOMIC_RELEASE);
 
     return BP_STATUS_OK;
 }
@@ -168,9 +172,9 @@ uint32_t bp_job_get_active_id(void) {
 
 static void bp_job_publish_finish(bp_job_state_t state, bp_status_t status, const char* text) {
     bp_res_release_all(BP_RES_OWNER_JOB);
-    s_active_job.status = status;
-    if (state == BP_JOB_STATE_DONE) s_active_job.percent = 100;
-    bp_job_emit_progress(s_active_job.percent, text);
+    __atomic_store_n(&s_active_job.status, status, __ATOMIC_RELAXED);
+    if (state == BP_JOB_STATE_DONE) __atomic_store_n(&s_active_job.percent, 100, __ATOMIC_RELAXED);
+    bp_job_emit_progress(__atomic_load_n(&s_active_job.percent, __ATOMIC_RELAXED), text);
     __atomic_store_n(&s_active_job.state, state, __ATOMIC_RELEASE);
 }
 
@@ -202,16 +206,16 @@ uint32_t bp_job_service(uint32_t now_ms) {
         return 1;
     }
     if (state == BP_JOB_STATE_QUEUED) {
-        s_active_job.state = BP_JOB_STATE_RUNNING;
+        __atomic_store_n(&s_active_job.state, BP_JOB_STATE_RUNNING, __ATOMIC_RELEASE);
         if (s_active_job.start_time_ms == 0) s_active_job.start_time_ms = now_ms;
     }
     if (s_active_job.timeout_ms > 0 && now_ms - s_active_job.start_time_ms >= s_active_job.timeout_ms) {
         bp_job_finish(BP_JOB_STATE_TIMEOUT, BP_STATUS_TIMEOUT, "Timeout");
         return 1;
     }
-    uint8_t pct = s_active_job.percent;
+    uint8_t pct = __atomic_load_n(&s_active_job.percent, __ATOMIC_RELAXED);
     bp_status_t st = s_active_job.slice_fn(s_active_job.ctx, &pct);
-    s_active_job.percent = pct;
+    __atomic_store_n(&s_active_job.percent, pct, __ATOMIC_RELAXED);
     if (st == BP_STATUS_OK) bp_job_finish(BP_JOB_STATE_DONE, st, "Done");
     else if (st == BP_STATUS_CANCELLED) bp_job_finish(BP_JOB_STATE_CANCELLED, st, "Cancelled");
     else if (st != BP_STATUS_BUSY) bp_job_finish(BP_JOB_STATE_ERROR, st, "Error");

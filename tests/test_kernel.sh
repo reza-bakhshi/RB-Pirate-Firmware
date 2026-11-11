@@ -20,6 +20,7 @@ gcc -O2 -Wall -Wextra -Wno-unused-variable -std=c11 -DBP_HOST_TEST -Isrc \
     src/services/bp_terminal.c \
     src/services/bp_storage.c \
     src/services/bp_bin_transport.c \
+    src/services/bp_control.c \
     src/kernel/bp_kernel.c
 
 /tmp/test_kernel
@@ -42,6 +43,7 @@ gcc -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wno-unused-vari
     src/services/bp_terminal.c \
     src/services/bp_storage.c \
     src/services/bp_bin_transport.c \
+    src/services/bp_control.c \
     src/kernel/bp_kernel.c
 
 /tmp/test_kernel_asan

@@ -3,6 +3,7 @@
  * @brief Binary transport service implementation for Bus Pirate.
  */
 
+#include "services/bp_control.h"
 #include "services/bp_bin_transport.h"
 #include "spsc_queue.h"
 #include <string.h>
@@ -12,6 +13,7 @@
 #include "pico/time.h"
 #include "tusb.h"
 #include "pirate/watchdog.h"
+#include "pirate.h"
 #endif
 
 /* Statically allocated ring buffers */
@@ -49,6 +51,7 @@ bool bp_bin_transport_is_connected(void) {
     if (!s_initialized) bp_bin_transport_init();
 
 #if !defined(BP_HOST_TEST)
+    BP_ASSERT_CORE0();
     return tud_cdc_n_connected(1);
 #else
     return s_mock_connected;
@@ -56,6 +59,9 @@ bool bp_bin_transport_is_connected(void) {
 }
 
 bp_status_t bp_bin_transport_read(uint8_t* buf, uint32_t max_len, uint32_t* out_read) {
+#if !defined(BP_HOST_TEST)
+    bp_control_poll();
+#endif
     if (!buf || max_len == 0 || !out_read) return BP_STATUS_INVALID_PARAM;
     if (!s_initialized) bp_bin_transport_init();
 
@@ -72,6 +78,9 @@ bp_status_t bp_bin_transport_read(uint8_t* buf, uint32_t max_len, uint32_t* out_
 }
 
 bp_status_t bp_bin_transport_getc(uint8_t* c) {
+#if !defined(BP_HOST_TEST)
+    bp_control_poll();
+#endif
     if (!c) return BP_STATUS_INVALID_PARAM;
     if (!s_initialized) bp_bin_transport_init();
 
@@ -93,6 +102,7 @@ bp_status_t bp_bin_transport_getc_timeout(uint8_t* c, uint32_t timeout_ms) {
         }
         bp_watchdog_heartbeat(get_core_num());
         bp_watchdog_service();
+        bp_control_poll();
         tight_loop_contents();
     } while (!time_reached(deadline));
     return BP_STATUS_TIMEOUT;
@@ -106,6 +116,9 @@ bp_status_t bp_bin_transport_getc_timeout(uint8_t* c, uint32_t timeout_ms) {
 }
 
 uint32_t bp_bin_transport_rx_available(void) {
+#if !defined(BP_HOST_TEST)
+    bp_control_poll();
+#endif
     if (!s_initialized) bp_bin_transport_init();
     return spsc_queue_level(&s_bin_rx_q);
 }
@@ -119,6 +132,9 @@ void bp_bin_transport_rx_flush(void) {
 }
 
 bp_status_t bp_bin_transport_write(const uint8_t* buf, uint32_t len, uint32_t* out_written) {
+#if !defined(BP_HOST_TEST)
+    bp_control_poll();
+#endif
     if (!buf) return BP_STATUS_INVALID_PARAM;
     if (len == 0) {
         if (out_written) *out_written = 0;
@@ -171,6 +187,7 @@ bp_status_t bp_bin_transport_putc_timeout(uint8_t c, uint32_t timeout_ms) {
         }
         bp_watchdog_heartbeat(get_core_num());
         bp_watchdog_service();
+        bp_control_poll();
         tight_loop_contents();
     } while (!time_reached(deadline));
     s_tx_dropped++;
@@ -214,10 +231,13 @@ void bp_bin_transport_get_stats(bp_bin_transport_stats_t* stats) {
 void bp_bin_transport_service(void) {
     if (!s_initialized) bp_bin_transport_init();
 
-    /* Queue consumption belongs exclusively to the USB service on Core 1. */
+    /* Queue consumption belongs exclusively to the USB service on Core 0. */
 }
 
 void bp_bin_transport_usb_service(void) {
+#if !defined(BP_HOST_TEST)
+    BP_ASSERT_CORE0();
+#endif
     if (!s_initialized) bp_bin_transport_init();
 
     /* Disconnect cleanup uses the same consumer as normal USB transmission. */

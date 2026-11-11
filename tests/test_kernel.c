@@ -13,6 +13,7 @@
 #include "kernel/bp_log.h"
 #include "kernel/bp_health.h"
 #include "kernel/bp_kernel.h"
+#include "services/bp_control.h"
 #include "services/bp_storage.h"
 #include "system_config.h"
 #include "modes.h"
@@ -278,6 +279,19 @@ static void test_kernel_service_integration(void) {
     printf("[PASS] test_kernel_service_integration\n");
 }
 
+static unsigned control_polls;
+static void control_poll_hook(void) { control_polls++; }
+static void test_control_service_owner(void) {
+    bp_kernel_init();
+    bp_control_init(control_poll_hook, NULL);
+    bp_service(1);
+    assert(control_polls == 0);
+    bp_service(0);
+    assert(control_polls == 1);
+    bp_control_init(NULL, NULL);
+    puts("[PASS] Real kernel polls control hooks only on the control core");
+}
+
 int main(void) {
     printf("=== Service Kernel Test Suite ===\n");
     test_event_queue();
@@ -286,6 +300,7 @@ int main(void) {
     test_cancellable_op();
     test_log_ring();
     test_kernel_service_integration();
+    test_control_service_owner();
     printf("=== ALL SERVICE KERNEL TESTS PASSED ===\n");
     return 0;
 }

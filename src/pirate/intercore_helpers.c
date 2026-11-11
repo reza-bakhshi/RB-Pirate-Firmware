@@ -1,6 +1,7 @@
 #include "pirate/intercore_helpers.h"
 #include "pirate.h"
 #include "assert.h"
+#include "services/bp_control.h"
 
 // This wrapper is a response to manual code review noting
 // at least two coding patterns, neither of which provided
@@ -11,6 +12,12 @@
 // alternative cross-core communication methods if needed.
 
 void icm_core0_send_message_synchronous(bp_icm_message_t message_id) {
+    BP_ASSERT_CORE0();
+    if (message_id != BP_ICM_INIT_CORE1) {
+        bool handled = bp_control_request(message_id);
+        BP_ASSERT(handled);
+        return;
+    }
 
     // NOTE: although split into multiple lines for readability,
     //       the compiler optimizes this quite well!

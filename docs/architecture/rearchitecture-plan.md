@@ -1,3 +1,6 @@
+> Historical plan: ownership proposals below predate the implemented Core 0 USB
+> service. Use [the current architecture](dual_core_guide.md) for implementation guidance.
+
 # RB-Pirate Firmware Rearchitecture Plan
 
 > Target: remove the systemic causes of freezes and crashes, and make new protocol modes safe to add, without changing the hardware design, user command syntax, or protocol behavior.

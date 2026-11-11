@@ -62,6 +62,7 @@
 #include "mode/hwuart.h"
 #include "pirate/watchdog.h"
 #include "services/bp_bin_transport.h"
+#include "services/bp_protocol_call.h"
 
 const char dirtyproto_mode_name[] = "BPIO2 flatbuffer interface";
 uint32_t time_start, time_end;
@@ -147,6 +148,7 @@ static const struct bpio_mode_handlers_t bpio_mode_handlers[count_of(modes)] = {
 void error_response(const char *error_msg, flatcc_builder_t *B, uint8_t *buf);
 
 bool mode_change_new(const char *mode_name, bpio_mode_configuration_t *mode_config) {
+    if (bp_job_get_active_id() != 0) return true;
     // compare mode name to modes.protocol_name
     for (uint8_t i = 0; i < count_of(modes); i++) {
         if (strcasecmp(mode_name, modes[i].protocol_name) == 0) {
@@ -234,6 +236,10 @@ uint32_t status_request(bpio_RequestPacket_table_t packet, flatcc_builder_t *B, 
                 bpio_StatusRequestTypes_enum_t query_type = bpio_StatusRequestTypes_vec_at(query, i);
                 if(bpio_debug) printf("%zu ", query_type);
                 // Set the corresponding bit in query_flags
+                if (query_type >= 32) {
+                    error_response("Invalid status query", B, buf);
+                    return 0;
+                }
                 query_flags |= (1u << query_type);
             }
             if(bpio_debug) printf("\r\n");
@@ -364,6 +370,10 @@ uint32_t status_request(bpio_RequestPacket_table_t packet, flatcc_builder_t *B, 
 
 
 uint32_t configuration_request(bpio_RequestPacket_table_t packet, flatcc_builder_t *B, uint8_t *buf) {
+    if (bp_job_get_active_id() != 0) {
+        error_response("Protocol worker busy", B, buf);
+        return 0;
+    }
     const char *error = NULL;
 
     bpio_ConfigurationRequest_table_t config_request = (bpio_ConfigurationRequest_table_t) bpio_RequestPacket_contents(packet);
@@ -607,27 +617,54 @@ config_response_error:
     send_packet(B, buf);
 }
 
+typedef struct {
+    bpio_handler_func_t handler;
+    struct bpio_data_request_t *request;
+    flatbuffers_uint8_vec_t write;
+    uint8_t *read;
+    uint32_t result;
+} bpio_transfer_t;
+static bp_status_t bpio_transfer(void *ptr, uint8_t *percent) {
+    BP_ASSERT_CORE1();
+    bpio_transfer_t *ctx = ptr;
+    ctx->result = ctx->handler(ctx->request, ctx->write, ctx->read);
+    *percent = 100;
+    return bp_job_check_cancelled() ? BP_STATUS_CANCELLED : BP_STATUS_OK;
+}
+static uint32_t bpio_transfer_call(bpio_handler_func_t handler, struct bpio_data_request_t *request,
+                                   flatbuffers_uint8_vec_t write, uint8_t *read) {
+    bpio_transfer_t transfer = { handler, request, write, read, 1 };
+    if (bp_protocol_call("bpio_data", bpio_transfer, &transfer) != BP_STATUS_OK) return 1;
+    return transfer.result;
+}
+
 uint32_t data_request(bpio_RequestPacket_table_t packet, flatcc_builder_t *B, uint8_t *buf) {
+    if (bp_job_get_active_id() != 0) {
+        error_response("Protocol worker busy", B, buf);
+        return 0;
+    }
     bpio_DataRequest_table_t data_request = (bpio_DataRequest_table_t) bpio_RequestPacket_contents(packet);
     test_assert(data_request != 0);
     const char *error = NULL;
 
     // Check if data_write is present and get its value.
-    flatbuffers_uint8_vec_t data_write;
+    flatbuffers_uint8_vec_t data_write = NULL;
     uint16_t data_write_len = 0;
     if(bpio_DataRequest_data_write_is_present(data_request)) {
         data_write = bpio_DataRequest_data_write(data_request);
         data_write_len = flatbuffers_uint8_vec_len(data_write);
-        /*if(data_write_len > BPIO_MAX_WRITE_SIZE) {
+        if(data_write_len > BPIO_MAX_WRITE_SIZE) {
             static const char *data_write_error_msg = "Data write vector too long";
             if(bpio_debug) printf("[Data Request] Error: %s (%d bytes)\r\n", data_write_error_msg, data_write_len);
             error = data_write_error_msg;
-            goto data_response_error;
-        }*/
+            error_response(error, B, buf);
+            return 0;
+        }
     }
 
     struct bpio_data_request_t request = {
         .debug = bpio_debug,
+        .data_buf = (const char*)data_write,
         .start_main = bpio_DataRequest_start_main(data_request),
         .start_alt = bpio_DataRequest_start_alt(data_request),
         .bytes_write = data_write_len, // Use the length of the data write vector
@@ -636,6 +673,14 @@ uint32_t data_request(bpio_RequestPacket_table_t packet, flatcc_builder_t *B, ui
         .stop_alt = bpio_DataRequest_stop_alt(data_request),
         //.bitwise_ops = bpio_DataRequest_bitwise_ops(data_request)
     };
+
+    /* An I2C read with START needs an address byte; never hand a null vector
+     * to the worker's address/debug accessors. */
+    if (system_config.mode == HWI2C && (request.start_main || request.start_alt) &&
+        request.bytes_read && !request.bytes_write) {
+        error_response("I2C read requires an address byte", B, buf);
+        return 0;
+    }
 
     size_t data_buf_size = request.bytes_read;
 
@@ -647,7 +692,8 @@ uint32_t data_request(bpio_RequestPacket_table_t packet, flatcc_builder_t *B, ui
         static const char *data_read_error_msg = "Data read size too large";
         if(bpio_debug) printf("[Data Request] Error: %s (%d bytes)\r\n", data_read_error_msg, data_buf_size);
         error = data_read_error_msg;
-        goto data_response_error;
+        error_response(error, B, buf);
+        return 0;
     }
 
     if(bpio_debug){
@@ -665,7 +711,11 @@ uint32_t data_request(bpio_RequestPacket_table_t packet, flatcc_builder_t *B, ui
     //**************TIME END: 40uS
     bpio_DataResponse_start(B);
     bpio_DataResponse_data_read_start(B);
-    uint8_t *data_read = bpio_DataResponse_data_read_extend(B, data_buf_size); // Reserve space for data read
+    uint8_t *data_read = bpio_DataResponse_data_read_extend(B, data_buf_size);
+    if (data_buf_size && !data_read) {
+        error_response("Response buffer exhausted", B, buf);
+        return 0;
+    }
 
 
     bpio_handler_func_t bpio_handler = bpio_mode_handlers[system_config.mode].bpio_handler;
@@ -675,7 +725,7 @@ uint32_t data_request(bpio_RequestPacket_table_t packet, flatcc_builder_t *B, ui
         if(bpio_debug) printf("[Data Request] Error: %s\r\n", no_handler_error_msg);
         error = no_handler_error_msg;
     }
-    else if(bpio_handler(&request, data_write, data_read)){
+    else if(bpio_transfer_call(bpio_handler, &request, data_write, data_read)){
         bpio_DataResponse_data_read_truncate(B, 0); 
         static const char* request_error_msg = "Protocol request failed";
         if(bpio_debug) printf("[Data Request] %s\r\n", request_error_msg);
@@ -687,7 +737,6 @@ uint32_t data_request(bpio_RequestPacket_table_t packet, flatcc_builder_t *B, ui
         printf("[Data Request] Returning read %d bytes\r\n", request.bytes_read);
     }
 
-data_response_error:
     if (error) {
         // Set the error message in the response.
         flatbuffers_string_ref_t error_str = flatbuffers_string_create_str(B, error);
@@ -717,6 +766,7 @@ const static struct _bpio_function_t bpio_handlers[]={
 };
 
 void bpio_check_async_data(flatcc_builder_t *B, uint8_t *buf) {
+    if (bp_job_get_active_id() != 0) return;
     // Check if current mode supports async handler
     if(!bpio_mode_handlers[system_config.mode].bpio_async_handler) {
         return; // Mode doesn't support async data
@@ -728,7 +778,7 @@ void bpio_check_async_data(flatcc_builder_t *B, uint8_t *buf) {
     // Call mode's async handler to check for data
     uint32_t bytes_read = bpio_mode_handlers[system_config.mode].bpio_async_handler(async_data);
     
-    if(bytes_read == 0) {
+    if(bytes_read == 0 || bytes_read > sizeof(async_data)) {
         return; // No async data available
     }
 
@@ -749,6 +799,7 @@ void bpio_check_async_data(flatcc_builder_t *B, uint8_t *buf) {
     bpio_DataResponse_start(B);
     bpio_DataResponse_data_read_start(B);
     uint8_t *data_read_buf = bpio_DataResponse_data_read_extend(B, bytes_read);
+    if (!data_read_buf) { flatcc_builder_reset(B); return; }
     memcpy(data_read_buf, async_data, bytes_read);
     bpio_DataResponse_data_read_end(B);
     
@@ -782,9 +833,12 @@ void error_response(const char *error_msg, flatcc_builder_t *B, uint8_t *buf) {
 }
 
 flatcc_builder_t builder, *B;
+static bool builder_initialized;
 
 void dirtyproto_mode_setup(void) {
     B = &builder;
+    if (builder_initialized) flatcc_builder_clear(B);
+    builder_initialized = true;
     // Initialize the builder
     if(flatcc_builder_init(B)==-1) {
         //if(bpio_debug) printf("[BPIO] Error initializing flatcc builder\r\n");
@@ -860,7 +914,7 @@ bpio_mode_read_end:
     }
     
     // Verify the flatbuffer packet (this will throw an error if invalid)
-    int ret = bpio_RequestPacket_verify_as_root(buf, sizeof(buf)); 
+    int ret = bpio_RequestPacket_verify_as_root(buf, decoded_len);
     if(ret){
         if(bpio_debug){
             printf("[BPIO] Error: Invalid flatbuffer, verify returned %s\r\n", flatcc_verify_error_string(ret));
@@ -892,7 +946,7 @@ bpio_mode_read_end:
 
     uint8_t packet_type = bpio_RequestPacket_contents_type_get(packet);
     if(bpio_debug) printf("[BPIO] Packet Type: %d\r\n", packet_type);
-    if(packet_type >= count_of(bpio_handlers) && bpio_handlers[packet_type].func) {
+    if(packet_type >= count_of(bpio_handlers) || !bpio_handlers[packet_type].func) {
         error_response("Unknown packet type received", B, buf);
         return;
     }

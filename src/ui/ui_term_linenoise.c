@@ -4,6 +4,7 @@
  * @details Connects linenoise to USB CDC I/O and the command processing system.
  */
 
+#include "services/bp_control.h"
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
@@ -205,6 +206,7 @@ bool ui_prompt_linenoise_input(const char *prompt) {
 
         bp_watchdog_heartbeat(0);
         bp_watchdog_service();
+        bp_control_poll();
         binmode_service();
         
         linenoiseResult result = linenoiseEditFeedResult(&ln_prompt_state);

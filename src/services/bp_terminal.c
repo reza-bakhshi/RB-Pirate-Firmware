@@ -35,9 +35,15 @@ static spsc_queue_t s_host_rx_q;
 
 static bool s_initialized = false;
 
+static void reset_job_input(void) {
+    /* Submission runs on Core 0 after the previous worker acknowledged completion. */
+    spsc_queue_flush(&s_job_input_q);
+}
+
 bp_status_t bp_term_init(void) {
     spsc_queue_init(&s_core1_text_q, s_core1_text_buf, BP_TERM_CORE1_TEXT_RING_SIZE);
     spsc_queue_init(&s_job_input_q, s_job_input_buf, BP_TERM_JOB_INPUT_RING_SIZE);
+    bp_job_set_input_reset_hook(reset_job_input);
     s_core1_text_dropped = 0;
 
 #ifndef HAVE_USB_FIFOS
@@ -161,7 +167,7 @@ void bp_term_service(void) {
 
     /* 1. Drain Core 1 text ring into TX output stream */
     uint8_t c1_byte;
-    while (spsc_queue_try_remove(&s_core1_text_q, &c1_byte)) {
+    for (unsigned budget = 0; budget < 256 && spsc_queue_try_remove(&s_core1_text_q, &c1_byte); budget++) {
         (void)bp_term_putc((char)c1_byte);
     }
 

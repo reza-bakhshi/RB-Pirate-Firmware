@@ -1,5 +1,8 @@
 # Reliability review — 2026-11-11
 
+This records the earlier `c32c31d` baseline. The core/FlatCC follow-up is documented
+in [core isolation and FlatCC](core-isolation-flatcc-2026-11-11.md).
+
 The changes pass host regression tests and both RP2350 build configurations.
 This is not a certification that every protocol, memory path or hardware behavior is fault-free.
 

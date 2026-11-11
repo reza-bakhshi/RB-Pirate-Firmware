@@ -11,7 +11,7 @@
  * 
  * Thread safety: Uses lock-free SPSC queues
  * - Producer: Core0 (printf output, command output)
- * - Consumer: Core1 (USB/UART transmission)
+ * - Consumer: Core0 (USB/UART transmission)
  * 
  * @author Bus Pirate Project
  * @date 2024-2026
@@ -32,6 +32,7 @@
 #include "debug_uart.h"
 #include "pirate/watchdog.h"
 #include "services/bp_bin_transport.h"
+#include "services/bp_control.h"
 
 /** @defgroup tx_buffers TX Buffer Definitions
  * @brief Transmit ring buffers and status bar management
@@ -84,14 +85,14 @@ void tx_fifo_init(void) {
  * 
  * @param len Number of valid characters in toolbar buffer
  * 
- * @pre Must be called from Core1
+ * @pre Must be called from Core0
  * @pre len <= MAXIMUM_TOOLBAR_BUFFER_BYTES
  * 
- * @warning This function asserts if not called from Core1
+ * @warning This function asserts if not called from Core0
  */
 void tx_tb_start(uint32_t len) {
 
-    BP_ASSERT_CORE1();
+    BP_ASSERT_CORE0();
     BP_ASSERT(len <= MAXIMUM_TOOLBAR_BUFFER_BYTES);
     tx_tb_buf_cnt = len;
     tx_tb_buf_ready = true;
@@ -110,11 +111,11 @@ void tx_tb_start(uint32_t len) {
  * - TOOLBAR_DELAY: Wait for TX FIFO to drain before toolbar
  * - TOOLBAR_TX: Transmit toolbar buffer
  * 
- * @pre Must be called from Core1 only
+ * @pre Must be called from Core0 only
  * @note Status bar updates are delayed until TX FIFO is empty to prevent VT100 corruption
  */
 void tx_fifo_service(void) {
-    BP_ASSERT_CORE1(); // tx fifo is drained from core1 only
+    BP_ASSERT_CORE0(); // tx fifo is drained from core0 only
 
 /** @name TX State Machine States */
 /**@{*/
@@ -285,6 +286,7 @@ static void tx_fifo_emit_overflow_marker(void) {
 
 bp_tx_status_t tx_fifo_put(char* c) {
     BP_ASSERT_CORE0(); // tx fifo should only be added to from core 0 (deadlock risk)
+    bp_control_poll();
     tx_fifo_emit_overflow_marker();
     if (tx_fifo_raw_add((uint8_t)*c)) {
         return BP_TX_OK;
@@ -294,6 +296,7 @@ bp_tx_status_t tx_fifo_put(char* c) {
     // drain USB packets (64 bytes/ms) instead of immediately dropping characters.
     if (tud_cdc_n_connected(0) || system_config.terminal_uart_enable) {
         for (uint32_t retry = 0; retry < 50; retry++) {
+            bp_control_poll();
             busy_wait_us(100);
             bp_watchdog_heartbeat(0);
             bp_watchdog_service();
@@ -336,6 +339,7 @@ bool tx_fifo_wait_drain_timeout(uint32_t timeout_ms) {
             bp_terminal_health.drain_timeouts++;
             return false;
         }
+        bp_control_poll();
         tight_loop_contents();
     }
     return true;

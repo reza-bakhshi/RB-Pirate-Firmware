@@ -40,6 +40,9 @@ set(buspirate_common
         flatbuffers_common_reader.h
         monster_builder.h
         monster_reader.h
+        services/bp_protocol_call.c
+        services/bp_control.c
+        services/bp_flatcc_memory.c
         builder.c
         emitter.c 
         json_parser.c 

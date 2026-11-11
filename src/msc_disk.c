@@ -23,6 +23,7 @@
  *
  */
 
+#include "services/bp_control.h"
 #include <stdio.h>
 #include <string.h>
 #include "pico/stdlib.h"
@@ -391,6 +392,9 @@ bool insert_or_eject_usbmsdrive(bool insert) {
     if (insert) {
         insert_request = true;
         while (!command_acknowledged() && timeout_ms > 0) {
+#if !defined(BP_HOST_TEST)
+            bp_control_poll();
+#endif
             sleep_ms(1);
             timeout_ms--;
             bp_watchdog_heartbeat(0);
@@ -405,6 +409,9 @@ bool insert_or_eject_usbmsdrive(bool insert) {
         // unload disk storage
         eject_request = true;
         while (!command_acknowledged() && timeout_ms > 0) {
+#if !defined(BP_HOST_TEST)
+            bp_control_poll();
+#endif
             sleep_ms(1);
             timeout_ms--;
             bp_watchdog_heartbeat(0);

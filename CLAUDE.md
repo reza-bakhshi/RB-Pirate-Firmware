@@ -7,14 +7,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 RB-Pirate firmware — embedded C firmware exclusively for the Raspberry Pi **RP2350** microcontroller (Bus Pirate 6 / RB-Pirate). RP2040 and legacy Bus Pirate 5 targets are completely out of scope. Universal serial interface supporting 1-Wire, I2C, SPI, UART, JTAG, infrared, Sub-GHz, RFID, and other protocols.
 
 ### Dual-Core Architecture
-Current implementation is hybrid, not a completed control/data split:
-- Core 0: CLI, syntax execution, mode lifecycle, storage service, watchdog supervisor.
-- Core 1: TinyUSB task/CDC I/O/MSC callbacks, monitoring, toolbars, protocol job slices.
-- Keep slices bounded; USB and monitoring share Core 1. Use cleanup-enabled job submission
-  for driver state; final cleanup runs on Core 0 after slices stop. See `docs/architecture/dual_core_guide.md` for current ownership and limits.
+- Core 0: USB initialization/task/IRQs/MSC, CLI, FlatCC response construction, storage,
+  monitoring, toolbars, mode setup/cleanup and watchdog supervision.
+- Core 1: asynchronous jobs, syntax execution and BPIO data transactions.
+- Use `bp_protocol_call()` for synchronous worker transactions. Control I/O continues
+  while waiting; do not access USB or FlatCC builders in the worker callback.
+- `bp_control_poll()` is Core 0 only and suppresses reentrancy. Long-running control
+  code must yield; use the job runtime for protocol work. See the architecture guide.
 
 ### Memory Model
-Strict static memory model: zero runtime `malloc`, `calloc`, `realloc`, or `free`. Static allocation bounded to $\le 380\text{ KB}$ SRAM with dedicated 4 KB stacks in scratch SRAM (`SCRATCH_Y` for Core 0, `SCRATCH_X` for Core 1).
+New runtime code uses static storage. FlatCC uses bounded Core 0 pools; the scoped
+heap-symbol guard does not measure every linked library path. Static allocation bounded to $\le 380\text{ KB}$ SRAM with dedicated 4 KB stacks in scratch SRAM (`SCRATCH_Y` for Core 0, `SCRATCH_X` for Core 1).
 
 ## Build Commands
 

@@ -1,22 +1,27 @@
 # USB and binary communication
 
-TinyUSB currently runs on **Core 1**, alongside protocol job slices and monitoring.
-Core 0 runs the CLI and binary command engines. See [core ownership](dual_core_guide.md).
+TinyUSB initializes on Core 0, which owns its device IRQs and task callbacks.
+Core 1 protocol jobs never service TinyUSB. See [core ownership](dual_core_guide.md).
 
-| Interface | USB task/callback owner | Application path |
+| Interface | Owner | Application path |
 | --- | --- | --- |
-| CDC 0 terminal | Core 1 | RX queue to Core 0, TX queue from Core 0 |
-| CDC 1 binary | Core 1 | SPSC transport queues to/from binary command engines |
-| MSC disk | Core 1 | Block-device callbacks; serialize access with storage |
+| CDC 0 terminal | Core 0 | CLI RX/TX queues and worker text/job-input queues |
+| CDC 1 binary | Core 0 | Frame parsing, FlatCC response construction and queued USB output |
+| MSC disk | Core 0 | Serialized block-device callbacks |
 
-`bp_bin_transport_usb_service()` moves bytes between CDC1 and the transport rings.
-Only that consumer drains or discards binary TX bytes. `bp_bin_transport_service()` on
-Core 0 does not consume TX bytes. Queue counters report overflow and disconnected drops.
-Core 1 text goes through `bp_term_core1_putc()` and Core 0 drains it to the terminal queue.
+`bp_control_poll()` runs at control service iterations and in terminal/binary wait
+paths. Reentrancy suppression prevents a printf or callback from entering `tud_task()`
+recursively through the pump. USB/MSC polling is deferred while a block-device lock
+is held. UART IRQ input is staged separately before joining the terminal RX queue.
 
-Keep protocol slices bounded: blocking a job also blocks the next TinyUSB service iteration.
-SPSC queues provide buffering; they do not guarantee latency or complete packet delivery.
+BPIO data transfers are submitted to Core 1 with `bp_protocol_call()`. Core 0 keeps
+serving USB while waiting, then builds the response from the completed result buffer.
+The callback never receives a FlatCC builder and cannot allocate its buffers on Core 1.
 
-Run host transport tests with `bash tests/test_bin_transport.sh`. Physical USB stress,
-MSC concurrency, host backpressure and disconnect/reconnect still require a device.
-The HIL smoke harness does not implement CDC1 framing stress.
+`bp_bin_transport_usb_service()` is the sole binary TX consumer, including disconnect
+cleanup, and now runs on Core 0. Endpoint connection queries belong to Core 0. Queue
+counters account for saturation; buffering does not guarantee delivery under overload.
+
+Run `bash tests/test_control_service.sh`, `bash tests/test_bin_transport.sh` and
+`bash tests/test_flatcc_memory.sh` for host coverage. Physical CDC/MSC stress,
+disconnect/reconnect and electrical capture timing remain hardware checks.

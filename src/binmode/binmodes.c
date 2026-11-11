@@ -22,6 +22,7 @@
 #include "pirate.h"
 #include "binmode/binmodes.h"
 #include "mode/bp_mode.h"
+#include "kernel/bp_job.h"
 #include "bytecode.h"
 #include "command_struct.h"
 #include "modes.h"
@@ -213,6 +214,9 @@ inline void binmode_setup(void) {
 }
 
 inline void binmode_service(void) {
+    /* Other binary engines cannot reconfigure peripherals owned by a worker.
+     * BPIO may still answer status requests; its mutations have explicit guards. */
+    if (bp_job_get_active_id() != 0 && system_config.binmode_select != BINMODE_USE_DIRTYPROTO) return;
     //exit on button press
     if(binmodes[system_config.binmode_select].button_to_exit) {
         char c;

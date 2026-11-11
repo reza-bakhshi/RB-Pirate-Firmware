@@ -27,18 +27,18 @@ RB-Pirate Firmware is an independent project re-architected on the foundation of
 
 The RB-Pirate firmware incorporates a complete ground-up re-architecture designed for rock-solid real-time performance, zero memory fragmentation, and non-blocking operation.
 
-The current firmware uses a hybrid dual-core layout:
+The control and protocol execution paths use separate cores:
 
 | Core | Current responsibilities |
 | --- | --- |
-| Core 0 | CLI, command parsing and syntax execution, mode lifecycle, storage service, watchdog supervision |
-| Core 1 | TinyUSB CDC/MSC, terminal transport, toolbars, AMUX/PSU monitoring, asynchronous protocol slices |
+| Core 0 | USB, CLI/parsing, FlatCC response construction, mode lifecycle, storage, monitoring, toolbars and watchdog |
+| Core 1 | Syntax execution, BPIO data transfers and asynchronous protocol job slices |
 
-Protocol jobs share Core 1 with USB and monitoring. Slices must remain bounded;
-strict control/data isolation is not complete. See the [architecture guide](docs/architecture/dual_core_guide.md).
+Core 0 keeps serving control I/O while waiting for Core 1 transactions. Legacy
+management commands remain cooperative; long-running protocol work belongs in jobs. See the [architecture guide](docs/architecture/dual_core_guide.md).
 
 ### 2. Deterministic Static Memory Model
-- **Zero Runtime Heap**: New runtime code uses fixed storage. The memory guard checks selected migrated modules, including MakeHex; legacy FlatCC builder allocation still requires migration. Global zero-heap operation is not yet established.
+- **Zero Runtime Heap**: New runtime code uses fixed storage. MakeHex and every FlatCC runtime backend use bounded static storage. The scoped memory guard verifies their heap-symbol dependencies; it does not instrument live allocation in every linked library.
 - **Bounded SRAM Footprint**: Total static allocation is strictly bounded to $\le 380\text{ KB}$ SRAM (out of 512 KB), guaranteeing $>130\text{ KB}$ of runtime safety headroom.
 - **Scratch Stacks**: Fixed 4 KB stack allocations located in dedicated scratch SRAM (`SCRATCH_Y` for Core 0, `SCRATCH_X` for Core 1).
 - **Poisoned Memory Pools**: Static pool allocators (`bp_mem_pool`) with buffer poison guards and alignment enforcement.
@@ -117,7 +117,7 @@ strict control/data isolation is not complete. See the [architecture guide](docs
 ## Removable TF Card Storage
 
 - **Storage Engine**: SPI mode SD/TF driver backed by FatFS 0.15.
-- **Serialized Storage Access**: The storage service runs on Core 0; MSC callbacks run on Core 1 and require block-device serialization.
+- **Serialized Storage Access**: The storage service runs on Core 0; MSC callbacks and storage run on Core 0, with block-device serialization and a guard against nested MSC entry.
 - **Hotplug Resilient**: Hardware insertion/removal detection with automatic unmount and mount recovery.
 - **Mass Storage Class (MSC)**: Mounts the TF card as a standard USB thumb drive on your PC for dragging and dropping scripts, captures, firmware updates, and `.sub` / `.ir` files.
 

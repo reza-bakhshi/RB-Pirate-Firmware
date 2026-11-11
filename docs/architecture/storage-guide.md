@@ -6,8 +6,8 @@
 
 ## 1. Storage Architecture Overview
 
-The storage service runs on **Core 0** under `src/services/bp_storage.c`; MSC callbacks run on Core 1:
-- **Block-device serialization**: MSC and service storage access require locking across cores.
+The storage service runs on **Core 0** under `src/services/bp_storage.c`; MSC callbacks also run on Core 0:
+- **Block-device serialization**: MSC and service storage access are serialized. The control pump skips nested USB/MSC callbacks while a block transfer holds its lock.
 - **Hot-Plug Detection**: Card insertion and removal are monitored via debounced analog card detect sensing and published as system events.
 - **Guarded Unmount**: Unmounting checks for open file handles and active USB MSC transactions to prevent filesystem corruption.
 

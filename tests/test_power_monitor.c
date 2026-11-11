@@ -84,6 +84,7 @@ static void test_adc_reentrancy(void) {
     adc_busy_wait(true);
     assert(adc_get_owner() == 0);
     assert(adc_get_nest_count() == 1);
+    assert(!adc_try_acquire()); /* Polling must not change the command's ADC mux. */
 
     // Reentrant acquire 4 more times (nesting level 5)
     for (int i = 0; i < 4; i++) {

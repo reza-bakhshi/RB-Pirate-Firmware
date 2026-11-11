@@ -73,6 +73,8 @@ typedef struct bp_job_output {
  * @brief Initialize protocol job subsystem.
  */
 bp_status_t bp_job_subsystem_init(void);
+/* Install at boot; called before queued publication, while the previous worker is idle. */
+void bp_job_set_input_reset_hook(void (*reset)(void));
 
 /**
  * @brief Submit an asynchronous protocol job from Core 0 to Core 1.

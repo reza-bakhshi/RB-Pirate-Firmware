@@ -230,7 +230,7 @@ void pin_watcher_update(void) {
 /* ── Step 7: Core1 Rendering Callback ────────────────────────────────────────
  *
  * This is the heart of a periodic toolbar.  It is called from the Core1
- * state machine (toolbar_core1_service) with a pre-allocated buffer and
+ * state machine (toolbar_service) with a pre-allocated buffer and
  * the toolbar's screen coordinates.
  *
  * ### Parameters

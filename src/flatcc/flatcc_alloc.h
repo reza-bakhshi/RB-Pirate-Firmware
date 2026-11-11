@@ -45,6 +45,17 @@ extern "C" {
 
 #include <stdlib.h>
 
+/* RB-Pirate embedded runtime uses fixed blocks instead of libc heap. */
+#if defined(BP_EMBEDDED) || defined(BP_FLATCC_STATIC_TEST)
+#include "services/bp_flatcc_memory.h"
+#define FLATCC_ALLOC(n) bp_flatcc_alloc(n)
+#define FLATCC_FREE(p) bp_flatcc_free(p)
+#define FLATCC_REALLOC(p, n) bp_flatcc_realloc(p, n)
+#define FLATCC_CALLOC(n, s) bp_flatcc_calloc(n, s)
+#define FLATCC_ALIGNED_ALLOC(a, n) bp_flatcc_aligned_alloc(a, n)
+#define FLATCC_ALIGNED_FREE(p) bp_flatcc_aligned_free(p)
+#endif
+
 #ifndef FLATCC_ALLOC
 #define FLATCC_ALLOC(n) malloc(n)
 #endif

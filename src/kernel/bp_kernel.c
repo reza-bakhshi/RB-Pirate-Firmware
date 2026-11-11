@@ -1,6 +1,7 @@
 #include "kernel/bp_kernel.h"
 #include "kernel/bp_resource.h"
 #include "services/bp_terminal.h"
+#include "services/bp_control.h"
 #include "services/bp_storage.h"
 #include "services/bp_bin_transport.h"
 #include "kernel/bp_protocol.h"
@@ -98,6 +99,7 @@ uint32_t bp_service(uint8_t core) {
     uint32_t work_done = 0;
 
     if (core == 0) {
+        bp_control_poll();
         bp_health_record_core0_tick();
         bp_job_finalize();
 
@@ -157,7 +159,7 @@ uint32_t bp_service(uint8_t core) {
         bp_bin_transport_service();
 
         // 8. Service active mode periodic task
-        bp_mode_periodic_service(now_ms);
+        if (bp_job_get_active_id() == 0) bp_mode_periodic_service(now_ms);
 
         // 9. Publish UI snapshot
         bp_ui_snapshot_publish(now_ms, 0, 0, 0, 0);

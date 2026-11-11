@@ -13,6 +13,7 @@
 #include "ui/ui_help.h"
 #include "pirate/hwspi.h"
 #include "usb_rx.h"
+#include "services/bp_terminal.h"
 #include "pirate/psu.h"
 #include "commands/global/w_psu.h"
 #include "commands/global/p_pullups.h"
@@ -1013,7 +1014,9 @@ static void ps2_sniff_cleanup(void* ctx, bp_status_t status) {
 
 static bp_status_t ps2_sniff_slice(void* ctx, uint8_t* out_percent) {
     (void)ctx;
-    if (bp_job_check_cancelled()) return BP_STATUS_CANCELLED;
+    char key;
+    if (bp_job_check_cancelled() ||
+        (bp_term_job_getc(&key) == BP_STATUS_OK && (key == 'q' || key == 0x03))) return BP_STATUS_CANCELLED;
     ps2_process_packets();
     *out_percent = 50;
     return BP_STATUS_BUSY;

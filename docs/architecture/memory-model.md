@@ -8,9 +8,10 @@
 ## Current verification limits
 
 The 380 KiB link-time budget covers static main RAM, including reserved heap and alignment.
-It does not measure live heap or worst-case combined call stacks. Legacy FlatCC default
-builder/emitter paths still reference heap allocation; zero heap is a migration target,
-not a verified property of the whole firmware. MakeHex now uses bounded static workspace
+It does not measure live heap or worst-case combined call stacks. FlatCC runtime allocation, including builder, emitter, refmap, JSON backends and
+aligned finalization, uses bounded static block pools. Other linked library paths
+are not globally instrumented; the scoped symbol guard is not a whole-firmware
+live-heap measurement. MakeHex now uses bounded static workspace
 with a single-user guard instead of vectors/strdup and large stack scratch.
 
 ## 1. Why
@@ -105,8 +106,8 @@ These are the known heap users. New code must not add more.
 |---|---|---|
 | `src/fatfs/ffconf.h` | `FF_USE_LFN 3` allocates per file operation | set to `2` (static LFN buffer) |
 | `src/fatfs/ffsystem.c` | `ff_memalloc` / `ff_memfree` | not used after LFN=2 |
-| `src/binmode/bpio.c` | FlatCC finalize buffer `malloc`/`free` per packet | custom static allocator or fixed output buffer |
-| `src/builder.c` / `src/refmap.c` | FlatCC builder allocations | static allocator hook |
+| `src/binmode/bpio.c` | Fixed output buffer, Core 0 builder | migrated |
+| FlatCC runtime (`builder`, `emitter`, `refmap`, JSON) | 8 x 256, 4 x 1024, 2 x 4096 byte fixed blocks | migrated via `bp_flatcc_memory` |
 | `src/mode/subghz_protocols.c` | decoder/encoder `malloc`/`free` | fixed protocol pool sized for max concurrent decoders |
 | `src/mode/subghz_rx.c` | decoder slots per protocol | static slot array |
 | `src/mode/lcdtap_backend.cpp` | `new LcdTap`, `std::malloc` framebuffer | placement new into static storage + framebuffer arena |
@@ -144,3 +145,17 @@ At link time:
 - Code review checks that every buffer has a static owner and a documented size.
 - A change that needs dynamic allocation must first add a memory-model exception with a measured
   budget and an owner.
+
+## FlatCC pool ownership and limits
+
+The pools reserve 14 KiB of payload and are owned by Core 0. They replace malloc,
+calloc, realloc, free, aligned_alloc and aligned_free through `flatcc_alloc.h` when
+`BP_EMBEDDED` is defined. Unsupported sizes or exhausted pools return failure; failed
+realloc preserves the original block. Block addresses remain stable until release.
+The builder returns allocation errors rather than asserting on capacity exhaustion;
+structural FlatCC assertions remain enabled. Callers must check returned buffers.
+
+BPIO limits writes/reads to 512 bytes and responses to its packet buffer. Setup clears
+an existing builder before reinitialization. Host tests build maximum-data responses,
+mode/pin-label status vectors, aligned final buffers and oversized requests repeatedly.
+The object-symbol guard rejects libc allocation references in every FlatCC runtime backend.

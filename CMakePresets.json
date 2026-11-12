@@ -1,0 +1,22 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "rb-pirate-rp2350",
+      "displayName": "RB-Pirate RP2350 Arm Secure",
+      "binaryDir": "${sourceDir}/build_rp2350",
+      "cacheVariables": {
+        "PICO_PLATFORM": "rp2350",
+        "PICO_BOARD": "rb-pirate"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "rb-pirate-rp2350",
+      "configurePreset": "rb-pirate-rp2350",
+      "targets": ["bus_pirate6"]
+    }
+  ]
+}

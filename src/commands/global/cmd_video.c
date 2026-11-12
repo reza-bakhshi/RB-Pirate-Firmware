@@ -54,8 +54,9 @@ void cmd_video_handler(struct command_result* res) {
     }
 
     if (!hstx_dvi_is_supported()) {
-        printf("%sNotice:%s HSTX DVI digital video generator is only supported on RP2350 hardware.\r\n",
+        printf("%sNotice:%s DVI output is unavailable: this board has no supported DVI wiring.\r\n",
                ui_term_color_warning(), ui_term_color_reset());
+        res->error = true;
         return;
     }
 

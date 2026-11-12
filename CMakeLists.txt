@@ -40,8 +40,8 @@ endif()
 message(GIT_COMMIT_HASH="${GIT_COMMIT_HASH}")
 message(BP_FIRMWARE_HASH="${BP_FIRMWARE_HASH}")
 
-set(PICO_PLATFORM "rp2350")
-set(PICO_BOARD rb-pirate)
+# Modified by Codex: validate explicit platform requests before SDK import.
+include(cmake/bp_platform.cmake)
 
 #set(PICO_SDK_PATH "~/pico-sdk")
 

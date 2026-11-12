@@ -15,6 +15,8 @@
 #include <stddef.h>
 #include "pirate/lcd.h"
 #include "kernel/bp_resource.h"
+#include "pico/stdlib.h"
+/* Modified by Codex: bounded DMA completion and checked pixel transfers. */
 
 #if !defined(BP_HOST_TEST)
 #include "pico/stdlib.h"
@@ -55,13 +57,19 @@ bool bp_lcd_is_busy(void) {
     return s_lcd_busy;
 }
 
-void bp_lcd_wait_idle(void) {
-#if !defined(BP_HOST_TEST)
-    if (s_lcd_dma_ch >= 0 && s_lcd_busy) {
-        dma_channel_wait_for_finish_blocking((uint)s_lcd_dma_ch);
+bool bp_lcd_wait_idle_timeout(uint32_t timeout_us) {
+    uint32_t start = time_us_32();
+    for (uint32_t attempts = 0; attempts < 100000; ++attempts) {
+        if (!bp_lcd_is_busy()) return true;
+        if ((uint32_t)(time_us_32() - start) >= timeout_us) return false;
+        tight_loop_contents();
     }
-#endif
-    s_lcd_busy = false;
+    /* Keep busy set: the caller must retain its buffer until cleanup/completion. */
+    return false;
+}
+
+bool bp_lcd_wait_idle(void) {
+    return bp_lcd_wait_idle_timeout(100000);
 }
 
 bool bp_lcd_init(void) {
@@ -105,6 +113,7 @@ void bp_lcd_cleanup(void) {
 }
 
 void bp_lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+    if (!s_lcd_ready || bp_lcd_is_busy() || x0 > x1 || y0 > y1) return;
     if (x0 >= BP_LCD_WIDTH) x0 = BP_LCD_WIDTH - 1;
     if (x1 >= BP_LCD_WIDTH) x1 = BP_LCD_WIDTH - 1;
     if (y0 >= BP_LCD_HEIGHT) y0 = BP_LCD_HEIGHT - 1;
@@ -136,7 +145,8 @@ void bp_lcd_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
 }
 
 bool bp_lcd_flush_async(const uint16_t* pixels, size_t count) {
-    if (!s_lcd_ready || !pixels || count == 0) {
+    if (!s_lcd_ready || !pixels || count == 0 || ((uintptr_t)pixels & 1u) != 0 ||
+        count > (size_t)(s_window_x1 - s_window_x0 + 1) * (s_window_y1 - s_window_y0 + 1)) {
         return false;
     }
 

@@ -1,8 +1,8 @@
 /**
  * @file hstx_dvi.h
  * @brief RP2350 HSTX DVI Digital Video Generator & VT100 Terminal Mirror.
- * @details Generates 640x480 60Hz DVI bitstreams utilizing the RP2350 HSTX
- *          high-speed serial transmit serializer and DMA scanline ping-pong buffers.
+ * @details Provides a host-testable 640x480 text renderer. Physical DVI output
+ *          is unsupported on RB-Pirate until board wiring and timing are implemented.
  */
 
 #pragma once

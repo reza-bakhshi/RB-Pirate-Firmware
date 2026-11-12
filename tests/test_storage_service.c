@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 199309L
 #define __dmb() __sync_synchronize()
+#define BP_STORAGE_CUSTOM_TF_CARD 1
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +34,18 @@ void mem_free(uint8_t* ptr) {
 /* Mock watchdog */
 void bp_watchdog_heartbeat(uint32_t core_id) {
     (void)core_id;
+}
+
+static uint32_t s_mock_media_generation = 1;
+static bool s_mock_metadata_valid = true;
+
+uint32_t tf_card_get_media_generation(void) {
+    if (!s_mock_metadata_valid) return 0;
+    return s_mock_media_generation;
+}
+
+void tf_card_invalidate_metadata(void) {
+    s_mock_metadata_valid = false;
 }
 
 static void test_init_and_mount(void) {
@@ -265,6 +278,80 @@ static void test_storage_integrity(void) {
     puts("[PASS] Storage failure preservation, recovery, append and offsets");
 }
 
+static void test_delayed_replies_and_replacement_media(void) {
+    printf("[TEST] Delayed replies and replacement media: assert no new-medium writes...\n");
+    bp_storage_init();
+    s_mock_media_generation = 1;
+    s_mock_metadata_valid = true;
+    bp_storage_mount();
+
+    /* 1. Core 1 prepares a write request for media generation 1 */
+    uint8_t payload[] = "ATTEMPTED_STALE_WRITE";
+    bp_storage_rpc_req_t req = {
+        .request_id = 9999,
+        .type = BP_STORAGE_RPC_WRITE,
+        .path = "stale_target.bin",
+        .offset = 0,
+        .size = sizeof(payload),
+        .data = payload,
+        .media_generation = 1,
+        .cancelled = false
+    };
+    bp_storage_rpc_resp_t resp = {0};
+
+    /* Queue the request on Core 1 (timeout = 0 to simulate delayed reply / asynchronous queuing) */
+    bp_status_t st = bp_storage_rpc_call(&req, &resp, 0);
+    assert(st == BP_STATUS_TIMEOUT);
+
+    /* 2. Before Core 0 services the queue, media is removed and replaced!
+          Old media unmounts, new card inserted with media generation 2 */
+    bp_storage_unmount();
+    assert(!s_mock_metadata_valid);
+
+    s_mock_media_generation = 2;
+    s_mock_metadata_valid = true;
+    bp_storage_mount();
+    assert(tf_card_get_media_generation() == 2);
+
+    /* Clear mock files to detect if any write occurs */
+    memset(mock_files, 0, sizeof(mock_files));
+
+    /* 3. Core 0 runs its service loop */
+    bp_storage_service();
+
+    /* 4. Assert NO file was written to the new medium */
+    int slot = mock_find("stale_target.bin");
+    assert(slot == -1); /* File must NOT exist on new medium */
+
+    /* 5. Assert that when request was cancelled/timed-out, buffer was not accessed */
+    /* Queue another request with generation 2 */
+    uint8_t buffer_reused[32];
+    memset(buffer_reused, 0xEE, sizeof(buffer_reused));
+    req.request_id = 10000;
+    req.type = BP_STORAGE_RPC_WRITE;
+    strncpy(req.path, "valid_gen2.bin", sizeof(req.path));
+    req.size = sizeof(buffer_reused);
+    req.data = buffer_reused;
+    req.media_generation = 2;
+    req.cancelled = false;
+
+    /* Timeout immediately simulates caller releasing buffer */
+    st = bp_storage_rpc_call(&req, &resp, 0);
+    assert(st == BP_STATUS_TIMEOUT);
+
+    /* Invalidate caller buffer to verify Core 0 does not dereference it */
+    memset(buffer_reused, 0x00, sizeof(buffer_reused));
+
+    /* Core 0 services queue */
+    bp_storage_service();
+
+    /* File must not have been created because buffer pointer was cleared on timeout */
+    slot = mock_find("valid_gen2.bin");
+    assert(slot == -1);
+
+    printf("[PASS] Delayed replies and replacement media assertions verified\n");
+}
+
 int main(void) {
     printf("=== Running Storage Service Unit Tests ===\n");
     test_storage_integrity();
@@ -275,6 +362,7 @@ int main(void) {
     test_streaming_capture();
     test_atomic_config_persistence();
     test_blockdev_lock();
+    test_delayed_replies_and_replacement_media();
     printf("=== ALL STORAGE SERVICE TESTS PASSED ===\n");
     return 0;
 }

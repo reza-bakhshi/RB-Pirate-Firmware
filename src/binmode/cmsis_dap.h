@@ -113,6 +113,10 @@ bool cmsis_dap_is_connected(void);
  */
 const char* cmsis_dap_mode_name(void);
 
+#ifdef BP_HOST_TEST
+void cmsis_dap_test_ack(uint8_t ack, uint32_t count);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

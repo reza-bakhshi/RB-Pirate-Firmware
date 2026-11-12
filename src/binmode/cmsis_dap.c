@@ -4,7 +4,9 @@
  */
 
 #include "binmode/cmsis_dap.h"
+#include "pico/stdlib.h"
 #include <string.h>
+/* Modified by Codex: enforce response capacity before target side effects. */
 #include <stdio.h>
 #include "pirate.h"
 #include "pirate/bio.h"
@@ -229,8 +231,18 @@ DAP_UNUSED static uint8_t swd_transfer_hardware(uint8_t req, uint32_t *data) {
     return ack;
 }
 
-static uint8_t swd_transfer(uint8_t req, uint32_t *data) {
 #if defined(BP_HOST_TEST)
+static uint8_t s_test_ack;
+static uint32_t s_test_ack_remaining;
+void cmsis_dap_test_ack(uint8_t ack, uint32_t count) {
+    s_test_ack = ack;
+    s_test_ack_remaining = count;
+}
+#endif
+
+static uint8_t swd_transfer_once(uint8_t req, uint32_t *data) {
+#if defined(BP_HOST_TEST)
+    if (s_test_ack_remaining) { s_test_ack_remaining--; return s_test_ack; }
     // Host test mock engine
     uint8_t ap_ndp = (req >> 0) & 1;
     uint8_t r_nw   = (req >> 1) & 1;
@@ -271,6 +283,17 @@ static uint8_t swd_transfer(uint8_t req, uint32_t *data) {
 #else
     return swd_transfer_hardware(req, data);
 #endif
+}
+
+/* WAIT is retryable; FAULT/parity/protocol errors must be reported to the host.
+ * Limit both retry count and elapsed time so a dead target cannot monopolize USB. */
+static uint8_t swd_transfer(uint8_t req, uint32_t *data) {
+    uint32_t start = time_us_32();
+    for (uint32_t attempt = 0; ; ++attempt) {
+        uint8_t ack = swd_transfer_once(req, data);
+        if (ack != DAP_TRANSFER_WAIT || attempt >= s_dap.retry_count ||
+            (uint32_t)(time_us_32() - start) >= 100000) return ack;
+    }
 }
 
 void cmsis_dap_init(void) {
@@ -350,6 +373,7 @@ uint32_t cmsis_dap_process_command(const uint8_t *req, uint32_t req_len,
                 case DAP_INFO_VENDOR: {
                     const char vendor[] = "Bus Pirate";
                     uint8_t len = sizeof(vendor); // includes null terminator
+                    if ((uint32_t)len + 2 > max_resp_len) return 0;
                     resp[1] = len;
                     memcpy(&resp[2], vendor, len);
                     resp_len = 2 + len;
@@ -358,6 +382,7 @@ uint32_t cmsis_dap_process_command(const uint8_t *req, uint32_t req_len,
                 case DAP_INFO_PRODUCT: {
                     const char product[] = "RB-Pirate CMSIS-DAP";
                     uint8_t len = sizeof(product);
+                    if ((uint32_t)len + 2 > max_resp_len) return 0;
                     resp[1] = len;
                     memcpy(&resp[2], product, len);
                     resp_len = 2 + len;
@@ -366,6 +391,7 @@ uint32_t cmsis_dap_process_command(const uint8_t *req, uint32_t req_len,
                 case DAP_INFO_SERNUM: {
                     const char ser[] = "BP6-CMSIS-DAP";
                     uint8_t len = sizeof(ser);
+                    if ((uint32_t)len + 2 > max_resp_len) return 0;
                     resp[1] = len;
                     memcpy(&resp[2], ser, len);
                     resp_len = 2 + len;
@@ -374,6 +400,7 @@ uint32_t cmsis_dap_process_command(const uint8_t *req, uint32_t req_len,
                 case DAP_INFO_FW_VER: {
                     const char fw[] = "2.1.1";
                     uint8_t len = sizeof(fw);
+                    if ((uint32_t)len + 2 > max_resp_len) return 0;
                     resp[1] = len;
                     memcpy(&resp[2], fw, len);
                     resp_len = 2 + len;
@@ -399,6 +426,7 @@ uint32_t cmsis_dap_process_command(const uint8_t *req, uint32_t req_len,
                     break;
                 }
                 case DAP_INFO_UART_BUF_SIZE: {
+                    if (max_resp_len < 6) return 0;
                     resp[1] = 4;
                     memset(&resp[2], 0, 4);
                     resp_len = 6;
@@ -498,12 +526,11 @@ uint32_t cmsis_dap_process_command(const uint8_t *req, uint32_t req_len,
 
         case DAP_ID_SWJ_SEQUENCE: {
             if (req_len >= 2) {
-                uint8_t bit_cnt = req[1];
-                if (bit_cnt == 0) bit_cnt = 64; // In CMSIS-DAP, 0 means 64 bits or 256 bits depending on version
+                uint16_t bit_cnt = req[1] ? req[1] : 256;
                 uint8_t byte_cnt = (bit_cnt + 7) / 8;
                 if (req_len >= (uint32_t)(2 + byte_cnt)) {
                     bio_output(SWD_PIN_DIO);
-                    for (uint8_t i = 0; i < bit_cnt; i++) {
+                    for (uint16_t i = 0; i < bit_cnt; i++) {
                         bool b = (req[2 + (i / 8)] >> (i % 8)) & 1;
                         swd_write_bit(b);
                     }
@@ -564,6 +591,10 @@ uint32_t cmsis_dap_process_command(const uint8_t *req, uint32_t req_len,
                 uint8_t r_nw = (req_hdr >> 1) & 1;
 
                 if (r_nw) { // Read transfer
+                    if (max_resp_len - resp_idx < 4) {
+                        last_ack = DAP_TRANSFER_ERROR;
+                        break;
+                    }
                     uint32_t data = 0;
                     last_ack = swd_transfer(req_hdr, &data);
                     if (last_ack != DAP_TRANSFER_OK) break;
@@ -607,6 +638,10 @@ uint32_t cmsis_dap_process_command(const uint8_t *req, uint32_t req_len,
 
             for (uint16_t i = 0; i < block_cnt; i++) {
                 if (r_nw) { // Block Read
+                    if (max_resp_len - resp_idx < 4) {
+                        last_ack = DAP_TRANSFER_ERROR;
+                        break;
+                    }
                     uint32_t data = 0;
                     last_ack = swd_transfer(req_hdr, &data);
                     if (last_ack != DAP_TRANSFER_OK) break;

@@ -31,6 +31,8 @@
 #include "commands/global/w_psu.h"
 #include "lib/bp_args/bp_cmd.h"
 #include "pirate/psu.h"
+#include "pirate/profile_clock.h"
+/* Modified by Codex: preserve profiler time across timer wraps. */
 #include "pirate/amux.h"
 #include "ui/ui_help.h"
 #include "usb_rx.h"
@@ -611,7 +613,7 @@ void psucmd_profile_handler(struct command_result* res) {
     system_config.terminal_toolbar_pause = true;
 
     uint32_t start_us = time_us_32();
-    uint32_t last_us = start_us;
+    bp_profile_clock_t profile_clock = { .last_us = start_us };
     uint32_t last_ui_us = start_us;
     uint32_t last_csv_us = start_us;
 
@@ -628,8 +630,7 @@ void psucmd_profile_handler(struct command_result* res) {
         bp_service(0);
 
         uint32_t now_us = time_us_32();
-        uint32_t dt_us = now_us - last_us;
-        last_us = now_us;
+        uint32_t dt_us = bp_profile_clock_update(&profile_clock, now_us);
 
         uint32_t vout_mv, isense_ua, vreg_mv;
         bool fuse_ok;
@@ -656,7 +657,7 @@ void psucmd_profile_handler(struct command_result* res) {
         // UI update every 100ms
         if ((uint32_t)(now_us - last_ui_us) >= 100000) {
             last_ui_us = now_us;
-            uint32_t elapsed_s = (now_us - start_us) / 1000000UL;
+            uint32_t elapsed_s = profile_clock.elapsed_us / 1000000ULL;
             uint32_t hours = elapsed_s / 3600;
             uint32_t mins = (elapsed_s % 3600) / 60;
             uint32_t secs = elapsed_s % 60;
@@ -679,21 +680,21 @@ void psucmd_profile_handler(struct command_result* res) {
         // CSV logging stream every 100ms
         if (file_open && (uint32_t)(now_us - last_csv_us) >= 100000) {
             last_csv_us = now_us;
-            uint32_t elapsed_ms = (now_us - start_us) / 1000UL;
+            uint64_t elapsed_ms = profile_clock.elapsed_us / 1000ULL;
             uint32_t mah_int = (uint32_t)(charge_uas_frac / 3600000000000ULL);
             uint32_t mah_frac = (uint32_t)((charge_uas_frac / 3600000000ULL) % 1000ULL);
             uint32_t mwh_int = (uint32_t)(energy_uws_frac / 3600000000000ULL);
             uint32_t mwh_frac = (uint32_t)((energy_uws_frac / 3600000000ULL) % 1000ULL);
 
             char line[128];
-            int n = snprintf(line, sizeof(line), "%lu,%1.3f,%1.2f,%1.2f,%u.%03u,%u.%03u\r\n",
-                             (unsigned long)elapsed_ms,
+            int n = snprintf(line, sizeof(line), "%llu,%1.3f,%1.2f,%1.2f,%u.%03u,%u.%03u\r\n",
+                             (unsigned long long)elapsed_ms,
                              (float)vout_mv / 1000.0f,
                              (float)isense_ua / 1000.0f,
                              (float)power_uw / 1000.0f,
                              (unsigned)mah_int, (unsigned)mah_frac,
                              (unsigned)mwh_int, (unsigned)mwh_frac);
-            if (n > 0) {
+            if (n > 0 && (size_t)n < sizeof(line)) {
                 if (csv_buf_pos + (unsigned)n >= sizeof(csv_buf)) {
                     UINT bw = 0;
                     f_write(&fil, csv_buf, csv_buf_pos, &bw);
@@ -705,12 +706,13 @@ void psucmd_profile_handler(struct command_result* res) {
             }
         }
 
-        if (duration_s > 0 && (now_us - start_us) >= (duration_s * 1000000UL)) {
+        if (duration_s > 0 && bp_profile_clock_expired(&profile_clock, duration_s)) {
             break;
         }
 
         char c = 0;
-        if (rx_fifo_try_get(&c) || bp_job_check_cancelled()) {
+        if (bp_job_check_cancelled()) break;
+        if (rx_fifo_try_get(&c)) {
             if (c == 'q' || c == 'x' || c == 0x1B || c == 0x03 || c == ' ') {
                 break;
             }
@@ -730,8 +732,8 @@ void psucmd_profile_handler(struct command_result* res) {
 
     system_config.terminal_toolbar_pause = false;
 
-    uint32_t total_us = time_us_32() - start_us;
-    uint32_t total_s = total_us / 1000000UL;
+    bp_profile_clock_update(&profile_clock, time_us_32());
+    uint32_t total_s = profile_clock.elapsed_us / 1000000ULL;
     uint32_t final_mah_int = (uint32_t)(charge_uas_frac / 3600000000000ULL);
     uint32_t final_mah_frac = (uint32_t)((charge_uas_frac / 3600000000ULL) % 1000ULL);
     uint32_t final_mwh_int = (uint32_t)(energy_uws_frac / 3600000000000ULL);
@@ -770,15 +772,23 @@ bool psucmd_init(void) {
 }
 
 void psucmd_show_clear_error(void) {
-    if (psu_status.error_pending && (psu_status.error_overcurrent || psu_status.error_undervoltage)){
+    if (psu_status.error_pending && (psu_status.error_overcurrent || psu_status.error_undervoltage || psu_status.error_stale_telemetry)){
+        bool overcurrent = psu_status.error_overcurrent;
+        bool undervoltage = psu_status.error_undervoltage;
+        bool stale = psu_status.error_stale_telemetry;
         psu_clear_error_flag();
         ui_term_screen_flash(true);
         printf("\r\n");
-        if(psu_status.error_overcurrent) {
+        if(overcurrent) {
             ui_help_error(T_PSU_CURRENT_LIMIT_ERROR);
         }
-        if(psu_status.error_undervoltage) {
+        if(undervoltage) {
             ui_help_error(T_PSU_SHORT_ERROR);
+        }
+        if(stale) {
+            printf("%sError: AMUX telemetry stall/timeout detected, power supply disabled for safety%s\r\n",
+                   ui_term_color_error(),
+                   ui_term_color_reset());
         }
         busy_wait_ms(500);
         ui_term_screen_flash(false);

@@ -1,4 +1,4 @@
-# NOTE: This CodeQL builds both RP2040 and RP2350 builds.
+# NOTE: This CodeQL builds the supported RB-Pirate RP2350 firmware only.
 #       Analysis is limited to C/CPP language.
 name: "CodeQL"
 
@@ -46,13 +46,8 @@ jobs:
         sudo apt update && sudo apt install gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
         echo "PICO_SDK_FETCH_FROM_GIT=TRUE" >> "$GITHUB_ENV"
 
-    # Each board type much be in its own separate subdirectory, due to RPi SDK CMakefile's ...
-    # ... unexpectedly ... setting global settings, which preventing two directories from using
-    # different versions of SDK in a single CMake build.
-    - name: CMake Config - RP2040
-      run: cmake -B ${{github.workspace}}/build_rp2040 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBP_PICO_PLATFORM=rp2040
-    - name: CMake Config - RP2350
-      run: cmake -B ${{github.workspace}}/build_rp2350 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DBP_PICO_PLATFORM=rp2350
+    - name: CMake Config - RB-Pirate RP2350
+      run: cmake -B ${{github.workspace}}/build_rp2350 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DPICO_PLATFORM=rp2350 -DPICO_BOARD=rb-pirate
     # ##########################################################################################
 
     # ##########################################################################################
@@ -72,8 +67,6 @@ jobs:
     
     # ##########################################################################################
     # The following manual build steps are directly taken from build.yaml
-    - name: Build - RP2040
-      run: cmake --build ${{github.workspace}}/build_rp2040 --parallel --target ${{env.BUILD_TARGET}}
     - name: Build - RP2350
       run: cmake --build ${{github.workspace}}/build_rp2350 --parallel --target ${{env.BUILD_TARGET}}
     # ##########################################################################################

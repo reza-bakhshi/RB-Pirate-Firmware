@@ -11,6 +11,7 @@ CFLAGS="-Wall -Wextra -Wno-unused-parameter -DBP_HOST_TEST -include ${ROOT_DIR}/
 
 ${CC} ${CFLAGS} \
     ${ROOT_DIR}/tests/test_can_glitch.c \
+    ${ROOT_DIR}/src/kernel/bp_resource.c \
     ${ROOT_DIR}/src/pirate/hwcan_pio.c \
     ${ROOT_DIR}/src/mode/can.c \
     ${ROOT_DIR}/src/commands/global/cmd_glitch.c \

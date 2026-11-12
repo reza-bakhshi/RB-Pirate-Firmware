@@ -15,6 +15,7 @@
 #include "system_config.h"
 #include "pirate/amux.h"
 #include "pirate/psu.h"
+#define BP_STORAGE_OWNER 1
 #include "../../tests/stubs/storage_fs.h"
 
 // Stubs for host execution
@@ -35,6 +36,11 @@ uint32_t hw_adc_voltage[16];
 uint32_t hw_adc_avgsum_voltage[16];
 
 struct _system_config system_config;
+
+static uint32_t s_mock_open_file_count = 0;
+void bp_storage_file_opened(void) { s_mock_open_file_count++; }
+void bp_storage_file_closed(void) { if (s_mock_open_file_count > 0) s_mock_open_file_count--; }
+uint32_t bp_storage_get_open_count(void) { return s_mock_open_file_count; }
 
 void bp_watchdog_heartbeat(uint8_t c) { (void)c; }
 
@@ -394,15 +400,336 @@ static void test_power_profiler_csv_streaming(void) {
            mock_files[idx].size, csv_path);
 }
 
+static void test_cal_save_preserves_previous(void) {
+    memset(mock_files, 0, sizeof(mock_files));
+    psu_cal_t cal;
+    psu_cal_reset_defaults(&cal);
+    assert(psu_cal_save(&cal));
+    cal.vout_gain_ppt = 1100;
+    cal.checksum = psu_cal_calc_checksum(&cal);
+    mock_sync_error = FR_DISK_ERR;
+    assert(!psu_cal_save(&cal));
+    mock_sync_error = 0;
+    assert(psu_cal_load());
+    psu_cal_t loaded;
+    psu_cal_get(&loaded);
+    assert(loaded.vout_gain_ppt == 1000);
+    mock_rename_error = FR_DISK_ERR;
+    assert(!psu_cal_save(&cal));
+    mock_rename_error = 0;
+    assert(psu_cal_load());
+    psu_cal_get(&loaded);
+    assert(loaded.vout_gain_ppt == 1000);
+    assert(psu_cal_save(&cal));
+    /* Simulate reset after moving primary aside, before installing temp. */
+    assert(f_unlink(PSU_CAL_FILE) == FR_OK);
+    assert(psu_cal_load());
+    psu_cal_get(&loaded);
+    assert(loaded.vout_gain_ppt == 1000);
+}
+
+static void test_cal_persistence_errors(void) {
+    psu_cal_t cal;
+    psu_cal_reset_defaults(&cal);
+    mock_sync_error = FR_DISK_ERR;
+    assert(!psu_cal_save(&cal));
+    mock_sync_error = 0;
+    mock_close_error = FR_DISK_ERR;
+    assert(!psu_cal_save(&cal));
+    mock_close_error = 0;
+    mock_short_write = 1;
+    assert(!psu_cal_save(&cal));
+    mock_short_write = 0;
+}
+
+static void test_cal_invalid_numeric_fields(void) {
+    const char *values[] = { "1e100", "-1", "1000.5", "66536", "null" };
+    for (unsigned i = 0; i < sizeof(values) / sizeof(values[0]); ++i) {
+        memset(mock_files, 0, sizeof(mock_files));
+        char json[512];
+        int len = snprintf(json, sizeof(json),
+            "{\"vout_gain_ppt\":%s,\"vout_offset_mv\":0,"
+            "\"isense_gain_ppt\":1000,\"isense_offset_ua\":0,"
+            "\"vdac_gain_ppt\":1000,\"vdac_offset_mv\":0,"
+            "\"idac_gain_ppt\":1000,\"idac_offset_ma\":0}", values[i]);
+        FIL fil;
+        UINT bw;
+        assert(f_open(&fil, PSU_CAL_FILE, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK);
+        assert(f_write(&fil, json, len, &bw) == FR_OK && bw == (UINT)len);
+        assert(f_close(&fil) == FR_OK);
+        assert(!psu_cal_load());
+        psu_cal_t cal;
+        psu_cal_get(&cal);
+        assert(cal.flags == 0 && cal.vout_gain_ppt == 1000);
+    }
+    memset(mock_files, 0, sizeof(mock_files));
+    FIL fil;
+    UINT bw;
+    assert(f_open(&fil, PSU_CAL_FILE, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK);
+    assert(f_write(&fil, "{}", 2, &bw) == FR_OK);
+    assert(f_close(&fil) == FR_OK);
+    assert(!psu_cal_load());
+}
+
+static void test_corrupt_primary_valid_backup_recovery(void) {
+    printf("[TEST] Corrupt primary with valid backup recovery...\n");
+    memset(mock_files, 0, sizeof(mock_files));
+
+    /* 1. Write corrupted primary */
+    FIL fil;
+    UINT bw;
+    assert(f_open(&fil, PSU_CAL_FILE, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK);
+    const char *corrupted_primary = "{\n  \"schema_version\": 1,\n  \"vout_gain_ppt\": 99999,\n  \"checksum_crc32\": \"12345678\"\n}\n";
+    assert(f_write(&fil, corrupted_primary, strlen(corrupted_primary), &bw) == FR_OK);
+    assert(f_close(&fil) == FR_OK);
+
+    /* 2. Write valid backup with custom coefficients */
+    psu_cal_t backup_cal;
+    psu_cal_reset_defaults(&backup_cal);
+    backup_cal.vout_gain_ppt = 1080;
+    backup_cal.vout_offset_mv = -12;
+    backup_cal.flags = 1;
+    backup_cal.checksum = psu_cal_calc_checksum(&backup_cal);
+
+    uint32_t crc = psu_cal_canonical_crc32(1, &backup_cal);
+    char backup_json[512];
+    int len = snprintf(backup_json, sizeof(backup_json),
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"vout_gain_ppt\": %u,\n"
+        "  \"vout_offset_mv\": %d,\n"
+        "  \"isense_gain_ppt\": %u,\n"
+        "  \"isense_offset_ua\": %d,\n"
+        "  \"vdac_gain_ppt\": %u,\n"
+        "  \"vdac_offset_mv\": %d,\n"
+        "  \"idac_gain_ppt\": %u,\n"
+        "  \"idac_offset_ma\": %d,\n"
+        "  \"checksum_crc32\": \"%08x\"\n"
+        "}\n",
+        backup_cal.vout_gain_ppt, backup_cal.vout_offset_mv,
+        backup_cal.isense_gain_ppt, backup_cal.isense_offset_ua,
+        backup_cal.vdac_gain_ppt, backup_cal.vdac_offset_mv,
+        backup_cal.idac_gain_ppt, backup_cal.idac_offset_ma,
+        crc
+    );
+
+    assert(f_open(&fil, "/config/psu_cal.bak", FA_CREATE_ALWAYS | FA_WRITE) == FR_OK);
+    assert(f_write(&fil, backup_json, len, &bw) == FR_OK);
+    assert(f_close(&fil) == FR_OK);
+
+    /* 3. Load should not stop at corrupt primary; must recover from valid backup! */
+    assert(psu_cal_load());
+
+    psu_cal_t current;
+    psu_cal_get(&current);
+    assert(current.vout_gain_ppt == 1080);
+    assert(current.vout_offset_mv == -12);
+    assert(current.flags == 1);
+    assert(bp_storage_get_open_count() == 0);
+
+    printf("[PASS] Corrupt primary bypassed, valid backup recovered successfully\n");
+}
+
+static void test_bounded_candidate_parser_edge_cases(void) {
+    printf("[TEST] Bounded parser edge cases (duplicates, trailing, oversize, CRC, legacy)...\n");
+    psu_cal_t cal;
+    bool is_legacy = false;
+
+    /* 1. NULL / Empty checks */
+    assert(!psu_cal_parse_json(NULL, 10, &cal, &is_legacy));
+    assert(!psu_cal_parse_json("{}", 0, &cal, &is_legacy));
+    assert(!psu_cal_parse_json("{}", 2, NULL, &is_legacy));
+
+    /* 2. Oversize check (>= 512 bytes) */
+    char huge[513];
+    memset(huge, ' ', sizeof(huge));
+    assert(!psu_cal_parse_json(huge, sizeof(huge), &cal, &is_legacy));
+
+    /* 3. Duplicate field check */
+    const char *dup_field =
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"vout_gain_ppt\": 1000,\n"
+        "  \"vout_gain_ppt\": 1000,\n"
+        "  \"vout_offset_mv\": 0,\n"
+        "  \"isense_gain_ppt\": 1000,\n"
+        "  \"isense_offset_ua\": 0,\n"
+        "  \"vdac_gain_ppt\": 1000,\n"
+        "  \"vdac_offset_mv\": 0,\n"
+        "  \"idac_gain_ppt\": 1000,\n"
+        "  \"idac_offset_ma\": 0,\n"
+        "  \"checksum_crc32\": \"12345678\"\n"
+        "}";
+    assert(!psu_cal_parse_json(dup_field, strlen(dup_field), &cal, &is_legacy));
+
+    /* 4. Trailing garbage check */
+    psu_cal_t valid_def;
+    psu_cal_reset_defaults(&valid_def);
+    uint32_t valid_crc = psu_cal_canonical_crc32(1, &valid_def);
+
+    char valid_with_trailing[300];
+    snprintf(valid_with_trailing, sizeof(valid_with_trailing),
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"vout_gain_ppt\": 1000,\n"
+        "  \"vout_offset_mv\": 0,\n"
+        "  \"isense_gain_ppt\": 1000,\n"
+        "  \"isense_offset_ua\": 0,\n"
+        "  \"vdac_gain_ppt\": 1000,\n"
+        "  \"vdac_offset_mv\": 0,\n"
+        "  \"idac_gain_ppt\": 1000,\n"
+        "  \"idac_offset_ma\": 0,\n"
+        "  \"checksum_crc32\": \"%08x\"\n"
+        "} trailing_garbage", valid_crc);
+    assert(!psu_cal_parse_json(valid_with_trailing, strlen(valid_with_trailing), &cal, &is_legacy));
+
+    /* Valid with trailing whitespace should pass */
+    char valid_with_ws[300];
+    snprintf(valid_with_ws, sizeof(valid_with_ws),
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"vout_gain_ppt\": 1000,\n"
+        "  \"vout_offset_mv\": 0,\n"
+        "  \"isense_gain_ppt\": 1000,\n"
+        "  \"isense_offset_ua\": 0,\n"
+        "  \"vdac_gain_ppt\": 1000,\n"
+        "  \"vdac_offset_mv\": 0,\n"
+        "  \"idac_gain_ppt\": 1000,\n"
+        "  \"idac_offset_ma\": 0,\n"
+        "  \"checksum_crc32\": \"%08x\"\n"
+        "}   \n\r\t  ", valid_crc);
+    assert(psu_cal_parse_json(valid_with_ws, strlen(valid_with_ws), &cal, &is_legacy));
+    assert(!is_legacy);
+
+    /* 5. Unsupported future schema_version check */
+    char bad_version[300];
+    snprintf(bad_version, sizeof(bad_version),
+        "{\n"
+        "  \"schema_version\": 2,\n"
+        "  \"vout_gain_ppt\": 1000,\n"
+        "  \"vout_offset_mv\": 0,\n"
+        "  \"isense_gain_ppt\": 1000,\n"
+        "  \"isense_offset_ua\": 0,\n"
+        "  \"vdac_gain_ppt\": 1000,\n"
+        "  \"vdac_offset_mv\": 0,\n"
+        "  \"idac_gain_ppt\": 1000,\n"
+        "  \"idac_offset_ma\": 0,\n"
+        "  \"checksum_crc32\": \"%08x\"\n"
+        "}", valid_crc);
+    assert(!psu_cal_parse_json(bad_version, strlen(bad_version), &cal, &is_legacy));
+
+    /* 6. Invalid non-hex / wrong length checksum check */
+    char bad_checksum[300];
+    snprintf(bad_checksum, sizeof(bad_checksum),
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"vout_gain_ppt\": 1000,\n"
+        "  \"vout_offset_mv\": 0,\n"
+        "  \"isense_gain_ppt\": 1000,\n"
+        "  \"isense_offset_ua\": 0,\n"
+        "  \"vdac_gain_ppt\": 1000,\n"
+        "  \"vdac_offset_mv\": 0,\n"
+        "  \"idac_gain_ppt\": 1000,\n"
+        "  \"idac_offset_ma\": 0,\n"
+        "  \"checksum_crc32\": \"zzzzzzzz\"\n"
+        "}");
+    assert(!psu_cal_parse_json(bad_checksum, strlen(bad_checksum), &cal, &is_legacy));
+
+    /* 7. Mismatched checksum */
+    char wrong_crc[300];
+    snprintf(wrong_crc, sizeof(wrong_crc),
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"vout_gain_ppt\": 1000,\n"
+        "  \"vout_offset_mv\": 0,\n"
+        "  \"isense_gain_ppt\": 1000,\n"
+        "  \"isense_offset_ua\": 0,\n"
+        "  \"vdac_gain_ppt\": 1000,\n"
+        "  \"vdac_offset_mv\": 0,\n"
+        "  \"idac_gain_ppt\": 1000,\n"
+        "  \"idac_offset_ma\": 0,\n"
+        "  \"checksum_crc32\": \"deadbeef\"\n"
+        "}");
+    assert(!psu_cal_parse_json(wrong_crc, strlen(wrong_crc), &cal, &is_legacy));
+
+    /* 8. Partial schema / checksum (only one present) must be rejected */
+    const char *only_schema =
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"vout_gain_ppt\": 1000,\n"
+        "  \"vout_offset_mv\": 0,\n"
+        "  \"isense_gain_ppt\": 1000,\n"
+        "  \"isense_offset_ua\": 0,\n"
+        "  \"vdac_gain_ppt\": 1000,\n"
+        "  \"vdac_offset_mv\": 0,\n"
+        "  \"idac_gain_ppt\": 1000,\n"
+        "  \"idac_offset_ma\": 0\n"
+        "}";
+    assert(!psu_cal_parse_json(only_schema, strlen(only_schema), &cal, &is_legacy));
+
+    const char *only_checksum =
+        "{\n"
+        "  \"vout_gain_ppt\": 1000,\n"
+        "  \"vout_offset_mv\": 0,\n"
+        "  \"isense_gain_ppt\": 1000,\n"
+        "  \"isense_offset_ua\": 0,\n"
+        "  \"vdac_gain_ppt\": 1000,\n"
+        "  \"vdac_offset_mv\": 0,\n"
+        "  \"idac_gain_ppt\": 1000,\n"
+        "  \"idac_offset_ma\": 0,\n"
+        "  \"checksum_crc32\": \"12345678\"\n"
+        "}";
+    assert(!psu_cal_parse_json(only_checksum, strlen(only_checksum), &cal, &is_legacy));
+
+    /* 9. Legacy format parsing & migration */
+    const char *valid_legacy =
+        "{\n"
+        "  \"vout_gain_ppt\": 1040,\n"
+        "  \"vout_offset_mv\": 15,\n"
+        "  \"isense_gain_ppt\": 960,\n"
+        "  \"isense_offset_ua\": -200,\n"
+        "  \"vdac_gain_ppt\": 1010,\n"
+        "  \"vdac_offset_mv\": 5,\n"
+        "  \"idac_gain_ppt\": 995,\n"
+        "  \"idac_offset_ma\": 2\n"
+        "}";
+    assert(psu_cal_parse_json(valid_legacy, strlen(valid_legacy), &cal, &is_legacy));
+    assert(is_legacy == true);
+    assert(cal.vout_gain_ppt == 1040);
+    assert(cal.vout_offset_mv == 15);
+
+    /* Test full migration on disk */
+    memset(mock_files, 0, sizeof(mock_files));
+    FIL fil;
+    UINT bw;
+    assert(f_open(&fil, PSU_CAL_FILE, FA_CREATE_ALWAYS | FA_WRITE) == FR_OK);
+    assert(f_write(&fil, valid_legacy, strlen(valid_legacy), &bw) == FR_OK);
+    assert(f_close(&fil) == FR_OK);
+
+    /* Loading legacy must succeed and trigger migration to schema_version 1 */
+    assert(psu_cal_load());
+    int idx = mock_find(PSU_CAL_FILE);
+    assert(idx >= 0);
+    assert(strstr((char*)mock_files[idx].data, "\"schema_version\": 1") != NULL);
+    assert(strstr((char*)mock_files[idx].data, "\"checksum_crc32\"") != NULL);
+
+    printf("[PASS] Bounded candidate parser edge cases and migration verified\n");
+}
+
 int main(void) {
     printf("=== Starting PSU Profiler & Calibration Unit Tests ===\n");
     assert(bp_config_subsystem_init() == BP_STATUS_OK);
 
+    test_cal_save_preserves_previous();
+    test_cal_persistence_errors();
+    test_cal_invalid_numeric_fields();
     test_cal_defaults();
     test_cal_validation_and_tampering();
     test_cal_json_persistence();
     test_cal_fallback_missing_and_corrupt();
     test_cal_applied_math();
+    test_corrupt_primary_valid_backup_recovery();
+    test_bounded_candidate_parser_edge_cases();
     test_power_profiler_resistive_load_accuracy();
     test_power_profiler_csv_streaming();
 

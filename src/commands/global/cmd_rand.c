@@ -41,6 +41,7 @@ void cmd_rand_handler(struct command_result* res) {
             count = user_count;
         } else {
             printf("%sError:%s count must be between 1 and 64\r\n", ui_term_color_error(), ui_term_color_reset());
+            res->error = true;
             return;
         }
     }

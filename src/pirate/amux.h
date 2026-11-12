@@ -68,8 +68,27 @@ void amux_sweep(void);
  * @brief Control ADC busy/lock state
  * @param enable true to acquire lock, false to release
  */
-void adc_busy_wait(bool enable);
+/* Returns false on contention timeout; caller must not touch ADC on failure.
+ * Reentrant for the owning core. Legacy scalar reads return zero on failure. */
+bool adc_busy_wait(bool enable);
 bool adc_try_acquire(void);
+
+typedef enum amux_state {
+    AMUX_STATE_STOPPED = 0,
+    AMUX_STATE_IDLE,
+    AMUX_STATE_SAMPLING,
+    AMUX_STATE_PAUSING,
+    AMUX_STATE_MANUAL,
+    AMUX_STATE_FAULT
+} amux_state_t;
+
+typedef struct amux_frame {
+    uint64_t timestamp_us;
+    uint32_t generation;
+    uint16_t raw[HW_ADC_MUX_COUNT + 1];
+    bool valid;
+    uint8_t fault_code;
+} amux_frame_t;
 
 /**
  * @brief Initialize autonomous DMA-driven AMUX sweeping
@@ -93,6 +112,54 @@ bool amux_dma_is_enabled(void);
  */
 bool amux_dma_is_busy(void);
 
+#define AMUX_MAX_FRAME_AGE_US 250000ULL
+
+#define AMUX_FAULT_NONE       0
+#define AMUX_FAULT_OVERRUN    1
+#define AMUX_FAULT_STALL      2
+#define AMUX_FAULT_TIMEOUT    3
+#define AMUX_FAULT_RESOURCE   4
+
+/**
+ * @brief Check if published AMUX telemetry is valid and within maximum age
+ * @param max_age_us Maximum allowed age in microseconds
+ * @return true if telemetry is valid and fresh, false if stale, uninitialized or faulted
+ */
+bool amux_is_telemetry_fresh(uint64_t max_age_us);
+
+/**
+ * @brief Inject a pipeline fault for testing and failure-recovery validation
+ * @param fault_code AMUX_FAULT_* identifier
+ */
+void amux_inject_fault(uint8_t fault_code);
+
+/**
+ * @brief Clear an injected pipeline fault
+ */
+void amux_clear_fault(void);
+
+/**
+ * @brief Get current autonomous AMUX state
+ */
+amux_state_t amux_get_state(void);
+
+/**
+ * @brief Get current published generation count
+ */
+uint32_t amux_get_generation(void);
+
+/**
+ * @brief Get pipeline fault count
+ */
+uint32_t amux_get_fault_count(void);
+
+/**
+ * @brief Get coherent timestamped frame from DMA buffer (seqlock-style)
+ * @param out_frame Pointer to caller frame buffer
+ * @return true if complete fresh frame extracted, false if lapped or invalid
+ */
+bool amux_get_frame(amux_frame_t* out_frame);
+
 /**
  * @brief Advance or trigger an autonomous AMUX DMA sweep cycle
  * @return true if sweep started or completed successfully
@@ -103,7 +170,7 @@ bool amux_dma_sweep_start(void);
  * @brief Get coherent snapshot of all 16 AMUX channels from DMA buffer
  * @param out_raw Buffer of at least HW_ADC_MUX_COUNT entries
  * @param count Number of entries to copy
- * @return true if snapshot copied coherently
+ * @return true if snapshot copied coherently, false on ADC contention
  */
 bool amux_dma_get_coherent(uint16_t* out_raw, size_t count);
 

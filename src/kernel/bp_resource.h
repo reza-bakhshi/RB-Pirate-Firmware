@@ -42,6 +42,8 @@ typedef enum bp_res_class {
 #define BP_RES_OWNER_EDITOR       9
 #define BP_RES_OWNER_TXTEST       10
 #define BP_RES_OWNER_LCDTAP       11
+#define BP_RES_OWNER_GLITCH       12
+#define BP_RES_OWNER_AMUX         13
 #define BP_RES_OWNER_BINMODE_BASE 50
 #define BP_RES_OWNER_MODE_BASE    100
 
@@ -61,6 +63,10 @@ typedef enum bp_res_class {
 #define BP_RES_PERIPH_SPI1        3
 #define BP_RES_PERIPH_I2C0        4
 #define BP_RES_PERIPH_I2C1        5
+/* Software engine lease; excludes overlapping glitch invocations. */
+#define BP_RES_PERIPH_GLITCH      6
+/* Hardware ADC peripheral lease; arbitrates autonomous vs exclusive ADC access */
+#define BP_RES_PERIPH_ADC         7
 
 #define BP_BIG_BUFFER_SIZE        (128 * 1024)
 

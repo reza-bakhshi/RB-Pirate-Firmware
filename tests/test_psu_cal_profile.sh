@@ -12,12 +12,12 @@ gcc -O2 -Wall -Wextra -Wno-unused-variable -std=c11 -D_GNU_SOURCE -DBP_HOST_TEST
     src/kernel/bp_event.c \
     src/pirate/amux.c \
     src/pirate/psu.c \
-    src/mjson/mjson.c
+    src/mjson/mjson.c -lpthread -lm
 
 /tmp/test_psu_cal_profile
 
 echo "--- AddressSanitizer + UBSan ---"
-gcc -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wno-unused-variable -std=c11 -D_GNU_SOURCE -DBP_HOST_TEST -DBP_VER=6 -Isrc -Itests/stubs -lpthread -lm \
+gcc -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wno-unused-variable -std=c11 -D_GNU_SOURCE -DBP_HOST_TEST -DBP_VER=6 -Isrc -Itests/stubs \
     -o /tmp/test_psu_cal_profile_asan \
     tests/test_psu_cal_profile.c \
     src/kernel/bp_config.c \
@@ -26,7 +26,7 @@ gcc -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Wno-unused-vari
     src/kernel/bp_event.c \
     src/pirate/amux.c \
     src/pirate/psu.c \
-    src/mjson/mjson.c
+    src/mjson/mjson.c -lpthread -lm
 
 /tmp/test_psu_cal_profile_asan
 echo "SANITIZERS: ALL PASS"

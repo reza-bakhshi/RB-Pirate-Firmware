@@ -1,19 +1,34 @@
-# glitch-engine Specification
+# Glitch engine specification
 
 ## Purpose
-Provides precision hardware fault injection capabilities including voltage brownout / crowbar pulsing via current limit override lines and synchronized logic / clock glitching on buffered IO pins with nanosecond timing control.
+
+Provide bounded, cancellable software logic pulses on unused BIO pins. Delay and width arguments are expressed in nanoseconds; software GPIO operations have clock quantization and execution overhead and do not guarantee nanosecond accuracy or fixed trigger jitter.
 
 ## Requirements
 
-### Requirement: Synchronized Fault Injection
-The glitch engine SHALL generate precision voltage brownout pulses and clock glitch waveforms synchronized to external trigger signals with nanosecond time resolution.
+### Requirement: Safe board capabilities
 
-#### Scenario: Voltage glitch generation
-- **GIVEN** target hardware powered through the programmable PSU
-- **WHEN** the user executes `glitch -v -d <delay_ns> -w <width_ns>`
-- **THEN** the override line pulses low for the specified width after the configured delay upon trigger detection.
+The engine SHALL reject power glitch requests on RB-Pirate because its PSU current-limit override is not a dedicated crowbar output. A future voltage-glitch backend requires verified dedicated circuitry and an independent hardware pulse limit.
 
-#### Scenario: External edge trigger synchronization
-- **GIVEN** an external trigger pin configured for rising or falling edge
-- **WHEN** the trigger event occurs
-- **THEN** the fault injection sequence fires with determinism under 20 nanoseconds jitter.
+#### Scenario: No dedicated voltage glitch circuitry
+- **WHEN** a power glitch is requested on RB-Pirate without a qualified dedicated crowbar output
+- **THEN** the command fails without changing current-limit override or PSU protection.
+
+### Requirement: Bounded logic pulse jobs
+
+Logic pulses SHALL run through Core 1 protocol jobs without printing or USB access from worker callbacks. The command SHALL require HiZ mode, unused pins, no active job, and an exclusive resource lease. Output and trigger pins SHALL differ. Pins SHALL return to input and leases SHALL be released after success, cancellation, dispatch failure or trigger timeout.
+
+#### Scenario: Timing validation
+- **WHEN** delay exceeds 100000 ns, width is outside 1..100000 ns, or count is outside 1..1000
+- **THEN** the command fails before changing hardware.
+- **AND** malformed numeric options fail rather than falling back to defaults.
+
+#### Scenario: Trigger edges
+- **WHEN** an external trigger is configured
+- **THEN** a rising edge is selected by default and `-f` selects falling.
+- **AND** an inactive level must be seen before the selected active level.
+- **AND** each pulse waits at most one second for its edge, yielding between checks.
+
+#### Scenario: Cancellation
+- **WHEN** the user requests job cancellation, presses the button, or sends job input
+- **THEN** the worker exits before another pulse and cleanup returns the pins to HiZ.

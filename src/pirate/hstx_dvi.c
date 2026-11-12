@@ -8,14 +8,6 @@
 #include <string.h>
 #include <stdio.h>
 
-#if __has_include("hardware/structs/hstx_ctrl.h") && !defined(BP_HOST_TEST)
-#include "pico/stdlib.h"
-#include "hardware/structs/hstx_ctrl.h"
-#include "hardware/structs/hstx_fifo.h"
-#include "hardware/dma.h"
-#include "hardware/clocks.h"
-#endif
-
 // Static memory buffers (Zero runtime heap allocation)
 // 80x30 text buffer: 2400 bytes
 static char s_text[HSTX_DVI_TEXT_ROWS][HSTX_DVI_TEXT_COLS];
@@ -33,7 +25,6 @@ static uint8_t s_cursor_y = 0;
 static uint8_t s_fg_color = HSTX_COLOR_BRIGHT_WHITE;
 static uint8_t s_bg_color = HSTX_COLOR_BLACK;
 static uint16_t s_scanline = 0;
-static int s_dma_chan = -1;
 
 void hstx_dvi_clear(void) {
     for (uint8_t r = 0; r < HSTX_DVI_TEXT_ROWS; r++) {
@@ -57,51 +48,14 @@ bool hstx_dvi_init(void) {
     hstx_dvi_clear();
     s_enabled = false;
 
-#if defined(PICO_RP2350) && !defined(BP_HOST_TEST)
-    s_supported = true;
-
-    // Configure HSTX peripheral for TMDS serialization
-    // Clock divider: 150 MHz / 25 MHz pixel clock = 6
-    hstx_ctrl_hw->csr = 0;
-    hstx_ctrl_hw->csr = (1u << 0) |              // EN
-                        (1u << 1) |              // EXPAND_EN
-                        (6u << 8) |              // SHIFT (6 bits)
-                        (5u << 16) |             // N_SHIFTS (5)
-                        (1u << 28);              // CLKDIV
-
-    // Configure TMDS expander for 8-bit to 10-bit TMDS symbol encoding
-    hstx_ctrl_hw->expand_tmds = (8u << 0)  |     // Lane 0: 8 bits
-                                (8u << 13) |     // Lane 1: 8 bits
-                                (8u << 21);      // Lane 2: 8 bits
-
-    // Claim DMA channel for scanline feeding
-    s_dma_chan = dma_claim_unused_channel(false);
-    if (s_dma_chan >= 0) {
-        dma_channel_config c = dma_channel_get_default_config(s_dma_chan);
-        channel_config_set_transfer_data_size(&c, DMA_SIZE_32);
-        channel_config_set_read_increment(&c, true);
-        channel_config_set_write_increment(&c, false);
-        channel_config_set_dreq(&c, 52); // DREQ_HSTX
-
-        dma_channel_configure(
-            s_dma_chan,
-            &c,
-            &hstx_fifo_hw->fifo,
-            s_line_buf[0],
-            HSTX_DVI_WIDTH / 4,
-            false
-        );
-    }
-    return true;
-#else
-    // Host test or RP2040 fallback
-#if defined(BP_HOST_TEST)
+/* RB-Pirate has no routed DVI connector; HSTX pins overlap PSU controls.
+     * Keep the host renderer available without enabling unverified hardware. */
+#if defined(BP_HOST_TEST) && !defined(BP_TEST_UNSUPPORTED_VIDEO)
     s_supported = true;
     return true;
 #else
     s_supported = false;
     return false;
-#endif
 #endif
 }
 
@@ -216,14 +170,7 @@ void hstx_dvi_service(void) {
     uint8_t back_buf = s_active_buf ^ 1;
     hstx_dvi_render_scanline(s_scanline, s_line_buf[back_buf]);
 
-#if defined(PICO_RP2350) && !defined(BP_HOST_TEST)
-    if (s_dma_chan >= 0 && !dma_channel_is_busy(s_dma_chan)) {
-        dma_channel_set_read_addr(s_dma_chan, s_line_buf[back_buf], true);
-        s_active_buf = back_buf;
-    }
-#else
     s_active_buf = back_buf;
-#endif
 
     s_scanline++;
     if (s_scanline >= HSTX_DVI_HEIGHT) {

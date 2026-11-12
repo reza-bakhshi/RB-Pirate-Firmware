@@ -79,5 +79,6 @@ jobs:
           ${{github.workspace}}/build/src/bus_pirate*.elf
           ${{github.workspace}}/build/src/bus_pirate*.elf.map
           ${{github.workspace}}/build/src/bus_pirate*.uf2
+          ${{github.workspace}}/build/src/build_identity.json
         retention-days: 7
         if-no-files-found: error

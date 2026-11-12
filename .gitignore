@@ -6,6 +6,8 @@ build_*/**
 src/translation/history/new__en-us.json
 
 tools/__pycache__/
+__pycache__/
+*.pyc
 
 result
 

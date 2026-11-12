@@ -76,6 +76,8 @@ typedef struct bp_storage_rpc_req {
     uint32_t offset;
     uint32_t size;
     uint8_t *data;
+    uint32_t media_generation;
+    bool cancelled;
 } bp_storage_rpc_req_t;
 
 /**
@@ -85,6 +87,7 @@ typedef struct bp_storage_rpc_resp {
     uint32_t request_id;
     bp_status_t status;
     uint32_t bytes_transferred;
+    uint32_t media_generation;
 } bp_storage_rpc_resp_t;
 
 /**

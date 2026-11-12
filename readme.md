@@ -158,8 +158,22 @@ python3 tests/hil_test_suite.py --smoke --cycles 1000 --soak 60
 
 ### 1. Configure
 ```bash
-cmake -S . -B build_rp2350 -DPICO_SDK_FETCH_FROM_GIT=TRUE -DBP_PICO_PLATFORM=rp2350
+cmake -S . -B build_rp2350 -DPICO_SDK_FETCH_FROM_GIT=TRUE -DPICO_PLATFORM=rp2350 -DPICO_BOARD=rb-pirate
 ```
+
+The supported target is RB-Pirate with RP2350 Arm Secure. Explicit RP2040,
+RISC-V, or other-board requests fail during configuration; they are not silently
+converted to RP2350. The legacy `BP_PICO_PLATFORM` option is accepted only for
+RP2350. Build-folder names do not identify the processor: inspect the effective
+`PICO_PLATFORM` and `PICO_BOARD` in `CMakeCache.txt`.
+
+With an SDK already available, the equivalent supported preset is:
+
+```bash
+cmake --preset rb-pirate-rp2350
+cmake --build --preset rb-pirate-rp2350
+```
+
 *(To use an existing local SDK installation, pass `-DPICO_SDK_PATH=/path/to/pico-sdk -DPICO_SDK_FETCH_FROM_GIT=FALSE`)*.
 
 ### 2. Compile

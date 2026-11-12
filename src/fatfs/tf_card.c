@@ -7,6 +7,7 @@
 #include "hardware/dma.h"
 #endif
 #include "pirate.h"
+#include <string.h>
 #include "system_config.h"
 
 #include "fatfs/ff.h"
@@ -65,6 +66,129 @@ static int32_t s_storage_dma_rx = -1;
 static int32_t s_storage_dma_tx = -1;
 static const uint8_t s_storage_dummy_tx = 0xFF;
 static uint8_t s_storage_dummy_rx = 0;
+
+/* Authoritative card metadata and media generation */
+static tf_card_metadata_t s_tf_card_meta = {0};
+static uint32_t s_media_generation = 0;
+
+bool tf_card_parse_csd(const uint8_t csd[16], tf_card_metadata_t *out_meta) {
+    if (!csd || !out_meta) {
+        return false;
+    }
+    memset(out_meta, 0, sizeof(tf_card_metadata_t));
+    out_meta->sector_size = 512;
+
+    /* Check for all zeros or all 0xFF (unpowered or floating bus) */
+    bool all_zero = true;
+    bool all_ones = true;
+    for (int i = 0; i < 16; i++) {
+        if (csd[i] != 0x00) all_zero = false;
+        if (csd[i] != 0xFF) all_ones = false;
+    }
+    if (all_zero || all_ones) {
+        return false;
+    }
+
+    uint8_t csd_struct = (csd[0] >> 6) & 0x03;
+
+    if (csd_struct == 0) {
+        /* CSD Version 1.0: Standard Capacity SD (SDSC, <= 2GB) */
+        out_meta->csd_version = 1;
+        out_meta->addr_mode = TF_CARD_ADDR_BYTE;
+
+        uint8_t read_bl_len = csd[5] & 0x0F;
+        if (read_bl_len < 9 || read_bl_len > 11) {
+            /* Sector length must be 512 (9), 1024 (10), or 2048 (11) bytes */
+            return false;
+        }
+
+        uint16_t c_size = (uint16_t)(((csd[6] & 0x03) << 10) |
+                                     ((uint16_t)csd[7] << 2) |
+                                     ((csd[8] & 0xC0) >> 6));
+        uint8_t c_size_mult = (uint8_t)(((csd[9] & 0x03) << 1) |
+                                        ((csd[10] & 0x80) >> 7));
+
+        /* Number of sectors = (C_SIZE + 1) * 2^(C_SIZE_MULT + 2 + READ_BL_LEN - 9) */
+        uint32_t shift = (uint32_t)c_size_mult + 2 + read_bl_len - 9;
+        if (shift >= 31) {
+            return false;
+        }
+
+        uint64_t sectors = ((uint64_t)c_size + 1ULL) << shift;
+        if (sectors == 0 || sectors > 4194304ULL) {
+            /* Max 2GB (4,194,304 512-byte sectors) for SDSC */
+            return false;
+        }
+
+        out_meta->sector_count = sectors;
+        out_meta->valid = true;
+        out_meta->write_protected = ((csd[14] & 0x30) != 0 || (csd[14] & 0x40) != 0);
+        return true;
+
+    } else if (csd_struct == 1) {
+        /* CSD Version 2.0: High Capacity / Extended Capacity (SDHC/SDXC, 2GB to 2TB) */
+        out_meta->csd_version = 2;
+        out_meta->addr_mode = TF_CARD_ADDR_BLOCK;
+
+        uint32_t c_size = (((uint32_t)(csd[7] & 0x3F) << 16) |
+                           ((uint32_t)csd[8] << 8) |
+                           (uint32_t)csd[9]);
+
+        /* Max C_SIZE is 0x3FFFFF (4,194,303), yielding exactly 4,294,967,296 sectors (2TB) */
+        if (c_size > 0x3FFFFFUL) {
+            return false;
+        }
+
+        uint64_t sectors = ((uint64_t)c_size + 1ULL) * 1024ULL;
+        if (sectors < 4096ULL) {
+            /* SDHC requires minimum capacity >= 2MB */
+            return false;
+        }
+
+        out_meta->sector_count = sectors;
+        out_meta->valid = true;
+        out_meta->write_protected = ((csd[14] & 0x30) != 0 || (csd[14] & 0x40) != 0);
+        return true;
+
+    } else if (csd_struct == 2) {
+        /* CSD Version 3.0: SDUC (> 2TB up to 128TB) - unsupported address width */
+        out_meta->csd_version = 3;
+        out_meta->addr_mode = TF_CARD_ADDR_UNSUPPORTED;
+        out_meta->valid = false;
+        return false;
+
+    } else {
+        /* Reserved CSD version */
+        out_meta->csd_version = 0;
+        out_meta->addr_mode = TF_CARD_ADDR_UNSUPPORTED;
+        out_meta->valid = false;
+        return false;
+    }
+}
+
+bool tf_card_get_metadata(tf_card_metadata_t *out_meta) {
+    if (!out_meta) {
+        return false;
+    }
+    if (!s_tf_card_meta.valid || (Stat & STA_NOINIT)) {
+        memset(out_meta, 0, sizeof(tf_card_metadata_t));
+        return false;
+    }
+    *out_meta = s_tf_card_meta;
+    return true;
+}
+
+void tf_card_invalidate_metadata(void) {
+    memset(&s_tf_card_meta, 0, sizeof(s_tf_card_meta));
+    Stat |= STA_NOINIT;
+}
+
+uint32_t tf_card_get_media_generation(void) {
+    if (!s_tf_card_meta.valid || (Stat & STA_NOINIT)) {
+        return 0;
+    }
+    return s_tf_card_meta.media_generation;
+}
 
 int32_t tf_card_get_dma_rx_channel(void) {
     return s_storage_dma_rx;
@@ -236,7 +360,7 @@ int wait_ready (	/* 1:Ready, 0:Timeout */
 	do {
 		d = xchg_spi(0xFF);
 		/* This loop takes a time. Insert rot_rdq() here for multitask envilonment. */
-	} while (d != 0xFF && _millis() < t + wt);	/* Wait for card goes ready or timeout */
+	} while (d != 0xFF && (uint32_t)(_millis() - t) < wt);	/* Wait for card goes ready or timeout */
 
 	return (d == 0xFF) ? 1 : 0;
 }
@@ -305,7 +429,7 @@ int rcvr_datablock (	/* 1:OK, 0:Error */
 	do {							/* Wait for DataStart token in timeout of 200ms */
 		token = xchg_spi(0xFF);
 		/* This loop will take a time. Insert rot_rdq() here for multitask envilonment. */
-	} while (token == 0xFF && _millis() < t + timeout);
+	} while (token == 0xFF && (uint32_t)(_millis() - t) < timeout);
 	if(token != 0xFE) return 0;		/* Function fails if invalid DataStart token or timeout */
 
 	rcvr_spi_multi(buff, btr);		/* Store trailing data to the buffer */
@@ -438,10 +562,10 @@ DSTATUS diskio_initialize (
 		if (send_cmd(CMD8, 0x1AA) == 1) {	/* SDv2? */
 			for (n = 0; n < 4; n++) ocr[n] = xchg_spi(0xFF);	/* Get 32 bit return value of R7 resp */
 			if (ocr[2] == 0x01 && ocr[3] == 0xAA) {				/* Is the card supports vcc of 2.7-3.6V? */
-				while (_millis() < t + timeout && send_cmd(ACMD41, 1UL << 30)) {
+				while ((uint32_t)(_millis() - t) < timeout && send_cmd(ACMD41, 1UL << 30)) {
 					busy_wait_ms(10);
 				}
-				if (_millis() < t + timeout && send_cmd(CMD58, 0) == 0) {		/* Check CCS bit in the OCR */
+				if ((uint32_t)(_millis() - t) < timeout && send_cmd(CMD58, 0) == 0) {		/* Check CCS bit in the OCR */
 					for (n = 0; n < 4; n++) ocr[n] = xchg_spi(0xFF);
 					ty = (ocr[0] & 0x40) ? CT_SD2 | CT_BLOCK : CT_SD2;	/* Card is SDv2 */
 				}
@@ -452,10 +576,10 @@ DSTATUS diskio_initialize (
 			} else {
 				ty = CT_MMC; cmd = CMD1;	/* MMCv3 (CMD1(0)) */
 			}
-			while (_millis() < t + timeout && send_cmd(cmd, 0)) {
+			while ((uint32_t)(_millis() - t) < timeout && send_cmd(cmd, 0)) {
 				busy_wait_ms(10);
 			}
-			if (_millis() >= t + timeout || send_cmd(CMD16, 512) != 0)	/* Set block length: 512 */
+			if ((uint32_t)(_millis() - t) >= timeout || send_cmd(CMD16, 512) != 0)	/* Set block length: 512 */
 				ty = 0;
 		}
 	}
@@ -466,7 +590,33 @@ DSTATUS diskio_initialize (
 	if (ty) {			/* OK */
 		FCLK_FAST();			/* Set fast clock */
 		Stat &= ~STA_NOINIT;	/* Clear STA_NOINIT flag */
+
+		/* Obtain capacity from validated card metadata at mount/initialization */
+		uint8_t csd[16];
+		if (send_cmd(CMD9, 0) == 0 && rcvr_datablock(csd, 16)) {
+			if (tf_card_parse_csd(csd, &s_tf_card_meta)) {
+				s_media_generation++;
+				s_tf_card_meta.media_generation = s_media_generation;
+				if (s_tf_card_meta.write_protected) {
+					Stat |= STA_PROTECT;
+				} else {
+					Stat &= ~STA_PROTECT;
+				}
+				system_config.storage_size = (float)(s_tf_card_meta.sector_count * 512ULL) / (1024.0f * 1024.0f * 1024.0f);
+			} else {
+				tf_card_invalidate_metadata();
+				Stat = STA_NOINIT;
+				ty = 0;
+			}
+		} else {
+			tf_card_invalidate_metadata();
+			Stat = STA_NOINIT;
+			ty = 0;
+		}
+		deselect();
+		for (n = 5; n; n--) xchg_spi(0xFF);
 	} else {			/* Failed */
+		tf_card_invalidate_metadata();
 		Stat = STA_NOINIT;
 	}
 
@@ -505,7 +655,20 @@ DRESULT diskio_read (
 {
 
 
-	if (drv || !count) return RES_PARERR;		/* Check parameter */
+	if (drv || !buff || !count || count > 128) return RES_PARERR;
+	if (s_tf_card_meta.valid) {
+		if ((uint64_t)count > s_tf_card_meta.sector_count ||
+		    (uint64_t)sector > s_tf_card_meta.sector_count - (uint64_t)count) {
+			return RES_PARERR;
+		}
+	} else if (sector > UINT32_MAX - (count - 1)) {
+		return RES_PARERR;
+	}
+	if (!(CardType & CT_BLOCK)) {
+		if (count > (UINT32_MAX / 512) || sector > (UINT32_MAX / 512) - count) {
+			return RES_PARERR;
+		}
+	}
 	if (Stat & STA_NOINIT) return RES_NOTRDY;	/* Check if drive is ready */
 
 	if (!(CardType & CT_BLOCK)) sector *= 512;	/* LBA ot BA conversion (byte addressing cards) */
@@ -620,7 +783,20 @@ DRESULT diskio_write (
 	UINT count			/* Number of sectors to write (1..128) */
 )
 {
-	if (drv || !count) return RES_PARERR;		/* Check parameter */
+	if (drv || !buff || !count || count > 128) return RES_PARERR;
+	if (s_tf_card_meta.valid) {
+		if ((uint64_t)count > s_tf_card_meta.sector_count ||
+		    (uint64_t)sector > s_tf_card_meta.sector_count - (uint64_t)count) {
+			return RES_PARERR;
+		}
+	} else if (sector > UINT32_MAX - (count - 1)) {
+		return RES_PARERR;
+	}
+	if (!(CardType & CT_BLOCK)) {
+		if (count > (UINT32_MAX / 512) || sector > (UINT32_MAX / 512) - count) {
+			return RES_PARERR;
+		}
+	}
 	if (Stat & STA_NOINIT) return RES_NOTRDY;	/* Check drive status */
 	if (Stat & STA_PROTECT) return RES_WRPRT;	/* Check write protect */
 
@@ -628,7 +804,12 @@ DRESULT diskio_write (
 
 	spi_busy_wait(true);
 
-	if (!_select()) return RES_NOTRDY;
+	/* Modified by Codex: unwind SPI ownership when card selection fails. */
+	if (!_select()) {
+		deselect();
+		spi_busy_wait(false);
+		return RES_NOTRDY;
+	}
 
 	if (count == 1) {	/* Single sector write */
 		if ((send_cmd(CMD24, sector) == 0)	/* WRITE_BLOCK */
@@ -690,16 +871,16 @@ DRESULT diskio_ioctl (
 		break;
 	
 	case GET_SECTOR_COUNT :	/* Get drive capacity in unit of sector (DWORD) */
-		if ((send_cmd(CMD9, 0) == 0) && rcvr_datablock(csd, 16)) {
-			if ((csd[0] >> 6) == 1) {	/* SDC ver 2.00 */
-				csize = csd[9] + ((WORD)csd[8] << 8) + ((DWORD)(csd[7] & 63) << 16) + 1;
-				*(DWORD*)buff = csize << 10;
-			} else {					/* SDC ver 1.XX or MMC ver 3 */
-				n = (csd[5] & 15) + ((csd[10] & 128) >> 7) + ((csd[9] & 3) << 1) + 2;
-				csize = (csd[8] >> 6) + ((WORD)csd[7] << 2) + ((WORD)(csd[6] & 3) << 10) + 1;
-				*(DWORD*)buff = csize << (n - 9);
-			}
+		if (s_tf_card_meta.valid) {
+			*(DWORD*)buff = (s_tf_card_meta.sector_count > 0xFFFFFFFFULL) ? 0xFFFFFFFFUL : (DWORD)s_tf_card_meta.sector_count;
 			res = RES_OK;
+		} else if ((send_cmd(CMD9, 0) == 0) && rcvr_datablock(csd, 16)) {
+			if (tf_card_parse_csd(csd, &s_tf_card_meta)) {
+				s_media_generation++;
+				s_tf_card_meta.media_generation = s_media_generation;
+				*(DWORD*)buff = (s_tf_card_meta.sector_count > 0xFFFFFFFFULL) ? 0xFFFFFFFFUL : (DWORD)s_tf_card_meta.sector_count;
+				res = RES_OK;
+			}
 		}
 		break;
 

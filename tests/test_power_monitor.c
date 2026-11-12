@@ -19,6 +19,14 @@
 #include "pirate/psu.h"
 
 // Hardware stubs and variables for host execution
+static uint32_t s_mock_time_us = 1000000;
+uint32_t get_host_time_us(void) {
+    return s_mock_time_us;
+}
+void mock_time_advance_us(uint32_t delta_us) {
+    s_mock_time_us += delta_us;
+}
+
 uint16_t s_mock_adc_val = 1000;
 uint16_t s_mock_current_amux_channel = 0;
 uint16_t s_mock_channel_adc[16] = {0};
@@ -129,6 +137,18 @@ static void test_adc_multicore_arbitration(void) {
     // Switch to Core 1: verify owner is Core 0
     s_test_core_id = 1;
     assert(adc_get_owner() == 0);
+    assert(!adc_busy_wait(true));
+    assert(adc_get_owner() == 0 && adc_get_nest_count() == 1);
+    assert(!adc_busy_wait(false)); /* A non-owner cannot release another core. */
+    uint16_t channel_before = s_mock_current_amux_channel;
+    assert(amux_read(3) == 0);
+    assert(s_mock_current_amux_channel == channel_before);
+    assert(!amux_dma_sweep_start());
+    uint16_t untouched[16];
+    memset(untouched, 0xA5, sizeof(untouched));
+    assert(!amux_dma_get_coherent(untouched, 16));
+    for (unsigned i = 0; i < 16; ++i) assert(untouched[i] == 0xA5A5);
+    assert(adc_get_owner() == 0 && adc_get_nest_count() == 1);
 
     // Core 0 releases
     s_test_core_id = 0;
@@ -436,6 +456,132 @@ static void test_amux_dma_pipeline(void) {
     printf("[PASS] AMUX DMA autonomous sweep & zero spinlocks verified\n");
 }
 
+// -------------------------------------------------------------------------
+// Test 8: Stale Telemetry Timeout and Fault Injection Safe Shutdown
+// -------------------------------------------------------------------------
+static void test_psu_stale_telemetry_trip(void) {
+    printf("[TEST] PSU stale telemetry trip & fault injection safe shutdown...\n");
+
+    // Submit an active protocol job
+    uint32_t job_id = 0;
+    assert(bp_job_submit("proto_stream3", BP_JOB_PROTO_TEST, 5000, mock_job_slice, NULL, 0, &job_id) == BP_STATUS_OK);
+    assert(job_id > 0);
+    assert(bp_job_get_active_id() == job_id);
+
+    // Setup active PSU
+    psu_status.enabled = true;
+    psu_status.error_overcurrent = false;
+    psu_status.error_undervoltage = false;
+    psu_status.error_stale_telemetry = false;
+    psu_status.error_pending = false;
+    psu_status.undervoltage_limit_adc = 500;
+    s_mock_use_channel_adc = true;
+    s_mock_channel_adc[HW_ADC_MUX_CURRENT_DETECT] = 2000;
+    s_mock_channel_adc[HW_ADC_MUX_VREF_VOUT] = 1000;
+    s_mock_gpio_fuse_tripped = false;
+
+    // Refresh telemetry sweep
+    assert(amux_dma_sweep_start());
+    assert(amux_is_telemetry_fresh(AMUX_MAX_FRAME_AGE_US));
+
+    // Initial check: all healthy, PSU enabled, job intact
+    assert(!psu_poll_fuse_vout_error());
+    assert(psu_status.enabled == true);
+    assert(bp_job_get_active_id() == job_id);
+
+    // Case 1: Advance time beyond 250ms (300ms) without new sweep -> Telemetry Stalls
+    mock_time_advance_us(300000);
+    assert(!amux_is_telemetry_fresh(AMUX_MAX_FRAME_AGE_US));
+
+    // Next poll must trip due to stale telemetry!
+    bool tripped = psu_poll_fuse_vout_error();
+    assert(tripped == true);
+    assert(psu_status.enabled == false);
+    assert(psu_status.error_stale_telemetry == true);
+    assert(psu_status.error_pending == true);
+
+    // Verify active job cancelled
+    assert(bp_job_check_cancelled() == true);
+    assert(bp_job_service(100) == 1);
+    bp_job_state_t jstate;
+    bp_status_t jstatus;
+    uint8_t jpct;
+    assert(bp_job_get_state(job_id, &jstate, &jstatus, &jpct) == BP_STATUS_OK);
+    assert(jstate == BP_JOB_STATE_CANCELLED);
+    assert(bp_job_get_active_id() == 0);
+
+    // Clear error
+    psu_clear_error_flag();
+    assert(!psu_status.error_pending);
+    assert(!psu_status.error_stale_telemetry);
+
+    // Case 2: Run a fresh sweep to bring telemetry back to life
+    assert(amux_dma_sweep_start());
+    assert(amux_is_telemetry_fresh(AMUX_MAX_FRAME_AGE_US));
+
+    // Case 3: Explicit pipeline fault injection
+    uint32_t job_id2 = 0;
+    assert(bp_job_submit("proto_stream4", BP_JOB_PROTO_TEST, 5000, mock_job_slice, NULL, 0, &job_id2) == BP_STATUS_OK);
+    psu_status.enabled = true;
+    psu_status.error_pending = false;
+    psu_status.error_stale_telemetry = false;
+
+    amux_inject_fault(AMUX_FAULT_STALL);
+    assert(amux_get_state() == AMUX_STATE_FAULT);
+    assert(!amux_is_telemetry_fresh(AMUX_MAX_FRAME_AGE_US));
+
+    // Extraction must fail while in fault state
+    amux_frame_t frame;
+    assert(!amux_get_frame(&frame));
+    uint16_t raw_buf[16];
+    assert(!amux_dma_get_coherent(raw_buf, 16));
+    assert(!amux_dma_sweep_start()); // Sweeps blocked in fault
+
+    // PSU poll must trip
+    tripped = psu_poll_fuse_vout_error();
+    assert(tripped == true);
+    assert(psu_status.enabled == false);
+    assert(psu_status.error_stale_telemetry == true);
+    assert(bp_job_check_cancelled() == true);
+    assert(bp_job_service(100) == 1);
+
+    // Case 4: Clear fault and restore normal operation
+    amux_clear_fault();
+    assert(amux_get_state() == AMUX_STATE_IDLE);
+    assert(amux_dma_sweep_start());
+    assert(amux_is_telemetry_fresh(AMUX_MAX_FRAME_AGE_US));
+    assert(amux_get_frame(&frame));
+    assert(frame.valid);
+
+    psu_clear_error_flag();
+    s_mock_use_channel_adc = false;
+    printf("[PASS] PSU stale telemetry trip & fault injection safe shutdown verified\n");
+}
+
+// -------------------------------------------------------------------------
+// Test 9: Snapshot Lapping & Coherent Extraction (ARCH-820)
+// -------------------------------------------------------------------------
+static void test_amux_snapshot_lapping(void) {
+    printf("[TEST] AMUX snapshot lapping and seqlock extraction...\n");
+
+    amux_frame_t frame;
+    assert(amux_get_frame(&frame));
+    assert(frame.valid);
+    uint32_t gen = frame.generation;
+
+    // Trigger multiple rapid sweeps to advance generation
+    for (int i = 0; i < 10; i++) {
+        mock_time_advance_us(1000);
+        assert(amux_dma_sweep_start());
+    }
+
+    assert(amux_get_frame(&frame));
+    assert(frame.valid);
+    assert(frame.generation == gen + 10);
+
+    printf("[PASS] AMUX snapshot lapping and seqlock extraction verified\n");
+}
+
 int main(void) {
     printf("=== Running Power Monitor & ADC Subsystem Tests ===\n");
     amux_init();
@@ -446,6 +592,8 @@ int main(void) {
     test_psu_undervoltage_debounce_and_trip();
     test_psu_undervoltage_calculation();
     test_amux_dma_pipeline();
+    test_psu_stale_telemetry_trip();
+    test_amux_snapshot_lapping();
     printf("=== ALL POWER MONITOR & ADC TESTS PASSED ===\n");
     return 0;
 }

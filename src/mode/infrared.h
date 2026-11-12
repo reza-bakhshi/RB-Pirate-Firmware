@@ -4,6 +4,9 @@
  * @details Provides infrared communication mode for remote control protocols.
  */
 
+/* Modified by Codex: keep bytecode tags at file scope for all include orders. */
+struct _bytecode;
+
 void infrared_write(struct _bytecode* result, struct _bytecode* next);
 void infrared_read(struct _bytecode* result, struct _bytecode* next);
 void infrared_start(struct _bytecode* result, struct _bytecode* next);

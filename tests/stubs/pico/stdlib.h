@@ -55,7 +55,12 @@ unsigned int get_core_num(void);
 void sleep_ms(uint32_t ms);
 static inline void sleep_us(uint64_t us) { (void)us; }
 static inline void busy_wait_us_32(uint32_t us) { (void)us; }
+#ifdef BP_CUSTOM_TIME_MOCK
+uint32_t get_host_time_us(void);
+static inline uint32_t time_us_32(void) { return get_host_time_us(); }
+#else
 static inline uint32_t time_us_32(void) { return 0; }
+#endif
 typedef uint64_t absolute_time_t;
 
 #ifdef BP_CUSTOM_TICK_MOCK

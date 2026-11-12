@@ -69,3 +69,26 @@ The power monitor subsystem SHALL support continuous current and power integrati
 - **GIVEN** `w.profile -f <filename>` is invoked
 - **WHEN** periodic telemetry updates occur
 - **THEN** timestamped measurement rows are flushed to the designated CSV file on storage.
+
+#### Scenario: Profiling across timer rollover
+- **GIVEN** a profile runs for multiple hours
+- **WHEN** the 32-bit microsecond timer wraps
+- **THEN** elapsed time and CSV timestamps remain monotonic and duration limits use a 64-bit microsecond comparison.
+
+#### Scenario: Reject malformed calibration numbers
+- **WHEN** a persisted calibration has missing, fractional, non-finite, or out-of-range coefficients
+- **THEN** loading fails before numeric narrowing and nominal defaults are restored.
+
+#### Scenario: ADC ownership contention times out safely
+- **GIVEN** one core owns the ADC
+- **WHEN** another core exhausts the bounded acquisition deadline or attempt limit
+- **THEN** acquisition returns false without changing owner or nesting depth.
+- **AND** callers skip hardware access; legacy scalar reads return zero on contention.
+- **AND** sampling and completed-buffer copies serialize through the ADC ownership guard.
+
+#### Scenario: Calibration replacement interrupted
+- **WHEN** a calibration is saved
+- **THEN** a temporary file is fully written, synced and closed before the previous destination is moved to a backup and replaced.
+- **AND** a failed write or sync leaves the previous destination intact.
+- **AND** if the primary is absent after interruption between renames, loading checks the backup.
+- **AND** an existing recovery backup is retained when no primary exists.

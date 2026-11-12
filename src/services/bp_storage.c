@@ -19,12 +19,20 @@
 #include "hardware/sync.h"
 #include "fatfs/ff.h"
 #include "fatfs/diskio.h"
+#include "fatfs/tf_card.h"
 #include "mjson/mjson.h"
 #include "ui/ui_term.h"
 #include "pirate.h"
 #include "system_config.h"
 #else
+#define BP_STORAGE_OWNER 1
 #include "../../tests/stubs/storage_fs.h"
+uint32_t tf_card_get_media_generation(void);
+void tf_card_invalidate_metadata(void);
+#ifndef BP_STORAGE_CUSTOM_TF_CARD
+__attribute__((weak)) uint32_t tf_card_get_media_generation(void) { return 1; }
+__attribute__((weak)) void tf_card_invalidate_metadata(void) {}
+#endif
 #endif // BP_HOST_TEST
 
 #define STORAGE_DEBOUNCE_THRESHOLD 5
@@ -167,6 +175,35 @@ bp_status_t bp_storage_unmount(void) {
     s_stats.state = BP_STORAGE_STATE_UNMOUNTED;
     s_stats.unmount_count++;
 
+    // Invalidate card metadata and media generation
+    tf_card_invalidate_metadata();
+
+    // Drain and cancel any queued RPC requests
+    while (s_rpc_req_tail != s_rpc_req_head) {
+        uint32_t idx = s_rpc_req_tail % STORAGE_RPC_QUEUE_DEPTH;
+        bp_storage_rpc_req_t req = s_rpc_req_q[idx];
+        s_rpc_req_tail++;
+
+        bp_storage_rpc_resp_t resp = {
+            .request_id = req.request_id,
+            .status = BP_STATUS_DISCONNECTED,
+            .bytes_transferred = 0,
+            .media_generation = 0
+        };
+        uint32_t resp_idx = s_rpc_resp_head % STORAGE_RPC_QUEUE_DEPTH;
+        s_rpc_resp_q[resp_idx] = resp;
+        __sync_synchronize();
+        s_rpc_resp_head++;
+    }
+
+    // Cancel any active stream
+    if (s_stream_active) {
+        s_stream_active = false;
+        s_stream_head = s_stream_tail = 0;
+        f_close(&s_stream_fil);
+        bp_storage_file_closed();
+    }
+
     return BP_STATUS_OK;
 }
 
@@ -236,8 +273,20 @@ uint32_t bp_storage_get_open_count(void) {
 static void bp_storage_process_single_rpc(const bp_storage_rpc_req_t *req, bp_storage_rpc_resp_t *resp) {
     resp->request_id = req->request_id;
     resp->bytes_transferred = 0;
+    resp->media_generation = tf_card_get_media_generation();
+
+    if (req->cancelled || (req->type != BP_STORAGE_RPC_STAT && (!req->data || req->size == 0))) {
+        resp->status = BP_STATUS_ERROR;
+        return;
+    }
 
     if (s_stats.state != BP_STORAGE_STATE_MOUNTED) {
+        resp->status = BP_STATUS_DISCONNECTED;
+        return;
+    }
+
+    /* Invalidate request if media generation changed since queueing */
+    if (req->media_generation != 0 && req->media_generation != resp->media_generation) {
         resp->status = BP_STATUS_DISCONNECTED;
         return;
     }
@@ -354,6 +403,29 @@ void bp_storage_service(void) {
                 } else if (s_stats.state == BP_STORAGE_STATE_ERROR) {
                     s_stats.state = BP_STORAGE_STATE_UNMOUNTED;
                 }
+                tf_card_invalidate_metadata();
+                while (s_rpc_req_tail != s_rpc_req_head) {
+                    uint32_t idx = s_rpc_req_tail % STORAGE_RPC_QUEUE_DEPTH;
+                    bp_storage_rpc_req_t req = s_rpc_req_q[idx];
+                    s_rpc_req_tail++;
+
+                    bp_storage_rpc_resp_t resp = {
+                        .request_id = req.request_id,
+                        .status = BP_STATUS_DISCONNECTED,
+                        .bytes_transferred = 0,
+                        .media_generation = 0
+                    };
+                    uint32_t resp_idx = s_rpc_resp_head % STORAGE_RPC_QUEUE_DEPTH;
+                    s_rpc_resp_q[resp_idx] = resp;
+                    __sync_synchronize();
+                    s_rpc_resp_head++;
+                }
+                if (s_stream_active) {
+                    s_stream_active = false;
+                    s_stream_head = s_stream_tail = 0;
+                    f_close(&s_stream_fil);
+                    bp_storage_file_closed();
+                }
             }
         }
     } else {
@@ -452,6 +524,11 @@ bp_status_t bp_storage_rpc_call(const bp_storage_rpc_req_t *req, bp_storage_rpc_
 #endif
         waited++;
     }
+
+    /* Enforce buffer lifetime on timeout: clear buffer pointer */
+    s_rpc_req_q[idx].cancelled = true;
+    s_rpc_req_q[idx].data = NULL;
+    __sync_synchronize();
 
     s_stats.rpc_timeouts++;
     return BP_STATUS_TIMEOUT;

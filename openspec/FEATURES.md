@@ -1,5 +1,9 @@
 # RB-Pirate Feature Inventory and Port Status
 
+## Production readiness qualification
+
+See [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) for the five active follow-up changes and their acceptance checklists. Host-verified hardening does not qualify physical DMA, DVI, crowbar, board lifecycle, or RP2040 support. RP2350-only remains the current platform contract; DVI/crowbar outputs remain unsupported without qualified wiring and circuitry.
+
 > This file tracks where each feature came from, what is actually implemented, what is verified,
 > and which OpenSpec change owns the fix. It is deliberately conservative: a feature is not marked
 > "working" until it has host-test and hardware evidence.

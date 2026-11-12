@@ -340,7 +340,7 @@ These are smaller than the architectural issues but should be fixed while touchi
 ### Advanced Protocols & Hardware Fault Injection (D3)
 
 - [x] **ARCH-813 (P1)** `src/mode/can.c`: Port `can2040` PIO assembly into `src/pirate/hwcan_pio.c` under `bp_res` lease arbitration; implement CAN mode supporting 11-bit / 29-bit frames, sniffing, mask filtering, and frame transmission up to 1 Mbps.
-- [x] **ARCH-814 (P1)** `src/commands/global/cmd_glitch.c`: Implement precision fault-injection engine supporting voltage crowbar pulses via PSU override line and synchronized clock glitching with nanosecond resolution.
+- [~] **ARCH-814 (P1)** `src/commands/global/cmd_glitch.c`: Implement precision fault-injection engine supporting voltage crowbar pulses via PSU override line and synchronized clock glitching with nanosecond resolution.
 
 ### DMA Subsystem Pipelines & Storage Throughput (D4)
 
@@ -356,7 +356,7 @@ These are smaller than the architectural issues but should be fixed while touchi
 ### USB Debug Probe & External Video (D6)
 
 - [x] **ARCH-825 (P2)** `src/binmode/cmsis_dap.c`: Implement ARM CMSIS-DAP v2 protocol over USB bulk endpoints (WinUSB) for SWD flashing and debugging with OpenOCD/pyOCD.
-- [x] **ARCH-826 (P2)** `src/pirate/hstx_dvi.c`: Implement 640x480 TMDS DVI digital video output utilizing RP2350 HSTX serializer for direct monitor mirroring.
+- [ ] **ARCH-826 (P2)** `src/pirate/hstx_dvi.c`: Implement 640x480 TMDS DVI digital video output utilizing RP2350 HSTX serializer for direct monitor mirroring.
 
 ---
 
@@ -396,3 +396,5 @@ The rearchitecture is complete when:
 3. `health` shows zero unhandled timeouts and zero unexpected resets after a 24 h soak.
 4. New modes can be added without touching Core 1, TinyUSB, FatFS or the kernel internals.
 5. A crash always produces a readable record and a controlled recovery.
+
+Audit correction (2026-11-12): ARCH-814 now supports bounded software logic pulses only; voltage crowbar requests are rejected because PSU override is a protection control. ARCH-826 physical video remains unimplemented and gated off on RB-Pirate pending supported wiring and a complete timing backend. See `docs/audits/2026-11-12-safety-hardening.md`.

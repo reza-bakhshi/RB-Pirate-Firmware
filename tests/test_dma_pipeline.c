@@ -103,8 +103,9 @@ static uint32_t s_multi_block_write_count = 0;
 
 DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
     (void)pdrv;
-    assert(buff != NULL);
-    assert(sector + count <= MOCK_DISK_SECTORS);
+    if (!buff || count == 0 || count > MOCK_DISK_SECTORS || sector > MOCK_DISK_SECTORS - count) {
+        return RES_PARERR;
+    }
     s_disk_read_count += count;
     if (count > 1) {
         s_multi_block_read_count++;
@@ -117,8 +118,9 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
 
 DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
     (void)pdrv;
-    assert(buff != NULL);
-    assert(sector + count <= MOCK_DISK_SECTORS);
+    if (!buff || count == 0 || count > MOCK_DISK_SECTORS || sector > MOCK_DISK_SECTORS - count) {
+        return RES_PARERR;
+    }
     s_disk_write_count += count;
     if (count > 1) {
         s_multi_block_write_count++;
@@ -162,6 +164,8 @@ static void test_amux_dma_pipeline(void) {
     /* Verify lease ownership in resource manager */
     assert(bp_res_get_owner(BP_RES_CLASS_DMA_CH, (uint32_t)ch_data) == BP_RES_OWNER_SYSTEM);
     assert(bp_res_get_owner(BP_RES_CLASS_DMA_CH, (uint32_t)ch_ctrl) == BP_RES_OWNER_SYSTEM);
+    assert(bp_res_get_owner(BP_RES_CLASS_PERIPH, BP_RES_PERIPH_ADC) == BP_RES_OWNER_SYSTEM);
+    assert(amux_get_state() == AMUX_STATE_IDLE);
 
     /* Simulate ADC inputs */
     s_mock_use_channel_adc = true;
@@ -172,6 +176,8 @@ static void test_amux_dma_pipeline(void) {
     /* Start sweep */
     bool ok = amux_dma_sweep_start();
     assert(ok);
+    assert(amux_get_state() == AMUX_STATE_IDLE);
+    assert(amux_get_generation() > 0);
 
     /* Verify coherent extraction */
     uint16_t raw_coherent[16] = {0};
@@ -180,6 +186,22 @@ static void test_amux_dma_pipeline(void) {
     for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
         assert(raw_coherent[i] == (uint16_t)(1200 + i * 40));
     }
+
+    /* Verify amux_get_frame() */
+    amux_frame_t frame;
+    memset(&frame, 0, sizeof(frame));
+    ok = amux_get_frame(&frame);
+    assert(ok);
+    assert(frame.valid);
+    assert(frame.generation == amux_get_generation());
+    for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
+        assert(frame.raw[i] == (uint16_t)(1200 + i * 40));
+    }
+
+    /* Verify manual read arbitration */
+    uint32_t val = amux_read(0);
+    assert(val == 1200);
+    assert(amux_get_state() == AMUX_STATE_IDLE);
 
     /* Verify zero spinlocks held during amux_sweep() */
     assert(adc_get_owner() == -1);
@@ -193,8 +215,20 @@ static void test_amux_dma_pipeline(void) {
     /* Verify cleanup */
     amux_dma_deinit();
     assert(!amux_dma_is_enabled());
+    assert(amux_get_state() == AMUX_STATE_STOPPED);
     assert(bp_res_get_owner(BP_RES_CLASS_DMA_CH, (uint32_t)ch_data) == BP_RES_OWNER_NONE);
     assert(bp_res_get_owner(BP_RES_CLASS_DMA_CH, (uint32_t)ch_ctrl) == BP_RES_OWNER_NONE);
+    assert(bp_res_get_owner(BP_RES_CLASS_PERIPH, BP_RES_PERIPH_ADC) == BP_RES_OWNER_NONE);
+
+    /* Verify transactional rollback when DMA channels are exhausted */
+    for (uint32_t i = 0; i < BP_RES_MAX_DMA_CHANNELS; i++) {
+        assert(bp_res_acquire(BP_RES_CLASS_DMA_CH, i, 999, "exhaust") == BP_STATUS_OK);
+    }
+    assert(!amux_dma_init());
+    assert(bp_res_is_free(BP_RES_CLASS_PERIPH, BP_RES_PERIPH_ADC)); /* ADC lease rolled back! */
+    for (uint32_t i = 0; i < BP_RES_MAX_DMA_CHANNELS; i++) {
+        bp_res_release(BP_RES_CLASS_DMA_CH, i, 999);
+    }
 
     s_mock_use_channel_adc = false;
     printf("[PASS] AMUX DMA pipeline and zero spinlocks verified\n");
@@ -288,6 +322,9 @@ static void test_lcd_async_dma(void) {
         sample_pixels[i] = (uint16_t)(0xF800 + i); // Red gradient
     }
 
+    assert(!bp_lcd_flush_async(sample_pixels, (size_t)BP_LCD_WIDTH * BP_LCD_HEIGHT + 1));
+    assert(bp_lcd_wait_idle_timeout(0));
+
     /* Start non-blocking flush */
     ok = bp_lcd_flush_async(sample_pixels, BP_LCD_WIDTH);
     assert(ok);
@@ -296,6 +333,9 @@ static void test_lcd_async_dma(void) {
     /* Verify second flush is rejected while in flight */
     bool second_flush = bp_lcd_flush_async(sample_pixels, BP_LCD_WIDTH);
     assert(!second_flush);
+
+    assert(!bp_lcd_wait_idle_timeout(0));
+    assert(bp_lcd_is_busy()); /* Timeout must not release an active source buffer. */
 
     /* Simulate completion and verify transition to idle */
     bp_lcd_test_step_dma();
@@ -317,6 +357,27 @@ static void test_lcd_async_dma(void) {
 int main(void) {
     printf("=== Running DMA Subsystem Pipeline Test Suite (ARCH-820..822) ===\n");
     test_amux_dma_pipeline();
+    uint8_t sector[512];
+    /* Subtract-before-add and boundary checks */
+    assert(diskio_read(0, NULL, 0, 1) == RES_PARERR);
+    assert(diskio_read(0, sector, 0, 0) == RES_PARERR);
+    assert(diskio_read(0, sector, 0, 129) == RES_PARERR);
+    assert(diskio_read(0, sector, UINT32_MAX, 2) == RES_PARERR);
+    assert(diskio_read(0, sector, (UINT32_MAX / 512), 2) == RES_PARERR);
+    assert(diskio_write(0, NULL, 0, 1) == RES_PARERR);
+    assert(diskio_write(0, sector, 0, 0) == RES_PARERR);
+    assert(diskio_write(0, sector, 0, 129) == RES_PARERR);
+    assert(diskio_write(0, sector, UINT32_MAX, 2) == RES_PARERR);
+    assert(diskio_write(0, sector, (UINT32_MAX / 512), 2) == RES_PARERR);
+
+    /* Storage service APIs */
+    assert(!storage_read_blocks(0, NULL, 1));
+    assert(!storage_read_blocks(0, sector, 0));
+    assert(!storage_write_blocks(0, NULL, 1));
+    assert(!storage_write_blocks(0, sector, 0));
+    assert(!storage_read_blocks(UINT32_MAX, sector, 2));
+    assert(!storage_write_blocks(UINT32_MAX, sector, 2));
+
     test_multiblock_storage_dma();
     test_lcd_async_dma();
     printf("=== ALL DMA PIPELINE TESTS PASSED ===\n");

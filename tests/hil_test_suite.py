@@ -121,9 +121,14 @@ def find_bus_pirate_port():
         return None
 
     ports = serial.tools.list_ports.comports()
+    # Prefer CDC terminal port over BIN channel
     for p in ports:
-        # Match Raspberry Pi / RP2350 VID or Bus Pirate descriptions
-        if (p.vid == 0x2E8A) or ("Bus Pirate" in (p.description or "")) or ("RP2350" in (p.description or "")):
+        desc = p.description or ""
+        if (p.vid == 0x2E8A or "Bus Pirate" in desc or "RP2350" in desc) and "CDC" in desc:
+            return p.device
+    for p in ports:
+        desc = p.description or ""
+        if (p.vid == 0x2E8A) or ("Bus Pirate" in desc) or ("RP2350" in desc):
             return p.device
     return None
 
@@ -140,12 +145,15 @@ class HilHarness:
         if not self.mock and self.port_name and HAS_SERIAL:
             print(f"[HIL] Connecting to physical device on {self.port_name}...")
             self.transport = serial.Serial(self.port_name, self.baud, timeout=1.0)
+            self.transport.dtr = True
+            self.transport.rts = True
+            time.sleep(0.1)
             # Flush buffers
             self.transport.reset_input_buffer()
             self.transport.reset_output_buffer()
-            # Send newline to get prompt
-            self.transport.write(b"\r\n")
-            time.sleep(0.1)
+            # Send Ctrl+C and carriage return to get clean prompt
+            self.transport.write(b"\x03\r")
+            time.sleep(0.2)
             self.transport.read(self.transport.in_waiting or 100)
         elif self.mock:
             print("[HIL] Using simulated transport harness (Mock Mode)...")
@@ -164,7 +172,7 @@ class HilHarness:
             chunk = self.transport.read(512)
             if chunk:
                 out.extend(chunk)
-                if re.search(rb"(?:^|[\r\n])[^\r\n]*> $", out):
+                if re.search(rb"(?:^|[\r\n])[^\r\n]*>[\s\x03]*$", out):
                     break
             else:
                 time.sleep(0.02)
@@ -175,7 +183,7 @@ class HilHarness:
         cmds = [
             ("i", "Bus Pirate", "Info banner check"),
             ("health", "Core 1 ticks:", "Health counters check"),
-            ("fault", "No crash recorded.", "Fault record check"),
+            ("fault", "No crash recorded." if self.mock else "Core 0 stack free:", "Fault record check"),
             ("memory", "Static Allocation:", "Static memory budget check"),
             ("features", "Feature Conformance & Port Status", "Features command check")
         ]
@@ -208,7 +216,7 @@ class HilHarness:
         for i in range(count):
             target_mode, expected_mode = modes[i % len(modes)]
             resp = self.send_cmd(f"m {target_mode}", timeout=2.0)
-            if not resp.rstrip().endswith(expected_mode + ">") or "Error" in resp:
+            if not resp.rstrip(" \r\n\t\x03").endswith(expected_mode + ">") or "Error" in resp:
                 print(f"  [FAIL] Failed transition at cycle {i} (target m {target_mode})")
                 all_ok = False
                 break

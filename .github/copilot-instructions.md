@@ -2,23 +2,20 @@
 
 ## Project Overview
 
-Bus Pirate 5/6/7 firmware — embedded C firmware for RP2040/RP2350 microcontrollers. Universal serial interface supporting 1-Wire, I2C, SPI, UART, JTAG, infrared, and other protocols. Dual-core architecture: Core 0 handles UI/commands, Core 1 handles LCD/display.
+RB-Pirate firmware targets only the RB-Pirate RP2350B board (Arm Secure).
+RP2040 and upstream Bus Pirate boards are unsupported. Core 0 owns USB, CLI,
+storage and system supervision; Core 1 executes protocol jobs. See CLAUDE.md
+and openspec/config.yaml for the current architecture and static memory rules.
 
 ## Build Commands
 
 ```bash
-# Configure for RP2040 (Bus Pirate 5)
-cmake -S . -B build_rp2040 -DPICO_SDK_FETCH_FROM_GIT=TRUE
-
-# Configure for RP2350 (Bus Pirate 5XL/6/7)
-cmake -S . -B build_rp2350 -DPICO_SDK_FETCH_FROM_GIT=TRUE -DBP_PICO_PLATFORM=rp2350
-
-# Build a specific target
-cmake --build ./build_rp2040 --parallel --target bus_pirate5_rev10
+cmake -S . -B build_rp2350 -DPICO_SDK_FETCH_FROM_GIT=TRUE -DPICO_PLATFORM=rp2350 -DPICO_BOARD=rb-pirate
 cmake --build ./build_rp2350 --parallel --target bus_pirate6
-
-# Available targets: bus_pirate5_rev8, bus_pirate5_rev10, bus_pirate5_xl, bus_pirate6
 ```
+
+The only supported target is `bus_pirate6`. Unsupported platform and board
+requests fail explicitly; never infer processor support from a build-folder name.
 
 Output: `.elf`, `.uf2`, `.bin` files in the build directory.
 

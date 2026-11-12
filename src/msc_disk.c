@@ -280,11 +280,27 @@ bool tud_msc_start_stop_cb(uint8_t lun, uint8_t power_condition, bool start, boo
 // Copy disk's data to buffer (up to bufsize) and return number of copied bytes.
 int32_t tud_msc_read10_cb(uint8_t lun, uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize) {
     if (system_config.storage_available) {
-        DRESULT res = disk_read(0, buffer, lba, (bufsize / BP_FLASH_DISK_BLOCK_SIZE));
+        if (!buffer || bufsize == 0 || (bufsize % BP_FLASH_DISK_BLOCK_SIZE) != 0) {
+            tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x20, 0x00);
+            return -1;
+        }
+        uint32_t count = bufsize / BP_FLASH_DISK_BLOCK_SIZE;
+        uint32_t total_blocks = 0;
+        if (disk_ioctl(0, GET_SECTOR_COUNT, &total_blocks) == RES_OK && total_blocks > 0) {
+            if (count > total_blocks || lba > total_blocks - count) {
+                tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x21, 0x00); /* LBA out of range */
+                return -1;
+            }
+        }
+        DRESULT res = disk_read(0, buffer, lba, count);
         if (res != RES_OK) {
             BP_DEBUG_PRINT(BP_DEBUG_LEVEL_ERROR, BP_DEBUG_DEFAULT_CATEGORY, "MSC READ ERROR %d\n", res);
             bp_storage_record_io_error(false);
-            tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x11, 0x00);
+            if (res == RES_PARERR) {
+                tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x21, 0x00);
+            } else {
+                tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x11, 0x00);
+            }
             return -1;
         }
     } else {
@@ -315,11 +331,31 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t* 
         return -1;
     }
 
-    DRESULT res = disk_write(0, buffer, lba, (bufsize / BP_FLASH_DISK_BLOCK_SIZE));
+    if (!buffer || bufsize == 0 || (bufsize % BP_FLASH_DISK_BLOCK_SIZE) != 0) {
+        tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x20, 0x00);
+        return -1;
+    }
+
+    uint32_t count = bufsize / BP_FLASH_DISK_BLOCK_SIZE;
+    uint32_t total_blocks = 0;
+    if (disk_ioctl(0, GET_SECTOR_COUNT, &total_blocks) == RES_OK && total_blocks > 0) {
+        if (count > total_blocks || lba > total_blocks - count) {
+            tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x21, 0x00); /* LBA out of range */
+            return -1;
+        }
+    }
+
+    DRESULT res = disk_write(0, buffer, lba, count);
     if (res != RES_OK) {
         BP_DEBUG_PRINT(BP_DEBUG_LEVEL_ERROR, BP_DEBUG_DEFAULT_CATEGORY, "MSC WRITE ERROR %d\n", res);
         bp_storage_record_io_error(true);
-        tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0c, 0x00);
+        if (res == RES_WRPRT) {
+            tud_msc_set_sense(lun, SCSI_SENSE_DATA_PROTECT, 0x27, 0x00);
+        } else if (res == RES_PARERR) {
+            tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x21, 0x00);
+        } else {
+            tud_msc_set_sense(lun, SCSI_SENSE_MEDIUM_ERROR, 0x0c, 0x00);
+        }
         return -1;
     }
 
@@ -328,6 +364,7 @@ int32_t tud_msc_write10_cb(uint8_t lun, uint32_t lba, uint32_t offset, uint8_t* 
 
 bool tud_msc_prevent_allow_medium_removal_cb(uint8_t lun, uint8_t prohibit_removal, uint8_t control) {
     (void)lun;
+    (void)control;
     if (prohibit_removal != 0) {
         tud_msc_set_sense(lun, SCSI_SENSE_ILLEGAL_REQUEST, 0x24, 0x0);
         return false;

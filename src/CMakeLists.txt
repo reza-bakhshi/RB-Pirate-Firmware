@@ -929,4 +929,13 @@ if(LEGACY_ANSI_COLOURS_ENABLED)
 endif()
 endif()
 
+find_program(PYTHON_EXECUTABLE NAMES python3 python)
+if(PYTHON_EXECUTABLE)
+    add_custom_command(TARGET bus_pirate6 POST_BUILD
+        COMMAND ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/platform_identity.py ${CMAKE_BINARY_DIR} -o ${CMAKE_CURRENT_BINARY_DIR}/build_identity.json
+        COMMENT "Generating machine-readable build identity manifest"
+        VERBATIM
+    )
+endif()
+
  

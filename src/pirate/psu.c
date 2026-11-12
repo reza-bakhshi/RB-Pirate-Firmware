@@ -12,6 +12,8 @@
  */
 
 #include <stdio.h>
+#include <math.h>
+/* Modified by Codex: validate persisted numbers before narrowing. */
 #include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
@@ -21,6 +23,7 @@
 #include "pirate/amux.h"
 #include "kernel/bp_job.h"
 #include "kernel/bp_config.h"
+#include "services/bp_storage.h"
 #include "mjson/mjson.h"
 #if !defined(BP_HOST_TEST)
 #include "fatfs/ff.h"
@@ -81,6 +84,213 @@ bool psu_cal_set(const psu_cal_t *new_cal) {
     return true;
 }
 
+uint32_t psu_cal_canonical_crc32(uint32_t schema_version, const psu_cal_t *cal) {
+    if (!cal) return 0;
+    uint8_t buf[20];
+    buf[0] = (uint8_t)(schema_version & 0xFF);
+    buf[1] = (uint8_t)((schema_version >> 8) & 0xFF);
+    buf[2] = (uint8_t)((schema_version >> 16) & 0xFF);
+    buf[3] = (uint8_t)((schema_version >> 24) & 0xFF);
+
+    buf[4] = (uint8_t)(cal->vout_gain_ppt & 0xFF);
+    buf[5] = (uint8_t)((cal->vout_gain_ppt >> 8) & 0xFF);
+
+    buf[6] = (uint8_t)((uint16_t)cal->vout_offset_mv & 0xFF);
+    buf[7] = (uint8_t)(((uint16_t)cal->vout_offset_mv >> 8) & 0xFF);
+
+    buf[8] = (uint8_t)(cal->isense_gain_ppt & 0xFF);
+    buf[9] = (uint8_t)((cal->isense_gain_ppt >> 8) & 0xFF);
+
+    buf[10] = (uint8_t)((uint16_t)cal->isense_offset_ua & 0xFF);
+    buf[11] = (uint8_t)(((uint16_t)cal->isense_offset_ua >> 8) & 0xFF);
+
+    buf[12] = (uint8_t)(cal->vdac_gain_ppt & 0xFF);
+    buf[13] = (uint8_t)((cal->vdac_gain_ppt >> 8) & 0xFF);
+
+    buf[14] = (uint8_t)((uint16_t)cal->vdac_offset_mv & 0xFF);
+    buf[15] = (uint8_t)(((uint16_t)cal->vdac_offset_mv >> 8) & 0xFF);
+
+    buf[16] = (uint8_t)(cal->idac_gain_ppt & 0xFF);
+    buf[17] = (uint8_t)((cal->idac_gain_ppt >> 8) & 0xFF);
+
+    buf[18] = (uint8_t)((uint16_t)cal->idac_offset_ma & 0xFF);
+    buf[19] = (uint8_t)(((uint16_t)cal->idac_offset_ma >> 8) & 0xFF);
+
+    uint32_t crc = 0xFFFFFFFFu;
+    for (size_t i = 0; i < 20; i++) {
+        crc ^= buf[i];
+        for (int b = 0; b < 8; b++) {
+            crc = (crc >> 1) ^ (0xEDB88320u & (-(int32_t)(crc & 1)));
+        }
+    }
+    return ~crc;
+}
+
+bool psu_cal_parse_json(const char *json, size_t len, psu_cal_t *out_cal, bool *out_is_legacy) {
+    if (!json || len == 0 || len >= 512 || !out_cal) {
+        return false;
+    }
+    if (out_is_legacy) *out_is_legacy = false;
+
+    /* 1. Fast check: must start with '{' */
+    const char *p = json;
+    while (*p && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) p++;
+    if (*p != '{') return false;
+
+    /* 2. Complete syntactic check and root boundary discovery */
+    int consumed = mjson(json, (int)len, NULL, NULL);
+    if (consumed <= 0) {
+        return false;
+    }
+
+    /* Trailing garbage check: only whitespace permitted after closing '}' */
+    for (int i = consumed; i < (int)len; i++) {
+        char c = json[i];
+        if (c != ' ' && c != '\t' && c != '\r' && c != '\n' && c != '\0') {
+            return false; /* Trailing garbage */
+        }
+    }
+
+    /* 3. Scan keys for duplicates, unknown fields, and field counts */
+    int cnt_schema = 0;
+    int cnt_checksum = 0;
+    int cnt_vout_gain = 0;
+    int cnt_vout_offset = 0;
+    int cnt_isense_gain = 0;
+    int cnt_isense_offset = 0;
+    int cnt_vdac_gain = 0;
+    int cnt_vdac_offset = 0;
+    int cnt_idac_gain = 0;
+    int cnt_idac_offset = 0;
+
+    int off = 0, koff = 0, klen = 0, voff = 0, vlen = 0, vtype = 0;
+    while ((off = mjson_next(json, (int)len, off, &koff, &klen, &voff, &vlen, &vtype)) != 0) {
+        if (klen < 2 || json[koff] != '"' || json[koff + klen - 1] != '"') {
+            return false;
+        }
+        const char *k = json + koff + 1;
+        int kl = klen - 2;
+
+        if (kl == 14 && memcmp(k, "schema_version", 14) == 0) {
+            cnt_schema++;
+        } else if (kl == 14 && memcmp(k, "checksum_crc32", 14) == 0) {
+            cnt_checksum++;
+        } else if (kl == 13 && memcmp(k, "vout_gain_ppt", 13) == 0) {
+            cnt_vout_gain++;
+        } else if (kl == 14 && memcmp(k, "vout_offset_mv", 14) == 0) {
+            cnt_vout_offset++;
+        } else if (kl == 15 && memcmp(k, "isense_gain_ppt", 15) == 0) {
+            cnt_isense_gain++;
+        } else if (kl == 16 && memcmp(k, "isense_offset_ua", 16) == 0) {
+            cnt_isense_offset++;
+        } else if (kl == 13 && memcmp(k, "vdac_gain_ppt", 13) == 0) {
+            cnt_vdac_gain++;
+        } else if (kl == 14 && memcmp(k, "vdac_offset_mv", 14) == 0) {
+            cnt_vdac_offset++;
+        } else if (kl == 13 && memcmp(k, "idac_gain_ppt", 13) == 0) {
+            cnt_idac_gain++;
+        } else if (kl == 14 && memcmp(k, "idac_offset_ma", 14) == 0) {
+            cnt_idac_offset++;
+        } else {
+            return false; /* Unknown field */
+        }
+    }
+
+    /* Reject any duplicate fields */
+    if (cnt_schema > 1 || cnt_checksum > 1 || cnt_vout_gain > 1 || cnt_vout_offset > 1 ||
+        cnt_isense_gain > 1 || cnt_isense_offset > 1 || cnt_vdac_gain > 1 || cnt_vdac_offset > 1 ||
+        cnt_idac_gain > 1 || cnt_idac_offset > 1) {
+        return false;
+    }
+
+    /* All 8 coefficients must be present exactly once */
+    if (cnt_vout_gain != 1 || cnt_vout_offset != 1 || cnt_isense_gain != 1 || cnt_isense_offset != 1 ||
+        cnt_vdac_gain != 1 || cnt_vdac_offset != 1 || cnt_idac_gain != 1 || cnt_idac_offset != 1) {
+        return false;
+    }
+
+    /* 4. Validate coefficients */
+    double val = 0;
+    psu_cal_t candidate;
+    psu_cal_reset_defaults(&candidate);
+
+    if (!mjson_get_number(json, (int)len, "$.vout_gain_ppt", &val) ||
+        !isfinite(val) || val < 500 || val > 2000 || val != (double)(int64_t)val) return false;
+    candidate.vout_gain_ppt = (uint16_t)val;
+
+    if (!mjson_get_number(json, (int)len, "$.vout_offset_mv", &val) ||
+        !isfinite(val) || val < -2000 || val > 2000 || val != (double)(int64_t)val) return false;
+    candidate.vout_offset_mv = (int16_t)val;
+
+    if (!mjson_get_number(json, (int)len, "$.isense_gain_ppt", &val) ||
+        !isfinite(val) || val < 500 || val > 2000 || val != (double)(int64_t)val) return false;
+    candidate.isense_gain_ppt = (uint16_t)val;
+
+    if (!mjson_get_number(json, (int)len, "$.isense_offset_ua", &val) ||
+        !isfinite(val) || val < -30000 || val > 30000 || val != (double)(int64_t)val) return false;
+    candidate.isense_offset_ua = (int16_t)val;
+
+    if (!mjson_get_number(json, (int)len, "$.vdac_gain_ppt", &val) ||
+        !isfinite(val) || val < 500 || val > 2000 || val != (double)(int64_t)val) return false;
+    candidate.vdac_gain_ppt = (uint16_t)val;
+
+    if (!mjson_get_number(json, (int)len, "$.vdac_offset_mv", &val) ||
+        !isfinite(val) || val < -32768 || val > 32767 || val != (double)(int64_t)val) return false;
+    candidate.vdac_offset_mv = (int16_t)val;
+
+    if (!mjson_get_number(json, (int)len, "$.idac_gain_ppt", &val) ||
+        !isfinite(val) || val < 500 || val > 2000 || val != (double)(int64_t)val) return false;
+    candidate.idac_gain_ppt = (uint16_t)val;
+
+    if (!mjson_get_number(json, (int)len, "$.idac_offset_ma", &val) ||
+        !isfinite(val) || val < -32768 || val > 32767 || val != (double)(int64_t)val) return false;
+    candidate.idac_offset_ma = (int16_t)val;
+
+    /* 5. Check schema version and checksum */
+    if (cnt_schema == 1 && cnt_checksum == 1) {
+        if (!mjson_get_number(json, (int)len, "$.schema_version", &val) ||
+            !isfinite(val) || val != 1.0) {
+            return false; /* Unsupported schema version */
+        }
+        char hex[16] = {0};
+        int hlen = mjson_get_string(json, (int)len, "$.checksum_crc32", hex, sizeof(hex));
+        if (hlen != 8) {
+            return false; /* Exactly 8 hex digits required */
+        }
+        for (int i = 0; i < 8; i++) {
+            char c = hex[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return false;
+            }
+        }
+        uint32_t expected_crc = (uint32_t)strtoul(hex, NULL, 16);
+        uint32_t computed_crc = psu_cal_canonical_crc32(1, &candidate);
+        if (expected_crc != computed_crc) {
+            return false; /* Checksum mismatch */
+        }
+
+        candidate.magic = PSU_CAL_MAGIC;
+        candidate.flags = 1;
+        candidate.checksum = psu_cal_calc_checksum(&candidate);
+        *out_cal = candidate;
+        if (out_is_legacy) *out_is_legacy = false;
+        return true;
+
+    } else if (cnt_schema == 0 && cnt_checksum == 0) {
+        /* Legacy format with no schema/checksum */
+        candidate.magic = PSU_CAL_MAGIC;
+        candidate.flags = 1;
+        candidate.checksum = psu_cal_calc_checksum(&candidate);
+        *out_cal = candidate;
+        if (out_is_legacy) *out_is_legacy = true;
+        return true;
+
+    } else {
+        /* One of schema or checksum was present without the other: invalid */
+        return false;
+    }
+}
+
 bool psu_cal_save(const psu_cal_t *cal) {
     if (!cal || !psu_cal_is_valid(cal)) {
         return false;
@@ -89,18 +299,28 @@ bool psu_cal_save(const psu_cal_t *cal) {
     f_mkdir("config");
     f_mkdir("/config");
 
+    const char *destination = PSU_CAL_FILE;
+    const char *temporary = "/config/psu_cal.tmp";
+    const char *backup = "/config/psu_cal.bak";
     FIL fil;
-    FRESULT fr = f_open(&fil, PSU_CAL_FILE, FA_CREATE_ALWAYS | FA_WRITE);
+    FRESULT fr = f_open(&fil, temporary, FA_CREATE_ALWAYS | FA_WRITE);
     if (fr != FR_OK) {
-        fr = f_open(&fil, PSU_CAL_ALT_FILE, FA_CREATE_ALWAYS | FA_WRITE);
+        destination = PSU_CAL_ALT_FILE;
+        temporary = "config/psu_cal.tmp";
+        backup = "config/psu_cal.bak";
+        fr = f_open(&fil, temporary, FA_CREATE_ALWAYS | FA_WRITE);
     }
     if (fr != FR_OK) {
         return false;
     }
+    bp_storage_file_opened();
 
-    char buf[256];
+    uint32_t crc = psu_cal_canonical_crc32(1, cal);
+
+    char buf[512];
     int len = snprintf(buf, sizeof(buf),
         "{\n"
+        "  \"schema_version\": 1,\n"
         "  \"vout_gain_ppt\": %u,\n"
         "  \"vout_offset_mv\": %d,\n"
         "  \"isense_gain_ppt\": %u,\n"
@@ -108,7 +328,8 @@ bool psu_cal_save(const psu_cal_t *cal) {
         "  \"vdac_gain_ppt\": %u,\n"
         "  \"vdac_offset_mv\": %d,\n"
         "  \"idac_gain_ppt\": %u,\n"
-        "  \"idac_offset_ma\": %d\n"
+        "  \"idac_offset_ma\": %d,\n"
+        "  \"checksum_crc32\": \"%08x\"\n"
         "}\n",
         (unsigned)cal->vout_gain_ppt,
         (int)cal->vout_offset_mv,
@@ -117,15 +338,46 @@ bool psu_cal_save(const psu_cal_t *cal) {
         (unsigned)cal->vdac_gain_ppt,
         (int)cal->vdac_offset_mv,
         (unsigned)cal->idac_gain_ppt,
-        (int)cal->idac_offset_ma
+        (int)cal->idac_offset_ma,
+        (unsigned)crc
     );
+
+    if (len <= 0 || len >= (int)sizeof(buf)) {
+        f_close(&fil);
+        bp_storage_file_closed();
+        return false;
+    }
 
     UINT bw = 0;
     fr = f_write(&fil, buf, (UINT)len, &bw);
-    f_sync(&fil);
-    f_close(&fil);
+    FRESULT sync_fr = f_sync(&fil);
+    FRESULT close_fr = f_close(&fil);
+    bp_storage_file_closed();
 
-    if (fr == FR_OK && bw == (UINT)len) {
+    if (fr == FR_OK && bw == (UINT)len && sync_fr == FR_OK && close_fr == FR_OK) {
+        /* FAT cannot replace an existing destination by rename. Keep a recovery
+         * copy across the two renames; do not touch it until the new file synced. */
+        FRESULT moved = FR_NO_FILE;
+        FRESULT present = f_open(&fil, destination, FA_READ | FA_OPEN_EXISTING);
+        if (present == FR_OK) {
+            bp_storage_file_opened();
+            if (f_close(&fil) != FR_OK) {
+                bp_storage_file_closed();
+                return false;
+            }
+            bp_storage_file_closed();
+            FRESULT removed = f_unlink(backup);
+            if (removed != FR_OK && removed != FR_NO_FILE) return false;
+            moved = f_rename(destination, backup);
+            if (moved != FR_OK) return false;
+        } else if (present != FR_NO_FILE && present != FR_NO_PATH) {
+            return false;
+        }
+        /* If only a recovery backup exists, retain it until replacement succeeds. */
+        if (f_rename(temporary, destination) != FR_OK) {
+            if (moved == FR_OK) f_rename(backup, destination);
+            return false;
+        }
         psu_cal_set(cal);
         return true;
     }
@@ -133,78 +385,53 @@ bool psu_cal_save(const psu_cal_t *cal) {
 }
 
 bool psu_cal_load(void) {
+    static const char * const candidates[] = {
+        PSU_CAL_FILE,
+        "/config/psu_cal.bak",
+        PSU_CAL_ALT_FILE,
+        "config/psu_cal.bak",
+        "/psu_cal.json",
+        "psu_cal.json"
+    };
+
     FIL fil;
-    FRESULT fr = f_open(&fil, PSU_CAL_FILE, FA_READ | FA_OPEN_EXISTING);
-    if (fr != FR_OK) {
-        fr = f_open(&fil, PSU_CAL_ALT_FILE, FA_READ | FA_OPEN_EXISTING);
-    }
-    if (fr != FR_OK) {
-        fr = f_open(&fil, "psu_cal.json", FA_READ | FA_OPEN_EXISTING);
-    }
-    if (fr != FR_OK) {
-        fr = f_open(&fil, "/psu_cal.json", FA_READ | FA_OPEN_EXISTING);
-    }
-    if (fr != FR_OK) {
-        psu_cal_t def;
-        psu_cal_reset_defaults(&def);
-        psu_cal_set(&def);
-        return false;
-    }
-
     char json[512];
-    UINT br = 0;
-    fr = f_read(&fil, json, sizeof(json) - 1, &br);
-    f_close(&fil);
 
-    if (fr != FR_OK || br == 0) {
-        psu_cal_t def;
-        psu_cal_reset_defaults(&def);
-        psu_cal_set(&def);
-        return false;
-    }
-    json[br] = '\0';
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        FRESULT fr = f_open(&fil, candidates[i], FA_READ | FA_OPEN_EXISTING);
+        if (fr != FR_OK) {
+            continue;
+        }
+        bp_storage_file_opened();
 
-    psu_cal_t loaded;
-    psu_cal_reset_defaults(&loaded);
+        UINT br = 0;
+        fr = f_read(&fil, json, sizeof(json) - 1, &br);
+        f_close(&fil);
+        bp_storage_file_closed();
 
-    double val = 0;
-    if (mjson_get_number(json, br, "$.vout_gain_ppt", &val)) {
-        loaded.vout_gain_ppt = (uint16_t)val;
-    }
-    if (mjson_get_number(json, br, "$.vout_offset_mv", &val)) {
-        loaded.vout_offset_mv = (int16_t)val;
-    }
-    if (mjson_get_number(json, br, "$.isense_gain_ppt", &val)) {
-        loaded.isense_gain_ppt = (uint16_t)val;
-    }
-    if (mjson_get_number(json, br, "$.isense_offset_ua", &val)) {
-        loaded.isense_offset_ua = (int16_t)val;
-    }
-    if (mjson_get_number(json, br, "$.vdac_gain_ppt", &val)) {
-        loaded.vdac_gain_ppt = (uint16_t)val;
-    }
-    if (mjson_get_number(json, br, "$.vdac_offset_mv", &val)) {
-        loaded.vdac_offset_mv = (int16_t)val;
-    }
-    if (mjson_get_number(json, br, "$.idac_gain_ppt", &val)) {
-        loaded.idac_gain_ppt = (uint16_t)val;
-    }
-    if (mjson_get_number(json, br, "$.idac_offset_ma", &val)) {
-        loaded.idac_offset_ma = (int16_t)val;
+        if (fr != FR_OK || br == 0 || br >= sizeof(json) - 1) {
+            continue;
+        }
+        json[br] = '\0';
+
+        psu_cal_t loaded;
+        bool is_legacy = false;
+        if (psu_cal_parse_json(json, br, &loaded, &is_legacy)) {
+            psu_cal_set(&loaded);
+            if (is_legacy) {
+                /* Migrate legacy format to schema v1 with checksum */
+                psu_cal_save(&loaded);
+            }
+            return true;
+        }
+        /* Candidate corrupted or invalid: continue to next candidate! */
     }
 
-    loaded.flags = 1;
-    loaded.checksum = psu_cal_calc_checksum(&loaded);
-
-    if (psu_cal_is_valid(&loaded)) {
-        psu_cal_set(&loaded);
-        return true;
-    } else {
-        psu_cal_t def;
-        psu_cal_reset_defaults(&def);
-        psu_cal_set(&def);
-        return false;
-    }
+    /* All candidates failed or absent: restore factory defaults */
+    psu_cal_t def;
+    psu_cal_reset_defaults(&def);
+    psu_cal_set(&def);
+    return false;
 }
 
 /// @brief Reset the PSU current fuse/trigger
@@ -459,6 +686,12 @@ bool psu_poll_fuse_vout_error(void) {
     } else {
         s_undervoltage_fail_count = 0;
     }
+    if (amux_dma_is_enabled()) {
+        if (amux_get_state() == AMUX_STATE_FAULT || !amux_is_telemetry_fresh(AMUX_MAX_FRAME_AGE_US)) {
+            psu_status.error_stale_telemetry = true;
+            error = true;
+        }
+    }
     // Re-check enabled flag to avoid race condition with psu_disable() on other core
     // If PSU was intentionally disabled between our initial check and now, don't flag as error
     if(error && psu_status.enabled) {
@@ -472,6 +705,7 @@ bool psu_poll_fuse_vout_error(void) {
         // PSU was disabled intentionally or no error, clear any false error flags we may have set
         psu_status.error_overcurrent = false;
         psu_status.error_undervoltage = false;
+        psu_status.error_stale_telemetry = false;
     }
     return error;
 }
@@ -481,6 +715,9 @@ bool psu_poll_fuse_vout_error(void) {
 /// @return None
 void psu_clear_error_flag(void) {
     psu_status.error_pending = false;
+    psu_status.error_overcurrent = false;
+    psu_status.error_undervoltage = false;
+    psu_status.error_stale_telemetry = false;
     s_undervoltage_fail_count = 0;
 }
 
@@ -600,6 +837,7 @@ uint32_t psu_enable(float volts, float current, bool current_limit_override, uin
     s_undervoltage_fail_count = 0;
     psu_status.error_overcurrent = false;
     psu_status.error_undervoltage = false;
+    psu_status.error_stale_telemetry = false;
     psu_status.error_pending = false;
 
     psu_status.last_fuse_sample_valid = false;
@@ -678,6 +916,7 @@ void psu_init(void) {
     psu_status.enabled = false;
     psu_status.error_overcurrent = false;
     psu_status.error_undervoltage = false;
+    psu_status.error_stale_telemetry = false;
     psu_status.error_pending = false;
 
     psu_cal_t cal;

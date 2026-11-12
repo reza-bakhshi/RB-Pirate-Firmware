@@ -14,6 +14,8 @@
 #include "pirate/hwcan_pio.h"
 #include "mode/can.h"
 #include "commands/global/cmd_glitch.h"
+#include "services/bp_protocol_call.h"
+#include "kernel/bp_resource.h"
 #include "translation/base.h"
 
 // Stubs for host test
@@ -50,6 +52,50 @@ uint32_t storage_save_mode(const char* f, const mode_config_t* c, uint8_t n) { (
 void bio_init(void) {}
 bool rx_fifo_try_get(char* c) { (void)c; return false; }
 bool button_get(uint8_t b) { (void)b; return false; }
+
+uint32_t bp_job_get_active_id(void) { return 0; }
+bp_status_t bp_term_job_getc(char *key) { (void)key; return BP_STATUS_QUEUE_EMPTY; }
+static bool mock_cancel;
+static unsigned mock_worker_calls;
+bool bp_job_check_cancelled(void) { return mock_cancel; }
+bp_status_t bp_protocol_call(const char *name, bp_job_slice_fn_t step, void *ctx) {
+    (void)name;
+    mock_worker_calls++;
+    uint8_t percent;
+    for (unsigned i = 0; i < 1001; ++i) {
+        bp_status_t status = step(ctx, &percent);
+        if (status != BP_STATUS_BUSY) return status;
+    }
+    return BP_STATUS_TIMEOUT;
+}
+static void test_glitch_limits_and_cleanup(void) {
+    assert(bp_res_init() == BP_STATUS_OK);
+    for (unsigned i = 1; i <= 8; ++i) system_config.pin_func[i] = BP_PIN_IO;
+    const char *invalid[] = { "glitch -p", "glitch -c 8", "glitch -c 2 -t 2",
+        "glitch -c 2 -w 0", "glitch -c 2 -w 100001", "glitch -c 2 -d 100001",
+        "glitch -c 2 -n 0", "glitch -c 2 -n 1001", "glitch -c 2 -w garbage" };
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+        s_cmdln_buf = invalid[i];
+        struct command_result result = {0};
+        cmd_glitch_handler(&result);
+        assert(result.error);
+        assert(mock_worker_calls == 0);
+    }
+    s_cmdln_buf = "glitch -c 2 -n 3";
+    struct command_result result = {0};
+    cmd_glitch_handler(&result);
+    assert(!result.error && mock_worker_calls == 1);
+    assert(bp_res_count_owned(12) == 0);
+    mock_cancel = true;
+    cmd_glitch_handler(&result);
+    assert(result.error && bp_res_count_owned(12) == 0);
+    mock_cancel = false;
+    system_config.mode = 1;
+    unsigned before = mock_worker_calls;
+    cmd_glitch_handler(&result);
+    assert(result.error && mock_worker_calls == before);
+    system_config.mode = 0;
+}
 
 static void test_can_init_validation(void) {
     printf("[TEST] CAN init parameter validation...\n");
@@ -191,6 +237,7 @@ static void test_can_stats(void) {
 
 int main(void) {
     printf("=== Running CAN Bus and Fault Injection Host Tests ===\n");
+    test_glitch_limits_and_cleanup();
     test_can_init_validation();
     test_can_tx_rx_loopback();
     test_can_filter();

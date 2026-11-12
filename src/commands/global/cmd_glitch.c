@@ -16,7 +16,7 @@
 #include "lib/bp_args/bp_cmd.h"
 #include "pirate/bio.h"
 #include "pirate/button.h"
-#include "usb_rx.h"
+#include "services/bp_terminal.h"
 #include "commands/global/cmd_glitch.h"
 
 #if !defined(BP_HOST_TEST)
@@ -34,157 +34,122 @@ static void delay_ns(uint32_t ns) {
 }
 #endif
 
-static const char* const usage[] = {
-    "glitch [-p] [-c <pin>] [-t <trig>] [-d <delay_ns>] [-w <width_ns>] [-n <count>] [-m]",
-    "Power rail crowbar pulse (100ns):%s glitch -p -w 100",
-    "Logic glitch on BIO2 with 50ns delay on BIO0 trigger:%s glitch -c 2 -t 0 -d 50 -w 20",
-};
+/* Modified by Codex: bounded worker pulses; never use PSU protection as crowbar. */
+#include "services/bp_protocol_call.h"
+#include "kernel/bp_resource.h"
 
+#define GLITCH_OWNER BP_RES_OWNER_GLITCH
+#define GLITCH_RESOURCE BP_RES_PERIPH_GLITCH
+#define GLITCH_MAX_NS 100000u
+#define GLITCH_MAX_COUNT 1000u
+#define GLITCH_TRIGGER_TIMEOUT_US 1000000u
+
+typedef struct {
+    uint32_t pin, trigger, delay_ns, width_ns, count, completed, armed_us;
+    bool manual, falling, saw_inactive;
+} glitch_context_t;
+
+static bp_status_t glitch_step(void *opaque, uint8_t *percent) {
+    glitch_context_t *ctx = opaque;
+    char key;
+    if (bp_job_check_cancelled() || button_get(0) || bp_term_job_getc(&key) == BP_STATUS_OK)
+        return BP_STATUS_CANCELLED;
+    if (!ctx->manual) {
+        bool active = bio_get(ctx->trigger) != ctx->falling;
+        if (!active) ctx->saw_inactive = true;
+        if (!active || !ctx->saw_inactive) {
+            if ((uint32_t)(time_us_32() - ctx->armed_us) >= GLITCH_TRIGGER_TIMEOUT_US)
+                return BP_STATUS_TIMEOUT;
+            return BP_STATUS_BUSY;
+        }
+    }
+#if !defined(BP_HOST_TEST)
+    uint32_t ints = save_and_disable_interrupts();
+    delay_ns(ctx->delay_ns);
+    bio_put(ctx->pin, true);
+    delay_ns(ctx->width_ns);
+    bio_put(ctx->pin, false);
+    restore_interrupts(ints);
+#endif
+    ctx->completed++;
+    *percent = (uint8_t)(ctx->completed * 100 / ctx->count);
+    ctx->saw_inactive = false;
+    ctx->armed_us = time_us_32();
+    return ctx->completed == ctx->count ? BP_STATUS_OK : BP_STATUS_BUSY;
+}
+
+static const char* const usage[] = {
+    "glitch -c <pin> [-t <trigger>] [-d <ns>] [-w <ns>] [-n <count>] [-m] [-f]",
+    "Logic pulse on BIO2:%s glitch -c 2 -w 100",
+    "Falling edge trigger on BIO0:%s glitch -c 2 -t 0 -f",
+};
 static const bp_command_opt_t glitch_opts[] = {
-    { "power",   'p', BP_ARG_NONE,     NULL, 0, NULL, "Target power rail override (voltage brownout/crowbar)" },
-    { "pin",     'c', BP_ARG_REQUIRED, "pin", 0, NULL, "Target BIO pin (0..7) for clock/logic glitch" },
-    { "trigger", 't', BP_ARG_REQUIRED, "trig", 0, NULL, "Trigger input BIO pin (0..7)" },
-    { "delay",   'd', BP_ARG_REQUIRED, "ns", 0, NULL, "Delay after trigger in nanoseconds (default 0)" },
-    { "width",   'w', BP_ARG_REQUIRED, "ns", 0, NULL, "Glitch pulse width in nanoseconds (default 100)" },
-    { "count",   'n', BP_ARG_REQUIRED, "cnt", 0, NULL, "Number of glitch pulses (default 1)" },
-    { "manual",  'm', BP_ARG_NONE,     NULL, 0, NULL, "Manual software trigger (fire immediately)" },
+    { "power", 'p', BP_ARG_NONE, NULL, 0, NULL, "Unsupported: board has no dedicated crowbar output" },
+    { "pin", 'c', BP_ARG_REQUIRED, "pin", 0, NULL, "Target BIO pin (0..7), HiZ mode only" },
+    { "trigger", 't', BP_ARG_REQUIRED, "pin", 0, NULL, "Trigger BIO pin (0..7), 1 second timeout per pulse" },
+    { "delay", 'd', BP_ARG_REQUIRED, "ns", 0, NULL, "Delay (0..100000 ns)" },
+    { "width", 'w', BP_ARG_REQUIRED, "ns", 0, NULL, "Width (1..100000 ns), software timing is approximate" },
+    { "count", 'n', BP_ARG_REQUIRED, "count", 0, NULL, "Pulse count (1..1000)" },
+    { "manual", 'm', BP_ARG_NONE, NULL, 0, NULL, "Immediate software trigger" },
+    { "falling", 'f', BP_ARG_NONE, NULL, 0, NULL, "Falling edge instead of rising edge" },
     { 0 }
 };
-
 const bp_command_def_t cmd_glitch_def = {
-    .name        = "glitch",
-    .description = 0x00,
-    .opts        = glitch_opts,
-    .usage       = usage,
-    .usage_count = count_of(usage),
+    .name = "glitch", .description = 0, .opts = glitch_opts,
+    .usage = usage, .usage_count = count_of(usage),
 };
 
 void cmd_glitch_handler(struct command_result* res) {
-    if (bp_cmd_help_check(&cmd_glitch_def, res->help_flag)) {
+    if (bp_cmd_help_check(&cmd_glitch_def, res->help_flag)) return;
+    res->error = true;
+    if (bp_cmd_find_flag(&cmd_glitch_def, 'p')) {
+        printf("Power glitch unsupported: no dedicated crowbar output on this board.\r\n");
         return;
     }
-
-    bool is_power = bp_cmd_find_flag(&cmd_glitch_def, 'p');
-    bool is_manual = bp_cmd_find_flag(&cmd_glitch_def, 'm');
-
-    uint32_t target_pin = 0;
-    bool has_target_pin = bp_cmd_get_uint32(&cmd_glitch_def, 'c', &target_pin);
-
-    uint32_t trig_pin = 0;
-    bool has_trigger = bp_cmd_get_uint32(&cmd_glitch_def, 't', &trig_pin);
-
-    uint32_t delay_val_ns = 0;
-    bp_cmd_get_uint32(&cmd_glitch_def, 'd', &delay_val_ns);
-
-    uint32_t width_val_ns = 100;
-    bp_cmd_get_uint32(&cmd_glitch_def, 'w', &width_val_ns);
-    if (width_val_ns == 0) width_val_ns = 10;
-
-    uint32_t count = 1;
-    bp_cmd_get_uint32(&cmd_glitch_def, 'n', &count);
-    if (count == 0) count = 1;
-
-    if (!is_power && !has_target_pin) {
-        printf("%sError: Specify either -p (power glitch) or -c <pin> (logic pin glitch)%s\r\n",
-               ui_term_color_error(), ui_term_color_reset());
-        res->error = true;
+    glitch_context_t ctx = { .width_ns = 100, .count = 1 };
+    bool target = bp_cmd_get_uint32(&cmd_glitch_def, 'c', &ctx.pin);
+    bool trigger = bp_cmd_get_uint32(&cmd_glitch_def, 't', &ctx.trigger);
+    bool valid = true;
+    const char flags[] = { 'd', 'w', 'n', 't' };
+    uint32_t *values[] = { &ctx.delay_ns, &ctx.width_ns, &ctx.count, &ctx.trigger };
+    for (unsigned i = 0; i < sizeof(flags); ++i) {
+        if (bp_cmd_find_flag(&cmd_glitch_def, flags[i]) &&
+            !bp_cmd_get_uint32(&cmd_glitch_def, flags[i], values[i])) valid = false;
+    }
+    ctx.manual = bp_cmd_find_flag(&cmd_glitch_def, 'm') || !trigger;
+    ctx.falling = bp_cmd_find_flag(&cmd_glitch_def, 'f');
+    if (!valid || !target || ctx.pin >= BIO_MAX_PINS || (trigger && ctx.trigger >= BIO_MAX_PINS) ||
+        (trigger && ctx.pin == ctx.trigger) || ctx.delay_ns > GLITCH_MAX_NS ||
+        ctx.width_ns == 0 || ctx.width_ns > GLITCH_MAX_NS ||
+        ctx.count == 0 || ctx.count > GLITCH_MAX_COUNT) {
+        printf("Invalid glitch pins or timing/count limits.\r\n");
         return;
     }
-
-    if (!is_manual && !has_trigger) {
-        // Default to manual trigger if no trigger pin provided
-        is_manual = true;
-    }
-
-    if (has_target_pin && target_pin >= BIO_MAX_PINS) {
-        printf("%sError: Invalid target BIO pin %u%s\r\n",
-               ui_term_color_error(), target_pin, ui_term_color_reset());
-        res->error = true;
+    if (bp_job_get_active_id() != 0 || system_config.mode != 0 || system_config.pin_func[ctx.pin + 1] != BP_PIN_IO ||
+        (trigger && system_config.pin_func[ctx.trigger + 1] != BP_PIN_IO)) {
+        printf("Glitch requires HiZ mode and unused pins.\r\n");
         return;
     }
-
-    if (has_trigger && trig_pin >= BIO_MAX_PINS) {
-        printf("%sError: Invalid trigger BIO pin %u%s\r\n",
-               ui_term_color_error(), trig_pin, ui_term_color_reset());
-        res->error = true;
+    if (bp_res_acquire(BP_RES_CLASS_PERIPH, GLITCH_RESOURCE, GLITCH_OWNER, "glitch") != BP_STATUS_OK) {
+        printf("Glitch engine busy.\r\n");
         return;
     }
-
-    printf("%sFault Injection Glitch Engine%s\r\n", ui_term_color_info(), ui_term_color_reset());
-    if (is_power) {
-        printf(" Target : PSU Override (CURRENT_EN_OVERRIDE / Vout crowbar)\r\n");
-    } else {
-        printf(" Target : BIO%u\r\n", target_pin);
-    }
-    printf(" Delay  : %u ns\r\n", delay_val_ns);
-    printf(" Width  : %u ns\r\n", width_val_ns);
-    printf(" Pulses : %u\r\n", count);
-    if (is_manual) {
-        printf(" Trigger: Manual (immediate)\r\n");
-    } else {
-        printf(" Trigger: Edge on BIO%u\r\n", trig_pin);
-    }
-
-#if !defined(BP_HOST_TEST)
-    uint32_t glitch_gpio = 0;
-    if (is_power) {
-        glitch_gpio = CURRENT_EN_OVERRIDE;
-        gpio_set_function(glitch_gpio, GPIO_FUNC_SIO);
-        gpio_set_dir(glitch_gpio, GPIO_OUT);
-        gpio_put(glitch_gpio, 0);
-    } else {
-        glitch_gpio = bio2bufiopin[target_pin];
-        bio_buf_output(target_pin);
-        gpio_set_function(glitch_gpio, GPIO_FUNC_SIO);
-        gpio_set_dir(glitch_gpio, GPIO_OUT);
-        gpio_put(glitch_gpio, 0);
-    }
-
-    uint32_t trig_gpio = 0;
-    if (!is_manual) {
-        trig_gpio = bio2bufiopin[trig_pin];
-        bio_buf_input(trig_pin);
-        gpio_set_function(trig_gpio, GPIO_FUNC_SIO);
-        gpio_set_dir(trig_gpio, GPIO_IN);
-    }
-
-    for (uint32_t iter = 0; iter < count; iter++) {
-        if (!is_manual) {
-            bool initial = gpio_get(trig_gpio);
-            // Wait for trigger transition
-            while (gpio_get(trig_gpio) == initial) {
-                char ch;
-                if (rx_fifo_try_get(&ch) || button_get(0)) {
-                    printf("%sGlitch sequence cancelled.%s\r\n", ui_term_color_notice(), ui_term_color_reset());
-                    return;
-                }
-            }
-        }
-
-        // Critical timing section
-        uint32_t ints = save_and_disable_interrupts();
-
-        if (delay_val_ns > 0) {
-            delay_ns(delay_val_ns);
-        }
-
-        // Assert glitch pulse
-        gpio_put(glitch_gpio, 1);
-        delay_ns(width_val_ns);
-        gpio_put(glitch_gpio, 0);
-
-        restore_interrupts(ints);
-
-        if (count > 1) {
-            busy_wait_us_32(100);
-        }
-    }
-
-    if (is_power) {
-        gpio_put(CURRENT_EN_OVERRIDE, 0);
-    }
-#endif
-
-    printf("%sGlitch pulse(s) delivered.%s\r\n", ui_term_color_info(), ui_term_color_reset());
-    res->error = false;
+    system_bio_update_purpose_and_label(true, ctx.pin, BP_PIN_MODE, "GLITCH");
+    if (trigger) system_bio_update_purpose_and_label(true, ctx.trigger, BP_PIN_MODE, "TRIGGER");
+    bio_set_function(ctx.pin, GPIO_FUNC_SIO);
+    bio_put(ctx.pin, false);
+    bio_output(ctx.pin);
+    if (trigger) bio_set_function(ctx.trigger, GPIO_FUNC_SIO);
+    if (trigger) bio_input(ctx.trigger);
+    ctx.armed_us = time_us_32();
+    bp_status_t status = bp_protocol_call("glitch", glitch_step, &ctx);
+    bio_put(ctx.pin, false);
+    bio_input(ctx.pin);
+    if (trigger) bio_input(ctx.trigger);
+    system_bio_update_purpose_and_label(false, ctx.pin, BP_PIN_MODE, NULL);
+    if (trigger) system_bio_update_purpose_and_label(false, ctx.trigger, BP_PIN_MODE, NULL);
+    bp_res_release(BP_RES_CLASS_PERIPH, GLITCH_RESOURCE, GLITCH_OWNER);
+    res->error = status != BP_STATUS_OK;
+    printf("Glitch: %lu pulse(s), %s. Timing is approximate.\r\n",
+           (unsigned long)ctx.completed, bp_status_str(status));
 }

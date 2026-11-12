@@ -22,6 +22,7 @@
  */
 
 #include <stdio.h>
+/* Modified by Codex: bounded ADC acquisition never steals ownership. */
 #include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/adc.h"
@@ -47,10 +48,14 @@ static volatile uint32_t s_adc_nest_count = 0;
 static int32_t s_amux_dma_ch_data = -1;
 static int32_t s_amux_dma_ch_ctrl = -1;
 static uint16_t s_amux_pingpong[2][HW_ADC_MUX_COUNT + 1];
+static amux_frame_t s_amux_frames[2];
 static volatile uint8_t s_amux_completed_idx = 0;
 static volatile uint8_t s_amux_active_idx = 1;
 static volatile bool s_amux_dma_busy = false;
 static bool s_amux_dma_initialized = false;
+static volatile amux_state_t s_amux_state = AMUX_STATE_STOPPED;
+static volatile uint32_t s_amux_generation = 0;
+static volatile uint32_t s_amux_fault_count = 0;
 
 int32_t amux_dma_get_data_channel(void) {
     return s_amux_dma_ch_data;
@@ -68,81 +73,184 @@ bool amux_dma_is_busy(void) {
     return s_amux_dma_busy;
 }
 
+amux_state_t amux_get_state(void) {
+    return s_amux_state;
+}
+
+uint32_t amux_get_generation(void) {
+    return s_amux_generation;
+}
+
+uint32_t amux_get_fault_count(void) {
+    return s_amux_fault_count;
+}
+
+bool amux_is_telemetry_fresh(uint64_t max_age_us) {
+    if (!s_amux_dma_initialized || s_amux_state == AMUX_STATE_FAULT) {
+        return false;
+    }
+    uint8_t idx = s_amux_completed_idx;
+    if (!s_amux_frames[idx].valid || s_amux_frames[idx].generation == 0) {
+        return false;
+    }
+    uint64_t now_us = (uint64_t)time_us_32();
+    uint64_t age = (now_us >= s_amux_frames[idx].timestamp_us) ?
+                   (now_us - s_amux_frames[idx].timestamp_us) : 0;
+    return (age <= max_age_us);
+}
+
+void amux_inject_fault(uint8_t fault_code) {
+    s_amux_state = AMUX_STATE_FAULT;
+    s_amux_fault_count++;
+    s_amux_dma_busy = false;
+    s_amux_frames[s_amux_completed_idx].valid = false;
+    s_amux_frames[s_amux_completed_idx].fault_code = fault_code;
+    s_amux_frames[s_amux_active_idx].valid = false;
+    s_amux_frames[s_amux_active_idx].fault_code = fault_code;
+}
+
+void amux_clear_fault(void) {
+    if (s_amux_state == AMUX_STATE_FAULT) {
+        s_amux_state = s_amux_dma_initialized ? AMUX_STATE_IDLE : AMUX_STATE_STOPPED;
+    }
+}
+
+bool amux_get_frame(amux_frame_t* out_frame) {
+    if (!out_frame || !s_amux_dma_initialized || s_amux_state == AMUX_STATE_FAULT) {
+        return false;
+    }
+    for (int retry = 0; retry < 3; retry++) {
+        uint8_t idx = s_amux_completed_idx;
+        uint32_t gen_before = s_amux_frames[idx].generation;
+        if (gen_before == 0 || !s_amux_frames[idx].valid) {
+            return false;
+        }
+        *out_frame = s_amux_frames[idx];
+        uint32_t gen_after = s_amux_frames[idx].generation;
+        if (gen_before == gen_after) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool amux_dma_init(void) {
     if (s_amux_dma_initialized) {
         return true;
     }
-    uint32_t ch_data = 0;
-    uint32_t ch_ctrl = 0;
-    if (bp_res_claim_unused_dma_ch(BP_RES_OWNER_SYSTEM, "amux_adc", &ch_data) != BP_STATUS_OK) {
+    /* 1. Transactional acquire: ADC peripheral lease */
+    if (bp_res_acquire(BP_RES_CLASS_PERIPH, BP_RES_PERIPH_ADC, BP_RES_OWNER_SYSTEM, "amux_adc") != BP_STATUS_OK) {
         return false;
     }
+
+    /* 2. Transactional acquire: Data DMA channel */
+    uint32_t ch_data = 0;
+    if (bp_res_claim_unused_dma_ch(BP_RES_OWNER_SYSTEM, "amux_adc", &ch_data) != BP_STATUS_OK) {
+        bp_res_release(BP_RES_CLASS_PERIPH, BP_RES_PERIPH_ADC, BP_RES_OWNER_SYSTEM);
+        return false;
+    }
+
+    /* 3. Transactional acquire: Control DMA channel */
+    uint32_t ch_ctrl = 0;
     if (bp_res_claim_unused_dma_ch(BP_RES_OWNER_SYSTEM, "amux_ctrl", &ch_ctrl) != BP_STATUS_OK) {
         bp_res_release(BP_RES_CLASS_DMA_CH, ch_data, BP_RES_OWNER_SYSTEM);
+        bp_res_release(BP_RES_CLASS_PERIPH, BP_RES_PERIPH_ADC, BP_RES_OWNER_SYSTEM);
         return false;
     }
+
     s_amux_dma_ch_data = (int32_t)ch_data;
     s_amux_dma_ch_ctrl = (int32_t)ch_ctrl;
     s_amux_completed_idx = 0;
     s_amux_active_idx = 1;
     s_amux_dma_busy = false;
+    s_amux_state = AMUX_STATE_IDLE;
     s_amux_dma_initialized = true;
 
-    /* Pre-fill ping-pong buffers with initial baseline */
+    /* Pre-fill ping-pong buffers and frames with baseline */
     memset(s_amux_pingpong, 0, sizeof(s_amux_pingpong));
+    memset(s_amux_frames, 0, sizeof(s_amux_frames));
+
+    /* Startup priming: acquire initial sweep so valid telemetry is available immediately */
+    amux_dma_sweep_start();
     return true;
 }
 
 void amux_dma_deinit(void) {
-    if (s_amux_dma_ch_data >= 0) {
-        bp_res_release(BP_RES_CLASS_DMA_CH, (uint32_t)s_amux_dma_ch_data, BP_RES_OWNER_SYSTEM);
-        s_amux_dma_ch_data = -1;
-    }
     if (s_amux_dma_ch_ctrl >= 0) {
         bp_res_release(BP_RES_CLASS_DMA_CH, (uint32_t)s_amux_dma_ch_ctrl, BP_RES_OWNER_SYSTEM);
         s_amux_dma_ch_ctrl = -1;
     }
+    if (s_amux_dma_ch_data >= 0) {
+        bp_res_release(BP_RES_CLASS_DMA_CH, (uint32_t)s_amux_dma_ch_data, BP_RES_OWNER_SYSTEM);
+        s_amux_dma_ch_data = -1;
+    }
+    bp_res_release(BP_RES_CLASS_PERIPH, BP_RES_PERIPH_ADC, BP_RES_OWNER_SYSTEM);
     s_amux_dma_initialized = false;
     s_amux_dma_busy = false;
+    s_amux_state = AMUX_STATE_STOPPED;
 }
 
 bool amux_dma_sweep_start(void) {
     if (!s_amux_dma_initialized) {
         return false;
     }
+    if (s_amux_state == AMUX_STATE_MANUAL || s_amux_state == AMUX_STATE_PAUSING || s_amux_state == AMUX_STATE_FAULT) {
+        return false;
+    }
+    if (!adc_busy_wait(true)) {
+        s_amux_state = AMUX_STATE_FAULT;
+        s_amux_fault_count++;
+        return false;
+    }
     s_amux_dma_busy = true;
+    s_amux_state = AMUX_STATE_SAMPLING;
 
+    uint8_t target = s_amux_active_idx;
 #if !defined(BP_HOST_TEST)
     /* Hardware DMA sweep execution */
-    uint8_t target = s_amux_active_idx;
     adc_select_input(AMUX_OUT_ADC);
     for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
         amux_select_input(HW_ADC_MUX_GND);
         busy_wait_us(5);
         amux_select_input(i);
         busy_wait_us(40);
-        s_amux_pingpong[target][i] = (uint16_t)adc_read();
+        uint16_t sample = (uint16_t)adc_read();
+        s_amux_pingpong[target][i] = sample;
+        s_amux_frames[target].raw[i] = sample;
     }
     amux_select_input(HW_ADC_MUX_GND);
     adc_select_input(CURRENT_SENSE_ADC);
     busy_wait_us(40);
-    s_amux_pingpong[target][HW_ADC_CURRENT_SENSE] = (uint16_t)adc_read();
+    uint16_t cur_sample = (uint16_t)adc_read();
+    s_amux_pingpong[target][HW_ADC_CURRENT_SENSE] = cur_sample;
+    s_amux_frames[target].raw[HW_ADC_CURRENT_SENSE] = cur_sample;
 #else
     /* Host test simulation */
-    uint8_t target = s_amux_active_idx;
     for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
         amux_select_input(i);
-        s_amux_pingpong[target][i] = (uint16_t)adc_read();
+        uint16_t sample = (uint16_t)adc_read();
+        s_amux_pingpong[target][i] = sample;
+        s_amux_frames[target].raw[i] = sample;
     }
     s_mock_current_amux_channel = HW_ADC_CURRENT_SENSE;
-    s_amux_pingpong[target][HW_ADC_CURRENT_SENSE] = (uint16_t)adc_read();
+    uint16_t cur_sample = (uint16_t)adc_read();
+    s_amux_pingpong[target][HW_ADC_CURRENT_SENSE] = cur_sample;
+    s_amux_frames[target].raw[HW_ADC_CURRENT_SENSE] = cur_sample;
 #endif
+
+    /* Record timestamp, generation, and validity */
+    s_amux_frames[target].timestamp_us = (uint64_t)time_us_32();
+    s_amux_frames[target].generation = ++s_amux_generation;
+    s_amux_frames[target].valid = true;
+    s_amux_frames[target].fault_code = 0;
 
     /* Coherent atomic buffer swap */
     uint8_t new_completed = target;
     s_amux_active_idx = s_amux_completed_idx;
     s_amux_completed_idx = new_completed;
     s_amux_dma_busy = false;
+    s_amux_state = AMUX_STATE_IDLE;
+    adc_busy_wait(false);
     return true;
 }
 
@@ -150,14 +258,17 @@ bool amux_dma_get_coherent(uint16_t* out_raw, size_t count) {
     if (!out_raw || count == 0) {
         return false;
     }
-    if (!s_amux_dma_initialized) {
+    if (!s_amux_dma_initialized || s_amux_state == AMUX_STATE_FAULT || !s_amux_frames[s_amux_completed_idx].valid) {
         return false;
     }
+    /* Serialize copying with sampling so a lapping producer cannot reuse it. */
+    if (!adc_busy_wait(true)) return false;
     uint8_t idx = s_amux_completed_idx;
     size_t copy_cnt = (count < (HW_ADC_MUX_COUNT + 1)) ? count : (HW_ADC_MUX_COUNT + 1);
     for (size_t i = 0; i < copy_cnt; i++) {
         out_raw[i] = s_amux_pingpong[idx][i];
     }
+    adc_busy_wait(false);
     return true;
 }
 
@@ -186,55 +297,35 @@ bool adc_try_acquire(void) {
     return acquired;
 }
 
-void adc_busy_wait(bool enable) {
+bool adc_busy_wait(bool enable) {
     int8_t core = (int8_t)get_core_num();
 
     if (!enable) {
         uint32_t save = spin_lock_blocking(adc_spin_lock);
-        if (s_adc_owner_core == core) {
-            if (s_adc_nest_count > 0) {
-                s_adc_nest_count--;
-            }
-            if (s_adc_nest_count == 0) {
-                s_adc_owner_core = -1;
-            }
+        bool owned = s_adc_owner_core == core;
+        if (owned && s_adc_nest_count > 0 && --s_adc_nest_count == 0) {
+            s_adc_owner_core = -1;
         }
         spin_unlock(adc_spin_lock, save);
-        return;
+        return owned;
     }
 
-    /* Fast path: check if this core already owns the lock (reentrant) */
-    uint32_t save = spin_lock_blocking(adc_spin_lock);
-    if (s_adc_owner_core == core) {
-        s_adc_nest_count++;
-        spin_unlock(adc_spin_lock, save);
-        return;
-    }
-    spin_unlock(adc_spin_lock, save);
-
-    /* Acquire lock when unowned, with bounded backoff */
-    uint32_t spins = 0;
-    while (true) {
-        save = spin_lock_blocking(adc_spin_lock);
-        if (s_adc_owner_core == -1) {
+    /* Bound attempts as well as time: a stopped host/hardware timer cannot hang us. */
+    uint32_t start = time_us_32();
+    for (uint32_t attempt = 0; attempt < 10000; ++attempt) {
+        uint32_t save = spin_lock_blocking(adc_spin_lock);
+        bool available = s_adc_owner_core == -1 || s_adc_owner_core == core;
+        if (available && s_adc_nest_count != UINT32_MAX) {
             s_adc_owner_core = core;
-            s_adc_nest_count = 1;
+            s_adc_nest_count++;
             spin_unlock(adc_spin_lock, save);
-            return;
+            return true;
         }
         spin_unlock(adc_spin_lock, save);
-
-        spins++;
-        if (spins > 1000000) {
-            /* Guard against permanent stall: force reclaim after extended spin */
-            save = spin_lock_blocking(adc_spin_lock);
-            s_adc_owner_core = core;
-            s_adc_nest_count = 1;
-            spin_unlock(adc_spin_lock, save);
-            return;
-        }
+        if ((uint32_t)(time_us_32() - start) >= 1000) break;
         tight_loop_contents();
     }
+    return false;
 }
 
 /**
@@ -319,17 +410,26 @@ bool amux_select_bio(uint8_t bio) {
  * @note Direct channel selection with 60μs settling time
  */
 uint32_t amux_read(uint8_t channel) {
-    adc_busy_wait(true);
+    amux_state_t prev_state = s_amux_state;
+    if (s_amux_state == AMUX_STATE_SAMPLING) {
+        s_amux_state = AMUX_STATE_PAUSING;
+    }
+    if (!adc_busy_wait(true)) {
+        if (s_amux_state == AMUX_STATE_PAUSING) s_amux_state = prev_state;
+        return 0;
+    }
+    s_amux_state = AMUX_STATE_MANUAL;
     adc_select_input(AMUX_OUT_ADC);
     amux_select_input((uint16_t)channel);
     busy_wait_us(60);
     uint32_t ret = adc_read();
+    s_amux_state = s_amux_dma_initialized ? AMUX_STATE_IDLE : AMUX_STATE_STOPPED;
     adc_busy_wait(false);
     return ret;
 }
 
 uint32_t amux_read_present_channel(void) {
-    adc_busy_wait(true);
+    if (!adc_busy_wait(true)) return 0;
     uint32_t ret = adc_read();
     adc_busy_wait(false);
     return ret;
@@ -344,9 +444,18 @@ uint32_t amux_read_bio(uint8_t bio) {
 // but this is the best place for it I think
 // voltage is not /2 so we can use the full range of the ADC
 uint32_t amux_read_current(void) {
-    adc_busy_wait(true);
+    amux_state_t prev_state = s_amux_state;
+    if (s_amux_state == AMUX_STATE_SAMPLING) {
+        s_amux_state = AMUX_STATE_PAUSING;
+    }
+    if (!adc_busy_wait(true)) {
+        if (s_amux_state == AMUX_STATE_PAUSING) s_amux_state = prev_state;
+        return 0;
+    }
+    s_amux_state = AMUX_STATE_MANUAL;
     adc_select_input(CURRENT_SENSE_ADC);
     uint32_t ret = adc_read();
+    s_amux_state = s_amux_dma_initialized ? AMUX_STATE_IDLE : AMUX_STATE_STOPPED;
     adc_busy_wait(false);
     return ret;
 }
@@ -359,14 +468,11 @@ void amux_sweep(void) {
         if (!s_amux_dma_busy) {
             amux_dma_sweep_start();
         }
-        /* Read coherent snapshot without holding adc_spin_lock */
-        uint8_t ready_idx = s_amux_completed_idx;
-        for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
-            hw_adc_raw[i] = s_amux_pingpong[ready_idx][i];
-        }
-        hw_adc_raw[HW_ADC_CURRENT_SENSE] = s_amux_pingpong[ready_idx][HW_ADC_CURRENT_SENSE];
+        uint16_t raw[HW_ADC_MUX_COUNT + 1];
+        if (!amux_dma_get_coherent(raw, HW_ADC_MUX_COUNT + 1)) return;
+        for (int i = 0; i <= HW_ADC_MUX_COUNT; i++) hw_adc_raw[i] = raw[i];
     } else {
-        adc_busy_wait(true);
+        if (!adc_busy_wait(true)) return;
         adc_select_input(AMUX_OUT_ADC);
         for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
             amux_select_input(HW_ADC_MUX_GND); // to clear any charge from a floating pin

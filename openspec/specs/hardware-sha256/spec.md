@@ -22,3 +22,8 @@ The system SHALL provide hardware-accelerated SHA-256 calculation through a dedi
 - **GIVEN** a non-existent or corrupted file on the TF card
 - **WHEN** the user executes `sha256 <invalid_filename>`
 - **THEN** the command aborts cleanly with a descriptive error message without hanging.
+
+#### Scenario: Host fallback padding boundaries
+- **WHEN** the host fallback hashes a message whose padding byte ends a 64-byte block
+- **THEN** it processes that block before writing the length into the next block.
+- **AND** streamed digests agree with an independent SHA-256 implementation across padding and file-chunk boundaries.

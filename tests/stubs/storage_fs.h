@@ -164,5 +164,10 @@ static inline const char *ui_term_color_error(void) { return ""; }
 static inline const char *ui_term_color_info(void) { return ""; }
 static inline const char *ui_term_color_reset(void) { return ""; }
 
+#ifndef BP_STORAGE_OWNER
+__attribute__((weak)) void bp_storage_file_opened(void) {}
+__attribute__((weak)) void bp_storage_file_closed(void) {}
+__attribute__((weak)) uint32_t bp_storage_get_open_count(void) { return 0; }
+#endif
 
 #endif

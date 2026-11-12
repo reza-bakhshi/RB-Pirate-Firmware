@@ -65,7 +65,9 @@ bool bp_lcd_is_busy(void);
 /**
  * @brief Block until any in-flight DMA framebuffer flush completes.
  */
-void bp_lcd_wait_idle(void);
+/* False on timeout; buffer remains owned by DMA until completion or cleanup. */
+bool bp_lcd_wait_idle(void);
+bool bp_lcd_wait_idle_timeout(uint32_t timeout_us);
 
 /**
  * @brief Configure active window coordinates (CASET / RASET).

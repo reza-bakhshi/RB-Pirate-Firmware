@@ -413,7 +413,49 @@ static void test_hstx_dvi_service_and_pattern(void) {
     printf("PASS\n");
 }
 
+static void test_wait_retry_budget(void) {
+    uint8_t response[32];
+    uint8_t config[] = { DAP_ID_TRANSFER_CONFIGURE, 0, 2, 0, 0, 0 };
+    assert(cmsis_dap_process_command(config, sizeof(config), response, sizeof(response)) == 2);
+    uint8_t read[] = { DAP_ID_TRANSFER, 0, 1, 2 };
+    cmsis_dap_test_ack(DAP_TRANSFER_WAIT, 2);
+    assert(cmsis_dap_process_command(read, sizeof(read), response, sizeof(response)) == 7);
+    assert(response[1] == 1 && response[2] == DAP_TRANSFER_OK);
+    cmsis_dap_test_ack(DAP_TRANSFER_WAIT, 3);
+    assert(cmsis_dap_process_command(read, sizeof(read), response, sizeof(response)) == 3);
+    assert(response[1] == 0 && response[2] == DAP_TRANSFER_WAIT);
+    cmsis_dap_test_ack(DAP_TRANSFER_FAULT, 1);
+    assert(cmsis_dap_process_command(read, sizeof(read), response, sizeof(response)) == 3);
+    assert(response[1] == 0 && response[2] == DAP_TRANSFER_FAULT);
+}
+
+static void test_response_capacity(void) {
+    uint8_t response[64];
+    const uint8_t ids[] = { DAP_INFO_VENDOR, DAP_INFO_PRODUCT, DAP_INFO_SERNUM,
+                           DAP_INFO_FW_VER, DAP_INFO_UART_BUF_SIZE };
+    for (unsigned i = 0; i < sizeof(ids); ++i) {
+        uint8_t req[] = { DAP_ID_INFO, ids[i] };
+        uint32_t required = cmsis_dap_process_command(req, sizeof(req), response, sizeof(response));
+        assert(required > 4);
+        for (uint32_t capacity = 4; capacity < required; ++capacity) {
+            memset(response, 0xA5, sizeof(response));
+            assert(cmsis_dap_process_command(req, sizeof(req), response, capacity) == 0);
+            for (unsigned j = capacity; j < sizeof(response); ++j) assert(response[j] == 0xA5);
+        }
+    }
+    uint8_t req[] = { DAP_ID_TRANSFER_BLOCK, 0, 0xFF, 0xFF, 0x02 };
+    assert(cmsis_dap_process_command(req, sizeof(req), response, 4) == 4);
+    assert(response[1] == 0 && response[2] == 0 && response[3] == DAP_TRANSFER_ERROR);
+    uint8_t sequence[34] = { DAP_ID_SWJ_SEQUENCE, 0 };
+    assert(cmsis_dap_process_command(sequence, 10, response, sizeof(response)) == 2);
+    assert(response[1] == DAP_ERROR);
+    assert(cmsis_dap_process_command(sequence, sizeof(sequence), response, sizeof(response)) == 2);
+    assert(response[1] == DAP_OK);
+}
+
 int main(void) {
+    test_wait_retry_budget();
+    test_response_capacity();
     printf("==============================================================================\n");
     printf(" RB-Pirate CMSIS-DAP v2 & HSTX DVI Video Unified Conformance Test Suite\n");
     printf("==============================================================================\n");

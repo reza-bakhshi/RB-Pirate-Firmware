@@ -94,6 +94,24 @@ bool psu_cal_set(const psu_cal_t *new_cal);
 bool psu_cal_load(void);
 
 /**
+ * @brief Compute canonical CRC-32/ISO-HDLC over versioned calibration coefficients (20 bytes).
+ * @param schema_version Schema version (1)
+ * @param cal Calibration struct
+ * @return 32-bit CRC-32 value
+ */
+uint32_t psu_cal_canonical_crc32(uint32_t schema_version, const psu_cal_t *cal);
+
+/**
+ * @brief Parse and validate JSON calibration string.
+ * @param json JSON input string
+ * @param len Length in bytes
+ * @param out_cal Output calibration structure
+ * @param out_is_legacy Output flag set true if legacy 8-field format (no schema/checksum)
+ * @return true if valid, false if corrupt/malformed/unsupported
+ */
+bool psu_cal_parse_json(const char *json, size_t len, psu_cal_t *out_cal, bool *out_is_legacy);
+
+/**
  * @brief Save calibration profile to TF card (/config/psu_cal.json).
  * @param cal Pointer to calibration struct to serialize.
  * @return true on success, false on write error.
@@ -147,6 +165,7 @@ struct psu_status_t {
     bool enabled;                        ///< true if PSU is currently enabled
     bool error_overcurrent;              ///< true if overcurrent fault detected
     bool error_undervoltage;             ///< true if undervoltage fault detected
+    bool error_stale_telemetry;          ///< true if telemetry stalled/invalid while PSU active
     bool error_pending;                  ///< true if an error occurred and needs user attention
 };
 

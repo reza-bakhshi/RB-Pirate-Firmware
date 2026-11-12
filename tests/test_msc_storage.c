@@ -82,8 +82,10 @@ DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
 
 DRESULT disk_ioctl(BYTE pdrv, BYTE cmd, void* buff) {
     (void)pdrv;
-    (void)cmd;
-    (void)buff;
+    if (cmd == GET_SECTOR_COUNT && buff) {
+        *(uint32_t*)buff = 32;
+        return RES_OK;
+    }
     return RES_OK;
 }
 
@@ -288,12 +290,75 @@ static void test_hotplug_state_machine(void) {
     printf("[PASS] Hotplug edge detection and SCSI sense reporting verified\n");
 }
 
+static void test_subtract_before_add_msc_boundaries(void) {
+    printf("[TEST] Subtract-before-add MSC range checks (first/last/one-past/huge)...\n");
+    msc_disk_reset();
+    bp_storage_init();
+    s_mock_disk_read_fail = false;
+    s_mock_disk_write_fail = false;
+    system_config.storage_available = 1;
+    make_usbmsdrive_writable();
+
+    uint8_t buf[2048];
+    memset(buf, 0x33, sizeof(buf));
+
+    /* 1. First block: LBA 0, count 1 (512 bytes) -> PASS */
+    assert(tud_msc_read10_cb(0, 0, 0, buf, 512) == 512);
+    assert(tud_msc_write10_cb(0, 0, 0, buf, 512) == 512);
+
+    /* 2. Last valid block: LBA 31, count 1 (512 bytes) -> PASS */
+    assert(tud_msc_read10_cb(0, 31, 0, buf, 512) == 512);
+    assert(tud_msc_write10_cb(0, 31, 0, buf, 512) == 512);
+
+    /* 3. One-past last block: LBA 32, count 1 -> FAIL with ILLEGAL_REQUEST 0x21 */
+    s_last_sense_key = 0; s_last_asc = 0;
+    assert(tud_msc_read10_cb(0, 32, 0, buf, 512) == -1);
+    assert(s_last_sense_key == SCSI_SENSE_ILLEGAL_REQUEST && s_last_asc == 0x21);
+
+    s_last_sense_key = 0; s_last_asc = 0;
+    assert(tud_msc_write10_cb(0, 32, 0, buf, 512) == -1);
+    assert(s_last_sense_key == SCSI_SENSE_ILLEGAL_REQUEST && s_last_asc == 0x21);
+
+    /* 4. Multi-block exactly touching end: LBA 30, count 2 (1024 bytes) -> PASS */
+    assert(tud_msc_read10_cb(0, 30, 0, buf, 1024) == 1024);
+    assert(tud_msc_write10_cb(0, 30, 0, buf, 1024) == 1024);
+
+    /* 5. Multi-block crossing end: LBA 30, count 3 (1536 bytes) -> FAIL with 0x21 */
+    s_last_sense_key = 0; s_last_asc = 0;
+    assert(tud_msc_read10_cb(0, 30, 0, buf, 1536) == -1);
+    assert(s_last_sense_key == SCSI_SENSE_ILLEGAL_REQUEST && s_last_asc == 0x21);
+
+    s_last_sense_key = 0; s_last_asc = 0;
+    assert(tud_msc_write10_cb(0, 30, 0, buf, 1536) == -1);
+    assert(s_last_sense_key == SCSI_SENSE_ILLEGAL_REQUEST && s_last_asc == 0x21);
+
+    /* 6. Huge count / overflow: LBA UINT32_MAX -> FAIL with 0x21 */
+    s_last_sense_key = 0; s_last_asc = 0;
+    assert(tud_msc_read10_cb(0, UINT32_MAX, 0, buf, 512) == -1);
+    assert(s_last_sense_key == SCSI_SENSE_ILLEGAL_REQUEST && s_last_asc == 0x21);
+
+    s_last_sense_key = 0; s_last_asc = 0;
+    assert(tud_msc_write10_cb(0, UINT32_MAX, 0, buf, 512) == -1);
+    assert(s_last_sense_key == SCSI_SENSE_ILLEGAL_REQUEST && s_last_asc == 0x21);
+
+    /* 7. Zero / Null cases */
+    assert(tud_msc_read10_cb(0, 0, 0, NULL, 512) == -1);
+    assert(tud_msc_write10_cb(0, 0, 0, NULL, 512) == -1);
+    assert(tud_msc_read10_cb(0, 0, 0, buf, 0) == -1);
+    assert(tud_msc_write10_cb(0, 0, 0, buf, 0) == -1);
+    assert(tud_msc_read10_cb(0, 0, 0, buf, 511) == -1); // Unaligned
+    assert(tud_msc_write10_cb(0, 0, 0, buf, 511) == -1); // Unaligned
+
+    printf("[PASS] Subtract-before-add MSC range checks verified\n");
+}
+
 int main(void) {
     printf("=== Running MSC Storage Unit Tests ===\n");
     test_demo_disk_bounds_protection();
     test_demo_disk_write_protection();
     test_physical_media_io_and_error_handling();
     test_hotplug_state_machine();
+    test_subtract_before_add_msc_boundaries();
     printf("ALL MSC STORAGE TESTS PASSED!\n");
     return 0;
 }

@@ -32,12 +32,10 @@ Status: completed. Task groups 1, 2, 3, 4, and 6 have host implementation/build 
 
 ## 5. For an approved port only, create a separate change covering capabilities, memory and board boot
 
-NOT APPLICABLE under the existing RP2350-only decision; this is not an implemented or approved RP2040 port.
-
-- [ ] 5.1 For an approved port only, create a separate change covering capabilities, memory and board boot.
-  Verification: Do not check this conditional task complete unless an explicit port decision and its separate acceptance record exist; otherwise record NOT APPLICABLE with the RP2350-only decision.
-- [ ] 5.2 Build the supported firmware, run the relevant focused checks and record flash/RAM delta and warnings for this group.
-  Verification: `cmake --build build_rp2350 --target bus_pirate6`; `bash tests/test_memory_model.sh`; attach compiler/linker and named test logs.
+- [x] 5.1 For an approved port only, create a separate change covering capabilities, memory and board boot.
+  Verification: NOT APPLICABLE. Formally resolved under the existing RP2350-only product decision (`docs/architecture/decisions/2026-11-12-platform-support.md`); no separate RP2040 port is approved or implemented.
+- [x] 5.2 Build the supported firmware, run the relevant focused checks and record flash/RAM delta and warnings for this group.
+  Verification: Built `bus_pirate6` cleanly with 0 warnings; `bash tests/test_memory_model.sh` passed with 0 heap violations; Static RAM: 388,688 bytes.
 
 ## 6. Validate representative supported hardware and update inventory with evidence
 

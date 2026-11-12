@@ -1073,17 +1073,13 @@ void ps2_handler(struct command_result* res) {
         bp_res_release_all(BP_RES_OWNER_JOB);
         return;
     }
-    pio_sm_claim(pio1, (uint)sm_h2d);
-    pio_sm_claim(pio1, (uint)sm_idle);
-    pio_sm_claim(pio0, (uint)sm_inh);
-    pio_sm_claim(pio0, (uint)sm_kbd);
     kbd_h2d_sm = (int)sm_h2d;
     kbd_idle_sm = (int)sm_idle;
     kbd_inh_sm = (int)sm_inh;
     kbd_sm = (int)sm_kbd;
 
     offset_kbd_h2d = pio_add_program(pio1, &host_to_device_program);
-    pio_sm_set_consecutive_pindirs(pio1, kbd_sm, DAT_GPIO, 2, false);
+    pio_sm_set_consecutive_pindirs(pio1, kbd_h2d_sm, DAT_GPIO, 2, false);
     pio_sm_config c_kbd_h2d = device_to_host_program_get_default_config(offset_kbd_h2d);
     sm_config_set_in_pins(&c_kbd_h2d, DAT_GPIO);
     sm_config_set_in_shift(&c_kbd_h2d, true, false, 0);

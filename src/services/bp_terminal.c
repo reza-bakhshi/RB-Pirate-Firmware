@@ -6,6 +6,7 @@
 #include "services/bp_terminal.h"
 #include "spsc_queue.h"
 #include "kernel/bp_job.h"
+#include "pirate/hstx_dvi.h"
 #include <string.h>
 
 #if !defined(BP_HOST_TEST) && __has_include("usb_tx.h") && __has_include("usb_rx.h")
@@ -75,6 +76,14 @@ bp_status_t bp_term_putc(char c) {
 bp_status_t bp_term_write(const char* buf, uint32_t len) {
     if (!buf) return BP_STATUS_INVALID_PARAM;
     if (!s_initialized) bp_term_init();
+
+#if !defined(BP_HOST_TEST)
+    if (hstx_dvi_is_enabled()) {
+        for (uint32_t i = 0; i < len; i++) {
+            hstx_dvi_write_char(buf[i]);
+        }
+    }
+#endif
 
 #ifdef HAVE_USB_FIFOS
     bp_tx_status_t st = tx_fifo_write(buf, len);

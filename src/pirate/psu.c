@@ -12,6 +12,7 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/pwm.h"
 #include "hardware/clocks.h"
@@ -19,6 +20,14 @@
 #include "pirate/psu.h"
 #include "pirate/amux.h"
 #include "kernel/bp_job.h"
+#include "kernel/bp_config.h"
+#include "mjson/mjson.h"
+#if !defined(BP_HOST_TEST)
+#include "fatfs/ff.h"
+#include "system_config.h"
+#else
+#include "../../tests/stubs/storage_fs.h"
+#endif
 #if BP_HW_PSU_DAC
     #include "hardware/i2c.h"
 #endif
@@ -40,6 +49,163 @@
 #define PSU_I_RANGE ((PSU_I_HIGH * 10000) - (PSU_I_LOW * 10000))
 
 struct psu_status_t psu_status;
+
+bool psu_cal_is_valid(const psu_cal_t *cal) {
+    if (!cal) return false;
+    if (cal->magic != PSU_CAL_MAGIC) return false;
+    if (cal->vout_gain_ppt < 500 || cal->vout_gain_ppt > 2000) return false;
+    if (cal->isense_gain_ppt < 500 || cal->isense_gain_ppt > 2000) return false;
+    if (cal->vdac_gain_ppt < 500 || cal->vdac_gain_ppt > 2000) return false;
+    if (cal->idac_gain_ppt < 500 || cal->idac_gain_ppt > 2000) return false;
+    if (cal->vout_offset_mv < -2000 || cal->vout_offset_mv > 2000) return false;
+    if (cal->isense_offset_ua < -30000 || cal->isense_offset_ua > 30000) return false;
+    if (cal->checksum != psu_cal_calc_checksum(cal)) return false;
+    return true;
+}
+
+void psu_cal_get(psu_cal_t *out_cal) {
+    if (!out_cal) return;
+    const bp_runtime_t *rt = bp_runtime_get();
+    if (rt && psu_cal_is_valid(&rt->psu_cal)) {
+        *out_cal = rt->psu_cal;
+    } else {
+        psu_cal_reset_defaults(out_cal);
+    }
+}
+
+bool psu_cal_set(const psu_cal_t *new_cal) {
+    if (!new_cal || !psu_cal_is_valid(new_cal)) return false;
+    bp_runtime_t *rt = bp_runtime_get_mutable();
+    if (!rt) return false;
+    rt->psu_cal = *new_cal;
+    return true;
+}
+
+bool psu_cal_save(const psu_cal_t *cal) {
+    if (!cal || !psu_cal_is_valid(cal)) {
+        return false;
+    }
+
+    f_mkdir("config");
+    f_mkdir("/config");
+
+    FIL fil;
+    FRESULT fr = f_open(&fil, PSU_CAL_FILE, FA_CREATE_ALWAYS | FA_WRITE);
+    if (fr != FR_OK) {
+        fr = f_open(&fil, PSU_CAL_ALT_FILE, FA_CREATE_ALWAYS | FA_WRITE);
+    }
+    if (fr != FR_OK) {
+        return false;
+    }
+
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf),
+        "{\n"
+        "  \"vout_gain_ppt\": %u,\n"
+        "  \"vout_offset_mv\": %d,\n"
+        "  \"isense_gain_ppt\": %u,\n"
+        "  \"isense_offset_ua\": %d,\n"
+        "  \"vdac_gain_ppt\": %u,\n"
+        "  \"vdac_offset_mv\": %d,\n"
+        "  \"idac_gain_ppt\": %u,\n"
+        "  \"idac_offset_ma\": %d\n"
+        "}\n",
+        (unsigned)cal->vout_gain_ppt,
+        (int)cal->vout_offset_mv,
+        (unsigned)cal->isense_gain_ppt,
+        (int)cal->isense_offset_ua,
+        (unsigned)cal->vdac_gain_ppt,
+        (int)cal->vdac_offset_mv,
+        (unsigned)cal->idac_gain_ppt,
+        (int)cal->idac_offset_ma
+    );
+
+    UINT bw = 0;
+    fr = f_write(&fil, buf, (UINT)len, &bw);
+    f_sync(&fil);
+    f_close(&fil);
+
+    if (fr == FR_OK && bw == (UINT)len) {
+        psu_cal_set(cal);
+        return true;
+    }
+    return false;
+}
+
+bool psu_cal_load(void) {
+    FIL fil;
+    FRESULT fr = f_open(&fil, PSU_CAL_FILE, FA_READ | FA_OPEN_EXISTING);
+    if (fr != FR_OK) {
+        fr = f_open(&fil, PSU_CAL_ALT_FILE, FA_READ | FA_OPEN_EXISTING);
+    }
+    if (fr != FR_OK) {
+        fr = f_open(&fil, "psu_cal.json", FA_READ | FA_OPEN_EXISTING);
+    }
+    if (fr != FR_OK) {
+        fr = f_open(&fil, "/psu_cal.json", FA_READ | FA_OPEN_EXISTING);
+    }
+    if (fr != FR_OK) {
+        psu_cal_t def;
+        psu_cal_reset_defaults(&def);
+        psu_cal_set(&def);
+        return false;
+    }
+
+    char json[512];
+    UINT br = 0;
+    fr = f_read(&fil, json, sizeof(json) - 1, &br);
+    f_close(&fil);
+
+    if (fr != FR_OK || br == 0) {
+        psu_cal_t def;
+        psu_cal_reset_defaults(&def);
+        psu_cal_set(&def);
+        return false;
+    }
+    json[br] = '\0';
+
+    psu_cal_t loaded;
+    psu_cal_reset_defaults(&loaded);
+
+    double val = 0;
+    if (mjson_get_number(json, br, "$.vout_gain_ppt", &val)) {
+        loaded.vout_gain_ppt = (uint16_t)val;
+    }
+    if (mjson_get_number(json, br, "$.vout_offset_mv", &val)) {
+        loaded.vout_offset_mv = (int16_t)val;
+    }
+    if (mjson_get_number(json, br, "$.isense_gain_ppt", &val)) {
+        loaded.isense_gain_ppt = (uint16_t)val;
+    }
+    if (mjson_get_number(json, br, "$.isense_offset_ua", &val)) {
+        loaded.isense_offset_ua = (int16_t)val;
+    }
+    if (mjson_get_number(json, br, "$.vdac_gain_ppt", &val)) {
+        loaded.vdac_gain_ppt = (uint16_t)val;
+    }
+    if (mjson_get_number(json, br, "$.vdac_offset_mv", &val)) {
+        loaded.vdac_offset_mv = (int16_t)val;
+    }
+    if (mjson_get_number(json, br, "$.idac_gain_ppt", &val)) {
+        loaded.idac_gain_ppt = (uint16_t)val;
+    }
+    if (mjson_get_number(json, br, "$.idac_offset_ma", &val)) {
+        loaded.idac_offset_ma = (int16_t)val;
+    }
+
+    loaded.flags = 1;
+    loaded.checksum = psu_cal_calc_checksum(&loaded);
+
+    if (psu_cal_is_valid(&loaded)) {
+        psu_cal_set(&loaded);
+        return true;
+    } else {
+        psu_cal_t def;
+        psu_cal_reset_defaults(&def);
+        psu_cal_set(&def);
+        return false;
+    }
+}
 
 /// @brief Reset the PSU current fuse/trigger
 /// @param  None
@@ -99,9 +265,21 @@ void psu_current_limit_override(bool enable) {
 /// @param  psu    Pointer to a `psu_status_t` struct to update
 /// @return None
 void psu_set_v(float volts, struct psu_status_t* psu) {
+    psu_cal_t cal;
+    psu_cal_get(&cal);
+
+    float target_mv = volts * 1000.0f;
+    float cal_v_mv = ((target_mv - (float)cal.vdac_offset_mv) * 1000.0f) / (float)cal.vdac_gain_ppt;
+    if (cal_v_mv < (float)PSU_V_LOW) cal_v_mv = (float)PSU_V_LOW;
+    if (cal_v_mv > (float)PSU_V_HIGH) cal_v_mv = (float)PSU_V_HIGH;
+
     uint32_t psu_v_per_bit = ((PSU_V_RANGE) / PWM_TOP);
-    uint32_t vset = (uint32_t)((float)volts * 10000);
-    vset = vset - (PSU_V_LOW * 10);
+    uint32_t vset = (uint32_t)(cal_v_mv * 10.0f);
+    if (vset >= (PSU_V_LOW * 10)) {
+        vset = vset - (PSU_V_LOW * 10);
+    } else {
+        vset = 0;
+    }
     vset = vset / psu_v_per_bit;
     if (vset > PWM_TOP) {
         vset = PWM_TOP + 1;
@@ -119,10 +297,17 @@ void psu_set_v(float volts, struct psu_status_t* psu) {
 /// @param  psu      Pointer to a `psu_status_t` struct to update
 /// @return None
 void psu_set_i(float current, struct psu_status_t* psu) {
+    psu_cal_t cal;
+    psu_cal_get(&cal);
+
+    float cal_i_ma = ((current - (float)cal.idac_offset_ma) * 1000.0f) / (float)cal.idac_gain_ppt;
+    if (cal_i_ma < (float)PSU_I_LOW) cal_i_ma = (float)PSU_I_LOW;
+    if (cal_i_ma > (float)PSU_I_HIGH) cal_i_ma = (float)PSU_I_HIGH;
+
     float psu_i_per_bit = ((float)(PSU_I_RANGE) / (float)PWM_TOP);
-    float iset = (float)((float)current * 10000);
+    float iset = (float)(cal_i_ma * 10000.0f);
     iset /= psu_i_per_bit;
-    float iact = (float)((float)iset * psu_i_per_bit) / 10000;
+    float iact = (float)((float)iset * psu_i_per_bit) / 10000.0f;
 
     psu->current_dac_value = (uint32_t)iset;
     psu->current_requested_float = current;
@@ -321,21 +506,36 @@ bool psu_backflow_ok(void) {
 /// @param  None
 /// @return Current measurement in milliamps (mA)
 uint32_t psu_measure_current(void) {
-    return (amux_read_current() * ((500 * 1000) / 4095));
+    psu_cal_t cal;
+    psu_cal_get(&cal);
+    int32_t raw = (int32_t)(amux_read_current() * ((500 * 1000) / 4095));
+    int32_t cal_i = (raw * (int32_t)cal.isense_gain_ppt) / 1000 + (int32_t)cal.isense_offset_ua;
+    if (cal_i < 0) cal_i = 0;
+    return (uint32_t)cal_i;
 }
 
 /// @brief Measure and return the VREG voltage
 /// @param  None
 /// @return VREG voltage scaled in mV
 uint32_t psu_measure_vreg(void) {
-    return (6600 * amux_read(HW_ADC_MUX_VREG_OUT)) / 4096;
+    psu_cal_t cal;
+    psu_cal_get(&cal);
+    int32_t raw = (int32_t)((6600 * amux_read(HW_ADC_MUX_VREG_OUT)) / 4096);
+    int32_t cal_v = (raw * (int32_t)cal.vout_gain_ppt) / 1000 + (int32_t)cal.vout_offset_mv;
+    if (cal_v < 0) cal_v = 0;
+    return (uint32_t)cal_v;
 }
 
 /// @brief Measure and return the VOUT voltage
 /// @param  None
 /// @return VOUT voltage scaled in mV
 uint32_t psu_measure_vout(void) {
-    return (6600 * amux_read(HW_ADC_MUX_VREF_VOUT)) / 4096;
+    psu_cal_t cal;
+    psu_cal_get(&cal);
+    int32_t raw = (int32_t)((6600 * amux_read(HW_ADC_MUX_VREF_VOUT)) / 4096);
+    int32_t cal_v = (raw * (int32_t)cal.vout_gain_ppt) / 1000 + (int32_t)cal.vout_offset_mv;
+    if (cal_v < 0) cal_v = 0;
+    return (uint32_t)cal_v;
 }
 
 /// @brief Sweep ADC multiplexer and read Vout, Isense, Vreg and fuse status
@@ -346,9 +546,24 @@ uint32_t psu_measure_vout(void) {
 /// @return None
 void psu_measure(uint32_t* vout, uint32_t* isense, uint32_t* vreg, bool* fuse) {
     amux_sweep();
-    *isense = ((hw_adc_raw[HW_ADC_CURRENT_SENSE]) * ((500 * 1000) / 4095));
-    *vreg = ((hw_adc_voltage[HW_ADC_MUX_VREG_OUT]));
-    *vout = ((hw_adc_voltage[HW_ADC_MUX_VREF_VOUT]));
+    psu_cal_t cal;
+    psu_cal_get(&cal);
+
+    int32_t raw_isense_ua = (int32_t)((hw_adc_raw[HW_ADC_CURRENT_SENSE]) * ((500 * 1000) / 4095));
+    int32_t cal_isense_ua = (raw_isense_ua * (int32_t)cal.isense_gain_ppt) / 1000 + (int32_t)cal.isense_offset_ua;
+    if (cal_isense_ua < 0) cal_isense_ua = 0;
+    *isense = (uint32_t)cal_isense_ua;
+
+    int32_t raw_vreg = (int32_t)hw_adc_voltage[HW_ADC_MUX_VREG_OUT];
+    int32_t cal_vreg = (raw_vreg * (int32_t)cal.vout_gain_ppt) / 1000 + (int32_t)cal.vout_offset_mv;
+    if (cal_vreg < 0) cal_vreg = 0;
+    *vreg = (uint32_t)cal_vreg;
+
+    int32_t raw_vout = (int32_t)hw_adc_voltage[HW_ADC_MUX_VREF_VOUT];
+    int32_t cal_vout = (raw_vout * (int32_t)cal.vout_gain_ppt) / 1000 + (int32_t)cal.vout_offset_mv;
+    if (cal_vout < 0) cal_vout = 0;
+    *vout = (uint32_t)cal_vout;
+
     *fuse = (hw_adc_raw[HW_ADC_MUX_CURRENT_DETECT] > 300);
 }
 
@@ -418,7 +633,19 @@ uint32_t psu_enable(float volts, float current, bool current_limit_override, uin
     if (!current_limit_override) {
         psu_current_limit_override(false);
         busy_wait_ms(50);
-        if (!psu_fuse_ok()) { // did the fuse blow?
+        // Transient retry loop for high-capacitance loads
+        uint8_t retries = 0;
+        while (!psu_fuse_ok() && retries < 2) {
+            retries++;
+            // Re-engage override briefly to allow high capacitive load to finish charging
+            psu_current_limit_override(true);
+            busy_wait_ms(25);
+            psu_fuse_reset();
+            busy_wait_ms(5);
+            psu_current_limit_override(false);
+            busy_wait_ms(25);
+        }
+        if (!psu_fuse_ok()) { // sustained overcurrent or real short circuit
             psu_status.fault_controls = psu_control_levels();
             psu_status.fault_vreg_adc = amux_read(HW_ADC_MUX_VREG_OUT);
             psu_status.fault_vout_adc = amux_read(HW_ADC_MUX_VREF_VOUT);
@@ -452,6 +679,13 @@ void psu_init(void) {
     psu_status.error_overcurrent = false;
     psu_status.error_undervoltage = false;
     psu_status.error_pending = false;
+
+    psu_cal_t cal;
+    psu_cal_get(&cal);
+    if (!psu_cal_is_valid(&cal)) {
+        psu_cal_reset_defaults(&cal);
+        psu_cal_set(&cal);
+    }
 
     #if BP_HW_PSU_PWM
         #if BP_HW_IOEXP_NONE

@@ -37,6 +37,10 @@
 #include "commands/global/cmd_res.h"
 #include "commands/global/cmd_features.h"
 #include "commands/global/cmd_storage.h"
+#include "commands/global/cmd_rand.h"
+#include "commands/global/cmd_sha256.h"
+#include "commands/global/cmd_glitch.h"
+#include "commands/global/cmd_video.h"
 #include "commands/global/macro.h"
 #include "commands/global/script.h"
 #include "commands/global/edit.h"
@@ -81,6 +85,8 @@ const struct _global_command_struct commands[] = {
 // IO: pin control, power, measurement
 { .command="W",         .allow_hiz=false, .func=&psucmd_enable_handler,              .def=&psucmd_enable_def, .category=CMD_CAT_IO },
 { .command="w",         .allow_hiz=false, .func=&psucmd_disable_handler,             .def=&psucmd_disable_def, .category=CMD_CAT_IO },
+{ .command="w.cal",     .allow_hiz=false, .func=&psucmd_cal_handler,                 .def=&psucmd_cal_def, .category=CMD_CAT_IO },
+{ .command="w.profile", .allow_hiz=false, .func=&psucmd_profile_handler,             .def=&psucmd_profile_def, .category=CMD_CAT_IO },
 { .command="P",         .allow_hiz=false, .func=&pullups_enable_handler,             .def=&pullups_enable_def, .category=CMD_CAT_IO },
 { .command="p",         .allow_hiz=false, .func=&pullups_disable_handler,            .def=&pullups_disable_def, .category=CMD_CAT_IO },
 { .command="a",         .allow_hiz=false, .func=&auxio_low_handler,                  .def=&auxio_low_def, .category=CMD_CAT_IO },
@@ -107,6 +113,7 @@ const struct _global_command_struct commands[] = {
 { .command="job",       .allow_hiz=true,  .func=&cmd_job_handler,                    .def=&cmd_job_def,    .category=CMD_CAT_SYSTEM },
 { .command="res",       .allow_hiz=true,  .func=&cmd_res_handler,                    .def=&cmd_res_def,    .category=CMD_CAT_SYSTEM },
 { .command="features",  .allow_hiz=true,  .func=&cmd_features_handler,               .def=&cmd_features_def, .category=CMD_CAT_SYSTEM },
+{ .command="rand",      .allow_hiz=true,  .func=&cmd_rand_handler,                   .def=&cmd_rand_def,     .category=CMD_CAT_SYSTEM },
 { .command="reboot",    .allow_hiz=true,  .func=&cmd_mcu_reboot_handler,             .def=&reboot_def, .category=CMD_CAT_SYSTEM },
 { .command="$",         .allow_hiz=true,  .func=&cmd_mcu_jump_to_bootloader_handler, .def=&bootloader_def, .category=CMD_CAT_SYSTEM },
 { .command="~",         .allow_hiz=true,  .func=&cmd_selftest_handler,               .def=&cmd_selftest_def, .category=CMD_CAT_SYSTEM },
@@ -123,6 +130,7 @@ const struct _global_command_struct commands[] = {
 { .command="format",    .allow_hiz=true,  .func=&disk_format_handler,.def=&disk_format_def,.category=CMD_CAT_FILES },
 { .command="label",     .allow_hiz=true,  .func=&disk_label_handler,.def=&disk_label_def,.category=CMD_CAT_FILES },
 { .command="dump",      .allow_hiz=false, .func=&dump_handler,      .def=&dump_def,      .category=CMD_CAT_FILES },
+{ .command="sha256",    .allow_hiz=true,  .func=&cmd_sha256_handler,  .def=&cmd_sha256_def,  .category=CMD_CAT_FILES },
 #if RPI_PLATFORM == RP2350
 { .command="otpdump",   .allow_hiz=true,  .func=&otpdump_handler,   .def=&otpdump_def,   .category=CMD_CAT_FILES },
 #endif
@@ -135,6 +143,7 @@ const struct _global_command_struct commands[] = {
 { .command="hexedit",   .allow_hiz=true,  .func=&hexedit_handler,   .def=&hexedit_def,   .category=CMD_CAT_SCRIPT },
 // Tools: utilities and converters
 { .command="logic",     .allow_hiz=true,  .func=&logic_handler,                      .def=&logic_def, .category=CMD_CAT_TOOLS },
+{ .command="glitch",    .allow_hiz=true,  .func=&cmd_glitch_handler,                 .def=&cmd_glitch_def, .category=CMD_CAT_TOOLS },
 { .command="toolbar",   .allow_hiz=true,  .func=&toolbar_cmd_handler,                .def=&toolbar_cmd_def, .category=CMD_CAT_TOOLS },
 { .command="life",      .allow_hiz=true,  .func=&life_handler,      .def=&life_def,      .category=CMD_CAT_TOOLS },
 { .command="snake",     .allow_hiz=true,  .func=&snake_handler,     .def=&snake_def,     .category=CMD_CAT_TOOLS },
@@ -155,6 +164,7 @@ const struct _global_command_struct commands[] = {
 { .command="trace",    .allow_hiz=true,  .func=&wiretrace_handler, .def=&wiretrace_def, .category=CMD_CAT_TOOLS },
 { .command="gates",    .allow_hiz=true,  .func=&logicgates_handler,.def=&logicgates_def,.category=CMD_CAT_TOOLS },
 { .command="rogue",   .allow_hiz=true,  .func=&rogueprobe_handler,.def=&rogueprobe_def,.category=CMD_CAT_TOOLS },
+{ .command="video",   .allow_hiz=true,  .func=&cmd_video_handler, .def=&cmd_video_def, .category=CMD_CAT_TOOLS },
 { .command="smps",      .allow_hiz=true,  .func=&smps_handler,      .def=&smps_def,      .category=CMD_CAT_SYSTEM },
 { .command="=",         .allow_hiz=true,  .func=&cmd_convert_base_handler,           .def=&convert_base_def, .category=CMD_CAT_TOOLS },
 { .command="|",         .allow_hiz=true,  .func=&cmd_convert_inverse_handler,        .def=&convert_inverse_def, .category=CMD_CAT_TOOLS },
@@ -170,6 +180,8 @@ const struct _global_command_struct commands[] = {
 { .command="menu_demo", .allow_hiz=true,  .func=&menu_demo_handler,                  .def=&menu_demo_def, .category=CMD_CAT_HIDDEN },
 { .command="txtest",    .allow_hiz=true,  .func=&txtest_handler,                     .def=&txtest_def, .category=CMD_CAT_HIDDEN },
 { .command="#",        .allow_hiz=true,  .func=&hash_handler,                    .def=&hash_def, .category=CMD_CAT_HIDDEN },
+{ .command="W.cal",     .allow_hiz=false, .func=&psucmd_cal_handler,                 .def=&psucmd_cal_def, .category=CMD_CAT_HIDDEN },
+{ .command="W.profile", .allow_hiz=false, .func=&psucmd_profile_handler,             .def=&psucmd_profile_def, .category=CMD_CAT_HIDDEN },
 // clang-format on
 };
 

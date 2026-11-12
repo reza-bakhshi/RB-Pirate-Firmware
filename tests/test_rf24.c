@@ -18,7 +18,7 @@ spi_inst_t s_mock_spi0 = { NULL };
 spi_inst_t s_mock_spi1 = { NULL };
 spi_inst_t *spi0 = &s_mock_spi0;
 spi_inst_t *spi1 = &s_mock_spi1;
-uint8_t bio2bufiopin[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+const uint8_t bio2bufiopin[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
 
 /* --- Mock nRF24 Register Bank & SPI State Machine --- */
 #define NRF_REG_CONFIG            0x00u

@@ -7,12 +7,26 @@
 
 extern const struct bp_command_def psucmd_enable_def;
 extern const struct bp_command_def psucmd_disable_def;
+extern const struct bp_command_def psucmd_cal_def;
+extern const struct bp_command_def psucmd_profile_def;
 
 /**
  * @brief Initialize PSU command subsystem.
  * @return true on success, false on failure
  */
 bool psucmd_init(void);
+
+/**
+ * @brief Handler for PSU calibration wizard command (w.cal).
+ * @param res  Command result structure
+ */
+void psucmd_cal_handler(struct command_result* res);
+
+/**
+ * @brief Handler for PSU continuous power profiler and Coulomb counter (w.profile).
+ * @param res  Command result structure
+ */
+void psucmd_profile_handler(struct command_result* res);
 
 /**
  * @brief Handler for PSU enable command (W).

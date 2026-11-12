@@ -4,6 +4,19 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <ctype.h>
+
+#ifndef count_of
+#define count_of(a) (sizeof(a) / sizeof((a)[0]))
+#endif
+
+static inline char* strlwr(char* str) {
+    if (!str) return (void*)0;
+    for (char* p = str; *p; p++) {
+        *p = (char)tolower((unsigned char)*p);
+    }
+    return str;
+}
 
 #define busy_wait_us(x) ((void)0)
 #define busy_wait_ms(x) ((void)0)
@@ -15,6 +28,7 @@
 #define GPIO_IN 0
 
 typedef unsigned int uint;
+typedef void (*gpio_irq_callback_t)(uint gpio, uint32_t event_mask);
 
 #ifndef _BP_GPIO_GET_DEFINED
 #define _BP_GPIO_GET_DEFINED

@@ -2524,12 +2524,10 @@ static void pulse(bool level, uint32_t us) {
     else sleep_us(us);
 }
 
-static uint32_t subghz_rand(void) {
-    static uint32_t state = 0x853c49e6;
-    state ^= state << 13;
-    state ^= state >> 17;
-    state ^= state << 5;
-    return state;
+#include "pirate/trng.h"
+
+static inline uint32_t subghz_rand(void) {
+    return bp_trng_get_u32();
 }
 
 static void send_random_burst(void) {

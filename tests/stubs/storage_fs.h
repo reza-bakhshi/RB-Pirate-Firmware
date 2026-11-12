@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <time.h>
 
+#ifndef _SYSTEM_CONFIG_H
 typedef struct {
     uint8_t storage_available;
     uint8_t storage_mount_error;
@@ -13,6 +14,7 @@ typedef struct {
 } host_system_config_t;
 
 extern host_system_config_t system_config;
+#endif
 
 #define FR_OK 0
 #define FR_DISK_ERR 1
@@ -66,14 +68,24 @@ typedef struct {
 #define FA_OPEN_APPEND 0x30
 
 #define BP_FLASH_DISK_BLOCK_SIZE 512
+#ifndef FLASH_STORAGE_CS
 #define FLASH_STORAGE_CS 0
+#endif
+#ifndef GPIO_FUNC_SIO
 #define GPIO_FUNC_SIO 0
+#endif
+#ifndef GPIO_OUT
 #define GPIO_OUT 1
+#endif
+#ifndef count_of
 #define count_of(a) (sizeof(a)/sizeof((a)[0]))
+#endif
 
+#ifndef _PICO_STDLIB_H
 static inline void gpio_set_function(uint32_t p, uint32_t f) { (void)p; (void)f; }
 static inline void gpio_put(uint32_t p, uint32_t v) { (void)p; (void)v; }
 static inline void gpio_set_dir(uint32_t p, uint32_t d) { (void)p; (void)d; }
+#endif
 
 static inline FRESULT f_mount(FATFS *fs, const char *path, uint8_t opt) {
     (void)path; (void)opt;
@@ -87,14 +99,17 @@ static inline FRESULT f_mkfs(const char *path, uint8_t opt, void *work, uint32_t
     (void)path; (void)opt; (void)work; (void)len; return FR_OK;
 }
 static inline FRESULT f_setlabel(const char *label) { (void)label; return FR_OK; }
+static inline FRESULT f_mkdir(const char *path) { (void)path; return FR_OK; }
 /* Stateful filesystem fake: production service logic is compiled unchanged. */
-static struct { char name[64]; unsigned size; unsigned char data[4096]; } mock_files[16];
-static int mock_write_error, mock_short_write, mock_sync_error, mock_close_error, mock_rename_error;
-static int mock_find(const char *path) {
+struct mock_file_storage_t { char name[64]; unsigned size; unsigned char data[4096]; };
+__attribute__((weak)) struct mock_file_storage_t mock_files[16];
+__attribute__((weak)) int mock_write_error, mock_short_write, mock_sync_error, mock_close_error, mock_rename_error;
+
+static inline int mock_find(const char *path) {
     for (int i = 0; i < 16; i++) if (!strcmp(mock_files[i].name, path)) return i;
     return -1;
 }
-static FRESULT f_open(FIL *fp, const char *path, uint8_t mode) {
+static inline FRESULT f_open(FIL *fp, const char *path, uint8_t mode) {
     int i = mock_find(path);
     if (i < 0) {
         if (!(mode & (FA_CREATE_ALWAYS | FA_OPEN_APPEND))) return FR_NO_FILE;
@@ -108,17 +123,17 @@ static FRESULT f_open(FIL *fp, const char *path, uint8_t mode) {
     fp->pos = (mode & FA_OPEN_APPEND) == FA_OPEN_APPEND ? mock_files[i].size : 0;
     return FR_OK;
 }
-static FRESULT f_close(FIL *fp) { (void)fp; return mock_close_error ? FR_DISK_ERR : FR_OK; }
-static FRESULT f_lseek(FIL *fp, uint32_t pos) {
+static inline FRESULT f_close(FIL *fp) { (void)fp; return mock_close_error ? FR_DISK_ERR : FR_OK; }
+static inline FRESULT f_lseek(FIL *fp, uint32_t pos) {
     if (pos > 4096) return FR_DENIED;
     fp->pos = pos; return FR_OK;
 }
-static FRESULT f_read(FIL *fp, void *buf, uint32_t n, UINT *br) {
+static inline FRESULT f_read(FIL *fp, void *buf, uint32_t n, UINT *br) {
     unsigned left = fp->pos < mock_files[fp->slot].size ? mock_files[fp->slot].size - fp->pos : 0;
     *br = n < left ? n : left;
     memcpy(buf, mock_files[fp->slot].data + fp->pos, *br); fp->pos += *br; return FR_OK;
 }
-static FRESULT f_write(FIL *fp, const void *buf, uint32_t n, UINT *bw) {
+static inline FRESULT f_write(FIL *fp, const void *buf, uint32_t n, UINT *bw) {
     *bw = 0;
     if (mock_write_error) return FR_DISK_ERR;
     if (mock_short_write && n) n--;
@@ -127,16 +142,16 @@ static FRESULT f_write(FIL *fp, const void *buf, uint32_t n, UINT *bw) {
     if (fp->pos > mock_files[fp->slot].size) mock_files[fp->slot].size = fp->pos;
     return FR_OK;
 }
-static FRESULT f_sync(FIL *fp) { (void)fp; return mock_sync_error ? FR_DISK_ERR : FR_OK; }
-static FRESULT f_unlink(const char *path) {
+static inline FRESULT f_sync(FIL *fp) { (void)fp; return mock_sync_error ? FR_DISK_ERR : FR_OK; }
+static inline FRESULT f_unlink(const char *path) {
     int i = mock_find(path); if (i < 0) return FR_NO_FILE;
     memset(&mock_files[i], 0, sizeof(mock_files[i])); return FR_OK;
 }
-static FRESULT f_stat(const char *path, FILINFO *info) {
+static inline FRESULT f_stat(const char *path, FILINFO *info) {
     int i = mock_find(path); if (i < 0) return FR_NO_FILE;
     info->fsize = mock_files[i].size; return FR_OK;
 }
-static FRESULT f_rename(const char *old, const char *newn) {
+static inline FRESULT f_rename(const char *old, const char *newn) {
     if (mock_rename_error) return FR_DISK_ERR;
     int i = mock_find(old); if (i < 0) return FR_NO_FILE;
     if (mock_find(newn) >= 0) return FR_EXIST;

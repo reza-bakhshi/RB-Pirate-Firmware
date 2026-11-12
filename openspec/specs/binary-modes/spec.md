@@ -100,3 +100,11 @@ The binary transport subsystem SHALL provide lock-free SPSC packet and byte queu
 - **GIVEN** a binary protocol expecting host commands
 - **WHEN** reading from the binary transport with a timeout
 - **THEN** the call returns within the specified deadline with `BP_STATUS_TIMEOUT` if no data arrives, while continuously feeding the watchdog supervisor
+
+### Requirement: Scaled Logic Capture Buffer Depth
+The binary modes logic capture subsystem SHALL support sample buffer depths up to 256 KB on RP2350 platforms while preserving bounded SRAM headroom.
+
+#### Scenario: 256 KB sample buffer allocation on RP2350
+- **GIVEN** an RP2350B platform with 520 KB SRAM
+- **WHEN** the logic analyzer or SUMP mode initializes capture storage
+- **THEN** up to 256 KB of contiguous static capture buffer is available without exceeding total static memory bounds.

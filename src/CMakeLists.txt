@@ -135,8 +135,20 @@ set(buspirate_common
         pirate/button.c
         pirate/mem.c
         pirate/mem.h
+        pirate/trng.c
+        pirate/trng.h
+        pirate/hwcan_pio.c
+        pirate/hwcan_pio.h
+        lib/can2040/can2040.c
+        lib/can2040/can2040.h
         pirate/amux.h
         pirate/amux.c
+        pirate/hstx_dvi.h
+        pirate/hstx_dvi.c
+        pirate/font8x16.h
+        pirate/font8x16.c
+        pirate/lcd.h
+        pirate/lcd.c
         pirate/rgb.h
         pirate/rgb.c
         pirate/crash_record.h
@@ -236,6 +248,12 @@ set(buspirate_common
         commands/global/cmd_res.h
         commands/global/cmd_features.c
         commands/global/cmd_features.h
+        commands/global/cmd_rand.c
+        commands/global/cmd_rand.h
+        commands/global/cmd_sha256.c
+        commands/global/cmd_sha256.h
+        commands/global/cmd_glitch.c
+        commands/global/cmd_glitch.h
         commands/global/cmd_storage.c
         commands/global/cmd_storage.h
         commands/global/pwm.c
@@ -269,6 +287,8 @@ set(buspirate_common
         commands/global/cls.c  
         commands/global/cmd_binmode.h
         commands/global/cmd_binmode.c
+        commands/global/cmd_video.h
+        commands/global/cmd_video.c
         commands/global/logic.h
         commands/global/logic.c
         commands/global/bug.c
@@ -570,6 +590,10 @@ set(buspirate_common
         mode/usb.h
         mode/usb.c
 
+        # CAN
+        mode/can.h
+        mode/can.c
+
         # DUMMY MODE
         mode/dummy1.c
         mode/dummy1.h 
@@ -719,6 +743,8 @@ set(buspirate_common
         pirate/irio_pio.c
         binmode/irtoy-irman.h
         binmode/irtoy-irman.c
+        binmode/cmsis_dap.h
+        binmode/cmsis_dap.c
 
         #toolbars
         toolbars/logic_bar.c
@@ -817,6 +843,8 @@ set(stdlibs
         tinyusb_device
         tinyusb_board
         hardware_structs
+        pico_sha256
+        pico_rand
         )        
 
 

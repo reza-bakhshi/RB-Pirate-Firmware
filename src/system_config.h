@@ -11,6 +11,7 @@
  */
 
 #pragma once
+#define _SYSTEM_CONFIG_H
 
 #ifndef HW_PINS
 #include "platform/rb-pirate.h"

@@ -22,6 +22,7 @@
 #include "pico/stdlib.h"
 #include "pirate.h"
 #include "pirate/bio.h"
+#include "pirate/trng.h"
 #include "mode/infrared-struct.h"
 #include "pirate/irio_pio.h"
 #include "command_struct.h"
@@ -135,12 +136,12 @@ void ir_jam_handler(struct command_result *res) {
                     pairs[i] = ((uint32_t)half_us << 16) | half_us;
                 }
             } else if (mode == 3) { // random: random burst timings, occasional carrier hop
-                if ((rand() % 10) < 3) {
-                    f_khz = jam_carriers_khz[rand() % count_of(jam_carriers_khz)];
+                if ((bp_trng_get_u32() % 10) < 3) {
+                    f_khz = jam_carriers_khz[bp_trng_get_u32() % count_of(jam_carriers_khz)];
                 }
                 for (uint8_t i = 0; i < count; i++) {
-                    uint16_t mark = 5 + (rand() % 996); // 5-1000us
-                    uint16_t space = 5 + (rand() % 996);
+                    uint16_t mark = 5 + (bp_trng_get_u32() % 996); // 5-1000us
+                    uint16_t space = 5 + (bp_trng_get_u32() % 996);
                     pairs[i] = ((uint32_t)mark << 16) | space;
                 }
             } else { // carrier: continuous bursts at the chosen frequency

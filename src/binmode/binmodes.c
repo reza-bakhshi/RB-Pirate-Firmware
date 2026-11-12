@@ -42,6 +42,7 @@
 #include "commands/global/w_psu.h"
 #include "ui/ui_term.h"
 #include "tusb.h"
+#include "binmode/cmsis_dap.h"
 
 /**
  * @brief Lock or unlock the terminal during binary mode operation
@@ -179,6 +180,19 @@ const binmode_t binmodes[] = {
         .binmode_cleanup = irtoy_air_cleanup,
         .binmode_service = irtoy_air_service,
     },
+    {
+        .lock_terminal = true,
+        .can_save_config = false,
+        .reset_to_hiz = true,
+        .pullup_enabled = false,
+        .psu_en_voltage = 0,
+        .psu_en_current = 0,
+        .button_to_exit = true,
+        .binmode_name = cmsis_dap_name,
+        .binmode_setup = cmsis_dap_setup,
+        .binmode_cleanup = cmsis_dap_cleanup,
+        .binmode_service = cmsis_dap_service,
+    },
 };
 
 inline void binmode_setup(void) {
@@ -217,6 +231,12 @@ inline void binmode_service(void) {
     /* Other binary engines cannot reconfigure peripherals owned by a worker.
      * BPIO may still answer status requests; its mutations have explicit guards. */
     if (bp_job_get_active_id() != 0 && system_config.binmode_select != BINMODE_USE_DIRTYPROTO) return;
+
+    // Service autonomous CMSIS-DAP v2 USB bulk packets if active in background
+    if (system_config.binmode_select != BINMODE_USE_CMSIS_DAP) {
+        cmsis_dap_service();
+    }
+
     //exit on button press
     if(binmodes[system_config.binmode_select].button_to_exit) {
         char c;

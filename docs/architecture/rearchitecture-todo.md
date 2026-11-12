@@ -322,6 +322,44 @@ These are smaller than the architectural issues but should be fixed while touchi
 
 ---
 
+## Phase 9 — RP2350 Hardware Acceleration, Advanced Protocols & Subsystem Hardening
+
+### Subsystem Hardening & Clock Scaling (D1)
+
+- [x] **ARCH-800 (P0)** `src/mode/ps2.c`: In line 1083, fix `pio_sm_set_consecutive_pindirs(pio1, kbd_sm, ...)` to use `kbd_h2d_sm` instead of `kbd_sm` (allocated on `pio0`), and delete redundant `pio_sm_claim()` calls on lines 1076–1079.
+- [x] **ARCH-801 (P0)** `src/commands/infrared/irtxrx.c`: Add pre-bounds validation for AIR packet delimiters (`$`, `:`, `,`, `;`) and strictly enforce `datacnt < count_of(data)` pre-conditions before array writes in both mark and space phases.
+- [x] **ARCH-802 (P1)** `src/commands/global/pwm.c`: Dynamically scale PWM period, wrap, and duty calculations using `clock_get_hz(clk_sys)` instead of assuming a hardcoded 125 MHz clock on RP2350 (150 MHz default).
+- [x] **ARCH-803 (P1)** `src/pirate/psu.c`: Add a configurable transient inrush retry loop / hiccup sequence in `psu_enable()` for high-capacitance loads.
+
+### RP2350 Hardware Acceleration & Memory Depth (D2)
+
+- [x] **ARCH-810 (P1)** `src/commands/global/cmd_sha256.c`: Implement `sha256` CLI command utilizing RP2350 hardware SHA-256 accelerator (`hardware/sha256.h` / `pico/sha256.h`) for streaming files from storage with host-test fallback.
+- [x] **ARCH-811 (P1)** `src/pirate/trng.c`: Implement non-blocking true random entropy driver utilizing RP2350 ROSC/TRNG registers via `pico/rand.h`; wire into SubGHz and Infrared noise jamming; add `rand` CLI command.
+- [x] **ARCH-812 (P1)** `src/pirate/mem.h` / `src/binmode/logicanalyzer.h`: Calibrate static memory depth against RP2350 SRAM layout and maintain 128 KB buffer to preserve 141 KB runtime headroom under `tests/test_memory_model.sh`.
+
+### Advanced Protocols & Hardware Fault Injection (D3)
+
+- [x] **ARCH-813 (P1)** `src/mode/can.c`: Port `can2040` PIO assembly into `src/pirate/hwcan_pio.c` under `bp_res` lease arbitration; implement CAN mode supporting 11-bit / 29-bit frames, sniffing, mask filtering, and frame transmission up to 1 Mbps.
+- [x] **ARCH-814 (P1)** `src/commands/global/cmd_glitch.c`: Implement precision fault-injection engine supporting voltage crowbar pulses via PSU override line and synchronized clock glitching with nanosecond resolution.
+
+### DMA Subsystem Pipelines & Storage Throughput (D4)
+
+- [x] **ARCH-820 (P1)** `src/pirate/amux.c`: Offload 74HC4067 multiplexer channel stepping and ADC sampling to an autonomous chained DMA channel.
+- [x] **ARCH-821 (P1)** `src/pirate/storage.c`: Implement multi-block read (`CMD18`) and multi-block write (`CMD25`) using hardware SPI DMA channels.
+- [x] **ARCH-822 (P1)** `src/pirate/lcd.c`: Implement non-blocking ST7789 display framebuffer flushes via DMA with completion interrupt.
+
+### Analog Calibration & Power Profiling (D5)
+
+- [x] **ARCH-823 (P1)** `src/commands/global/w_psu.c`: Implement `w.cal` two-point voltage and current calibration wizard; serialize gain and offset coefficients to `/config/psu_cal.json`.
+- [x] **ARCH-824 (P1)** `src/commands/global/w_psu.c`: Implement `w.profile` continuous Coulomb counter and power profiler integrating current ($I \times \Delta t$) into total charge ($\text{mAh}$) and energy ($\text{mWh}$) with real-time CSV streaming.
+
+### USB Debug Probe & External Video (D6)
+
+- [x] **ARCH-825 (P2)** `src/binmode/cmsis_dap.c`: Implement ARM CMSIS-DAP v2 protocol over USB bulk endpoints (WinUSB) for SWD flashing and debugging with OpenOCD/pyOCD.
+- [x] **ARCH-826 (P2)** `src/pirate/hstx_dvi.c`: Implement 640x480 TMDS DVI digital video output utilizing RP2350 HSTX serializer for direct monitor mirroring.
+
+---
+
 ## Suggested PR sequence
 
 | PR | Scope | Items |
@@ -340,6 +378,12 @@ These are smaller than the architectural issues but should be fixed while touchi
 | 12+ | Mode migrations | ARCH-220 … ARCH-244 |
 | 13+ | Long-command conversion | ARCH-300 … ARCH-316 |
 | 14+ | Hardening, CI, soak | ARCH-400 … ARCH-513 |
+| 15 | Subsystem hardening & clock scaling | ARCH-800 … ARCH-803 (D1) |
+| 16 | RP2350 hardware accelerators & 256KB LA | ARCH-810 … ARCH-812 (D2) |
+| 17 | CAN bus mode & fault injection engine | ARCH-813 … ARCH-814 (D3) |
+| 18 | DMA AMUX, multi-block storage & LCD | ARCH-820 … ARCH-822 (D4) |
+| 19 | PSU calibration wizard & power profiler | ARCH-823 … ARCH-824 (D5) |
+| 20 | CMSIS-DAP v2 probe & HSTX DVI video | ARCH-825 … ARCH-826 (D6) |
 
 ---
 

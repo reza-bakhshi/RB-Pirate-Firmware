@@ -13,6 +13,7 @@
 #include <stdbool.h>
 #include "kernel/bp_status.h"
 #include "platform/rb-pirate.h"
+#include "pirate/psu.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,6 +69,7 @@ typedef struct bp_runtime {
     uint16_t terminal_ansi_columns;
     uint32_t big_buffer_owner;
     uint8_t  error;
+    psu_cal_t psu_cal;                  /* Active PSU calibration coefficients */
 } bp_runtime_t;
 
 /**

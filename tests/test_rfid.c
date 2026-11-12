@@ -15,7 +15,7 @@
 /* --- Mock Hardware Globals for Stubs --- */
 uart_inst_t s_mock_uart0 = { { 0 } };
 uart_inst_t s_mock_uart1 = { { 0 } };
-uint8_t bio2bufiopin[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+const uint8_t bio2bufiopin[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
 
 /* --- Mock Job Cancellation Flag --- */
 static bool s_mock_job_cancelled = false;

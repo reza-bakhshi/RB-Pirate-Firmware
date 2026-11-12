@@ -68,6 +68,7 @@ bp_status_t bp_config_subsystem_init(void) {
 
     bp_config_init_defaults(&s_config);
     memset(&s_runtime, 0, sizeof(s_runtime));
+    psu_cal_reset_defaults(&s_runtime.psu_cal);
     memset(&s_snapshot, 0, sizeof(s_snapshot));
     s_snapshot.seq = 0;
 

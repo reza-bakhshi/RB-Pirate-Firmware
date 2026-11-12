@@ -6,7 +6,7 @@ Defines control plane ownership of analog multiplexer (AMUX) sampling, ADC perip
 ## Requirements
 
 ### Requirement: Single-Core Control Plane ADC Ownership
-All periodic analog multiplexer (AMUX) channel sweeping and ADC sampling SHALL be owned and executed exclusively by Core 0 (control plane). Core 1 SHALL NOT perform unsolicited hardware AMUX sweeping that could load live bus pins or disrupt protocol timing.
+All periodic analog multiplexer (AMUX) channel sweeping and ADC sampling SHALL be owned and executed by Core 0 (control plane) or offloaded to an autonomous Core 0-supervised DMA sequence. Core 1 SHALL NOT perform unsolicited hardware AMUX sweeping that could load live bus pins or disrupt protocol timing.
 
 #### Scenario: Periodic monitor sweep runs on Core 0
 - **GIVEN** Core 0 is executing its periodic cooperative tick
@@ -17,6 +17,11 @@ All periodic analog multiplexer (AMUX) channel sweeping and ADC sampling SHALL b
 - **GIVEN** a protocol engine or binary mode is active on Core 1
 - **WHEN** an ADC status query is requested
 - **THEN** Core 1 reads the latest measured values from the published snapshot rather than sweeping hardware AMUX pins directly.
+
+#### Scenario: Autonomous DMA AMUX sampling
+- **GIVEN** continuous power monitoring is enabled
+- **WHEN** the hardware timer triggers the chained AMUX DMA channel
+- **THEN** 16 AMUX channels are selected, sampled, and written to telemetry buffers without CPU polling.
 
 ### Requirement: Reentrant and Owner-Aware ADC Arbitration
 The ADC arbitration helper (`adc_busy_wait`) SHALL track the owning core ID and nesting depth. If the current core already owns the ADC lock, nested acquisition SHALL succeed immediately without deadlocking. Lock acquisition by another core SHALL use bounded waits with backoff to prevent bus starvation.
@@ -40,9 +45,27 @@ The system SHALL publish measured pin voltages, Vreg, Vout, current sense, fuse 
 - **THEN** the reader detects the sequence counter state and returns a consistent, uncorrupted snapshot.
 
 ### Requirement: Authoritative Control-Plane PSU Fault Trip and Job Abort
-Core 0 SHALL periodically poll the power supply unit (PSU) current fuse and undervoltage status. If an overcurrent or undervoltage condition is detected, Core 0 SHALL immediately disable PSU output, flag the fault in runtime state and snapshot, and signal cancellation of any running protocol job on Core 1 to protect attached hardware.
+Core 0 SHALL periodically poll the power supply unit (PSU) current fuse and undervoltage status. If an overcurrent or undervoltage condition is detected, Core 0 SHALL immediately disable PSU output, flag the fault in runtime state and snapshot, and signal cancellation of any running protocol job on Core 1 to protect attached hardware. Transient inrush when charging capacitive loads SHALL be recovered gracefully.
 
 #### Scenario: Overcurrent condition triggers immediate PSU shutdown
 - **GIVEN** the PSU is enabled and supplying power to external target hardware
 - **WHEN** measured current exceeds the hardware trip threshold
 - **THEN** Core 0 immediately turns off the PSU regulator, updates the fault flags, and aborts any active Core 1 protocol job.
+
+#### Scenario: Capacitive inrush transient recovery
+- **GIVEN** the PSU is requested to enable into a capacitive load
+- **WHEN** inrush current occurs during rail capacitor charging
+- **THEN** the subsystem engages temporary override, clears the transient trip after settling, and enters steady-state regulation without permanent error.
+
+### Requirement: Power Profiling and Coulomb Counting
+The power monitor subsystem SHALL support continuous current and power integration over time, computing accumulated charge in milliampere-hours ($\text{mAh}$) and total energy in milliwatt-hours ($\text{mWh}$).
+
+#### Scenario: Continuous energy integration
+- **GIVEN** the PSU is supplying power to a target device
+- **WHEN** the user runs `w.profile`
+- **THEN** instantaneous voltage, current, power, accumulated charge ($\text{mAh}$), and total energy ($\text{mWh}$) update continuously on the console.
+
+#### Scenario: Real-time CSV power logging
+- **GIVEN** `w.profile -f <filename>` is invoked
+- **WHEN** periodic telemetry updates occur
+- **THEN** timestamped measurement rows are flushed to the designated CSV file on storage.

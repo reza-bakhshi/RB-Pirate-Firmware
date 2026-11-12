@@ -56,6 +56,29 @@ void storage_file_error(uint8_t res);
 bool storage_save_binary_blob_rollover(char* data, uint32_t ptr, uint32_t size, uint32_t rollover);
 
 /**
+ * @brief Multi-block read from physical storage via DMA.
+ * @param lba       Starting sector number (LBA)
+ * @param buffer    Destination buffer (size >= count * 512)
+ * @param count     Number of 512-byte sectors to read
+ * @return true on success, false on error
+ */
+bool storage_read_blocks(uint32_t lba, uint8_t* buffer, uint32_t count);
+
+/**
+ * @brief Multi-block write to physical storage via DMA.
+ * @param lba       Starting sector number (LBA)
+ * @param buffer    Source buffer (size >= count * 512)
+ * @param count     Number of 512-byte sectors to write
+ * @return true on success, false on error
+ */
+bool storage_write_blocks(uint32_t lba, const uint8_t* buffer, uint32_t count);
+
+/**
+ * @brief Check if storage DMA channels are leased and operational.
+ */
+bool storage_dma_is_active(void);
+
+/**
  * @brief Configuration value format for mode config files.
  */
 typedef enum _mode_config_format {

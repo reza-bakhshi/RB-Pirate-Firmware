@@ -26,6 +26,10 @@ The PS2 Sniffer capability SHALL start only when its required hardware is availa
 - **WHEN** the mode is started and stopped repeatedly for 100 consecutive cycles
 - **THEN** zero PIO instruction words, state machines, or IRQ handlers are leaked
 
+#### Scenario: Correct state machine pin direction configuration
+- **WHEN** the PS/2 sniffer claims state machines across PIO0 and PIO1
+- **THEN** pin directions are applied to the matching PIO block and claimed state machine without duplicate hardware claims or panics
+
 ### Requirement: Command coverage
 
 The PS2 Sniffer capability SHALL provide every documented command and SHALL return a result or a clear error for each command.

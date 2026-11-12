@@ -86,6 +86,9 @@ enum {
 #ifdef BP_USE_USBPD
     USBPD,    /**< USB Power Delivery */
 #endif
+#ifdef BP_USE_CAN
+    CAN,      /**< CAN 2.0B protocol mode */
+#endif
 #ifdef BP_USE_DUMMY1
     DUMMY1,   /**< Dummy/test mode */
 #endif

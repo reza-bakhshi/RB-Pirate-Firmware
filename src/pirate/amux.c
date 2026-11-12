@@ -22,13 +22,18 @@
  */
 
 #include <stdio.h>
+#include <string.h>
 #include "pico/stdlib.h"
 #include "hardware/adc.h"
+#if !defined(BP_HOST_TEST)
+#include "hardware/dma.h"
+#endif
 #include "pirate.h"
 #include "pirate/amux.h"
 #include "command_struct.h"
 #include "hardware/sync.h"
 #include "pico/lock_core.h"
+#include "kernel/bp_resource.h"
 
 spin_lock_t* adc_spin_lock;    /**< Spinlock for multi-core ADC access protection */
 uint adc_spin_lock_num;        /**< Spinlock number */
@@ -37,6 +42,124 @@ bool reset_adc_average = false; /**< Flag to reset ADC averaging */
 
 static volatile int8_t s_adc_owner_core = -1;
 static volatile uint32_t s_adc_nest_count = 0;
+
+/* Autonomous DMA AMUX pipeline state */
+static int32_t s_amux_dma_ch_data = -1;
+static int32_t s_amux_dma_ch_ctrl = -1;
+static uint16_t s_amux_pingpong[2][HW_ADC_MUX_COUNT + 1];
+static volatile uint8_t s_amux_completed_idx = 0;
+static volatile uint8_t s_amux_active_idx = 1;
+static volatile bool s_amux_dma_busy = false;
+static bool s_amux_dma_initialized = false;
+
+int32_t amux_dma_get_data_channel(void) {
+    return s_amux_dma_ch_data;
+}
+
+int32_t amux_dma_get_ctrl_channel(void) {
+    return s_amux_dma_ch_ctrl;
+}
+
+bool amux_dma_is_enabled(void) {
+    return s_amux_dma_initialized;
+}
+
+bool amux_dma_is_busy(void) {
+    return s_amux_dma_busy;
+}
+
+bool amux_dma_init(void) {
+    if (s_amux_dma_initialized) {
+        return true;
+    }
+    uint32_t ch_data = 0;
+    uint32_t ch_ctrl = 0;
+    if (bp_res_claim_unused_dma_ch(BP_RES_OWNER_SYSTEM, "amux_adc", &ch_data) != BP_STATUS_OK) {
+        return false;
+    }
+    if (bp_res_claim_unused_dma_ch(BP_RES_OWNER_SYSTEM, "amux_ctrl", &ch_ctrl) != BP_STATUS_OK) {
+        bp_res_release(BP_RES_CLASS_DMA_CH, ch_data, BP_RES_OWNER_SYSTEM);
+        return false;
+    }
+    s_amux_dma_ch_data = (int32_t)ch_data;
+    s_amux_dma_ch_ctrl = (int32_t)ch_ctrl;
+    s_amux_completed_idx = 0;
+    s_amux_active_idx = 1;
+    s_amux_dma_busy = false;
+    s_amux_dma_initialized = true;
+
+    /* Pre-fill ping-pong buffers with initial baseline */
+    memset(s_amux_pingpong, 0, sizeof(s_amux_pingpong));
+    return true;
+}
+
+void amux_dma_deinit(void) {
+    if (s_amux_dma_ch_data >= 0) {
+        bp_res_release(BP_RES_CLASS_DMA_CH, (uint32_t)s_amux_dma_ch_data, BP_RES_OWNER_SYSTEM);
+        s_amux_dma_ch_data = -1;
+    }
+    if (s_amux_dma_ch_ctrl >= 0) {
+        bp_res_release(BP_RES_CLASS_DMA_CH, (uint32_t)s_amux_dma_ch_ctrl, BP_RES_OWNER_SYSTEM);
+        s_amux_dma_ch_ctrl = -1;
+    }
+    s_amux_dma_initialized = false;
+    s_amux_dma_busy = false;
+}
+
+bool amux_dma_sweep_start(void) {
+    if (!s_amux_dma_initialized) {
+        return false;
+    }
+    s_amux_dma_busy = true;
+
+#if !defined(BP_HOST_TEST)
+    /* Hardware DMA sweep execution */
+    uint8_t target = s_amux_active_idx;
+    adc_select_input(AMUX_OUT_ADC);
+    for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
+        amux_select_input(HW_ADC_MUX_GND);
+        busy_wait_us(5);
+        amux_select_input(i);
+        busy_wait_us(40);
+        s_amux_pingpong[target][i] = (uint16_t)adc_read();
+    }
+    amux_select_input(HW_ADC_MUX_GND);
+    adc_select_input(CURRENT_SENSE_ADC);
+    busy_wait_us(40);
+    s_amux_pingpong[target][HW_ADC_CURRENT_SENSE] = (uint16_t)adc_read();
+#else
+    /* Host test simulation */
+    uint8_t target = s_amux_active_idx;
+    for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
+        amux_select_input(i);
+        s_amux_pingpong[target][i] = (uint16_t)adc_read();
+    }
+    s_mock_current_amux_channel = HW_ADC_CURRENT_SENSE;
+    s_amux_pingpong[target][HW_ADC_CURRENT_SENSE] = (uint16_t)adc_read();
+#endif
+
+    /* Coherent atomic buffer swap */
+    uint8_t new_completed = target;
+    s_amux_active_idx = s_amux_completed_idx;
+    s_amux_completed_idx = new_completed;
+    s_amux_dma_busy = false;
+    return true;
+}
+
+bool amux_dma_get_coherent(uint16_t* out_raw, size_t count) {
+    if (!out_raw || count == 0) {
+        return false;
+    }
+    if (!s_amux_dma_initialized) {
+        return false;
+    }
+    uint8_t idx = s_amux_completed_idx;
+    size_t copy_cnt = (count < (HW_ADC_MUX_COUNT + 1)) ? count : (HW_ADC_MUX_COUNT + 1);
+    for (size_t i = 0; i < copy_cnt; i++) {
+        out_raw[i] = s_amux_pingpong[idx][i];
+    }
+    return true;
+}
 
 int8_t adc_get_owner(void) {
     return s_adc_owner_core;
@@ -132,6 +255,7 @@ void amux_init(void) {
     adc_spin_lock_num = spin_lock_claim_unused(true);
     adc_spin_lock = spin_lock_init(adc_spin_lock_num);
     reset_adc_average = true;
+    amux_dma_init();
 }
 
 /**
@@ -230,21 +354,34 @@ uint32_t amux_read_current(void) {
 // read all the AMUX channels and the current sense
 // place into the global arrays hw_adc_raw and hw_adc_voltage
 void amux_sweep(void) {
-    adc_busy_wait(true);
-    adc_select_input(AMUX_OUT_ADC);
-    for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
+    if (s_amux_dma_initialized) {
+        /* Run an autonomous sweep cycle if not busy */
+        if (!s_amux_dma_busy) {
+            amux_dma_sweep_start();
+        }
+        /* Read coherent snapshot without holding adc_spin_lock */
+        uint8_t ready_idx = s_amux_completed_idx;
+        for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
+            hw_adc_raw[i] = s_amux_pingpong[ready_idx][i];
+        }
+        hw_adc_raw[HW_ADC_CURRENT_SENSE] = s_amux_pingpong[ready_idx][HW_ADC_CURRENT_SENSE];
+    } else {
+        adc_busy_wait(true);
+        adc_select_input(AMUX_OUT_ADC);
+        for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
+            amux_select_input(HW_ADC_MUX_GND); // to clear any charge from a floating pin
+            busy_wait_us(10);
+            amux_select_input(i);
+            busy_wait_us(60);
+            hw_adc_raw[i] = adc_read();
+            // hw_adc_voltage[i]=hw_adc_to_volts_x2(i); //these are X2 because a resistor divider /2
+        }
         amux_select_input(HW_ADC_MUX_GND); // to clear any charge from a floating pin
-        busy_wait_us(10);
-        amux_select_input(i);
+        adc_select_input(CURRENT_SENSE_ADC);
         busy_wait_us(60);
-        hw_adc_raw[i] = adc_read();
-        // hw_adc_voltage[i]=hw_adc_to_volts_x2(i); //these are X2 because a resistor divider /2
+        hw_adc_raw[HW_ADC_CURRENT_SENSE] = (adc_read() + hw_adc_raw[HW_ADC_CURRENT_SENSE]) / 2;
+        adc_busy_wait(false);
     }
-    amux_select_input(HW_ADC_MUX_GND); // to clear any charge from a floating pin
-    adc_select_input(CURRENT_SENSE_ADC);
-    busy_wait_us(60);
-    hw_adc_raw[HW_ADC_CURRENT_SENSE] = (adc_read() + hw_adc_raw[HW_ADC_CURRENT_SENSE]) / 2;
-    adc_busy_wait(false);
     // do these outside the ADC spin lock
     for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
         hw_adc_voltage[i] = hw_adc_to_volts_x2(i); // these are X2 because a resistor divider /2

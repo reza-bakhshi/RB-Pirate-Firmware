@@ -90,6 +90,7 @@ enum {
     ITF_NUM_CDC_1,
     ITF_NUM_CDC_1_DATA,
     ITF_NUM_MSC,
+    ITF_NUM_VENDOR,
 #endif
     ITF_NUM_TOTAL
 };
@@ -145,6 +146,9 @@ enum {
 
 #define EPNUM_MSC_OUT 0x05
 #define EPNUM_MSC_IN 0x85
+
+#define EPNUM_VENDOR_OUT 0x06
+#define EPNUM_VENDOR_IN  0x86
 #endif
 
 #endif
@@ -152,7 +156,7 @@ enum {
 #ifndef USB_TEST
 #define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MSC_DESC_LEN)
 #else
-#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MSC_DESC_LEN)
+#define CONFIG_TOTAL_LEN (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MSC_DESC_LEN + TUD_VENDOR_DESC_LEN)
 #endif
 
 // full speed configuration
@@ -172,6 +176,9 @@ uint8_t const desc_fs_configuration[] = {
 #endif
     // Interface number, string index, EP Out & EP In address, EP size
     TUD_MSC_DESCRIPTOR(ITF_NUM_MSC, 5, EPNUM_MSC_OUT, EPNUM_MSC_IN, 64),
+
+    // CMSIS-DAP v2 Vendor Bulk Interface
+    TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, 7, EPNUM_VENDOR_OUT, EPNUM_VENDOR_IN, 64),
 };
 
 #if TUD_OPT_HIGH_SPEED
@@ -182,11 +189,17 @@ uint8_t const desc_hs_configuration[] = {
     // Config number, interface count, string index, total length, attribute, power in mA
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, CONFIG_TOTAL_LEN, 0x00, 100),
 
-    // Interface number, string index, EP notification address and size, EP data address (out, in) and size.
-    TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, 4, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, 512),
+    // 1st CDC
+    TUD_CDC_DESCRIPTOR(ITF_NUM_CDC_0, 4, EPNUM_CDC_0_NOTIF, 8, EPNUM_CDC_0_OUT, EPNUM_CDC_0_IN, 512),
+
+    // 2nd CDC
+    TUD_CDC_DESCRIPTOR(ITF_NUM_CDC_1, 6, EPNUM_CDC_1_NOTIF, 8, EPNUM_CDC_1_OUT, EPNUM_CDC_1_IN, 512),
 
     // Interface number, string index, EP Out & EP In address, EP size
     TUD_MSC_DESCRIPTOR(ITF_NUM_MSC, 5, EPNUM_MSC_OUT, EPNUM_MSC_IN, 512),
+
+    // CMSIS-DAP v2 Vendor Bulk Interface
+    TUD_VENDOR_DESCRIPTOR(ITF_NUM_VENDOR, 7, EPNUM_VENDOR_OUT, EPNUM_VENDOR_IN, 512),
 };
 
 // other speed configuration
@@ -262,7 +275,8 @@ char const* string_desc_arr[] = {
     "rbpirate",                   // 3: Serial -- replaced by the chip ID when enabled
     "Bus Pirate CDC",             // 4: CDC Interface
     "Bus Pirate MSC",             // 5: MSC Interface
-    "Bus Pirate BIN"              // 6: Binary CDC Interface
+    "Bus Pirate BIN",             // 6: Binary CDC Interface
+    "Bus Pirate CMSIS-DAP v2"     // 7: CMSIS-DAP v2 Interface
 };
 // automatically update if an additional string is later added to the table
 #define STRING_DESC_ARR_ELEMENT_COUNT (sizeof(string_desc_arr) / sizeof(string_desc_arr[0]))
@@ -324,4 +338,66 @@ uint16_t const* tud_descriptor_string_cb(uint8_t index, uint16_t langid) {
     _desc_str[0] = (TUSB_DESC_STRING << 8) | (2 * chr_count + 2);
 
     return _desc_str;
+}
+
+//--------------------------------------------------------------------+
+// BOS & Microsoft OS 2.0 Descriptors (WinUSB CMSIS-DAP v2)
+//--------------------------------------------------------------------+
+
+#define BOS_TOTAL_LEN      (TUD_BOS_DESC_LEN + TUD_BOS_MICROSOFT_OS_DESC_LEN)
+#define MS_OS_20_DESC_LEN  0xB2
+#define VENDOR_REQUEST_MICROSOFT 1
+
+static uint8_t const desc_bos[] = {
+    // Total length, number of device caps
+    TUD_BOS_DESCRIPTOR(BOS_TOTAL_LEN, 1),
+
+    // Microsoft OS 2.0 descriptor platform capability
+    TUD_BOS_MS_OS_20_DESCRIPTOR(MS_OS_20_DESC_LEN, VENDOR_REQUEST_MICROSOFT)
+};
+
+uint8_t const* tud_descriptor_bos_cb(void) {
+    return desc_bos;
+}
+
+static uint8_t const desc_ms_os_20[] = {
+    // Set header: length, type, windows version, total length
+    U16_TO_U8S_LE(0x000A), U16_TO_U8S_LE(MS_OS_20_SET_HEADER_DESCRIPTOR), U32_TO_U8S_LE(0x06030000), U16_TO_U8S_LE(MS_OS_20_DESC_LEN),
+
+    // Configuration subset header: length, type, configuration index, reserved, configuration total length
+    U16_TO_U8S_LE(0x0008), U16_TO_U8S_LE(MS_OS_20_SUBSET_HEADER_CONFIGURATION), 0, 0, U16_TO_U8S_LE(MS_OS_20_DESC_LEN - 0x0A),
+
+    // Function Subset header: length, type, first interface, reserved, subset length
+    U16_TO_U8S_LE(0x0008), U16_TO_U8S_LE(MS_OS_20_SUBSET_HEADER_FUNCTION), ITF_NUM_VENDOR, 0, U16_TO_U8S_LE(MS_OS_20_DESC_LEN - 0x0A - 0x08),
+
+    // MS OS 2.0 Compatible ID descriptor: length, type, compatible ID, sub compatible ID
+    U16_TO_U8S_LE(0x0014), U16_TO_U8S_LE(MS_OS_20_FEATURE_COMPATBLE_ID), 'W', 'I', 'N', 'U', 'S', 'B', 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+
+    // MS OS 2.0 Registry property descriptor: length, type
+    U16_TO_U8S_LE(MS_OS_20_DESC_LEN - 0x0A - 0x08 - 0x08 - 0x14), U16_TO_U8S_LE(MS_OS_20_FEATURE_REG_PROPERTY),
+    U16_TO_U8S_LE(0x0007), U16_TO_U8S_LE(0x002A), // wPropertyDataType, wPropertyNameLength and PropertyName "DeviceInterfaceGUIDs\0" in UTF-16
+    'D', 0x00, 'e', 0x00, 'v', 0x00, 'i', 0x00, 'c', 0x00, 'e', 0x00, 'I', 0x00, 'n', 0x00, 't', 0x00, 'e', 0x00,
+    'r', 0x00, 'f', 0x00, 'a', 0x00, 'c', 0x00, 'e', 0x00, 'G', 0x00, 'U', 0x00, 'I', 0x00, 'D', 0x00, 's', 0x00, 0x00, 0x00,
+    U16_TO_U8S_LE(0x0050), // wPropertyDataLength
+    // bPropertyData: "{CDB3B5AD-293B-4663-AA36-1AAE46463776}" (Standard CMSIS-DAP v2 WinUSB GUID)
+    '{', 0x00, 'C', 0x00, 'D', 0x00, 'B', 0x00, '3', 0x00, 'B', 0x00, '5', 0x00, 'A', 0x00, 'D', 0x00, '-', 0x00,
+    '2', 0x00, '9', 0x00, '3', 0x00, 'B', 0x00, '-', 0x00, '4', 0x00, '6', 0x00, '6', 0x00, '3', 0x00, '-', 0x00,
+    'A', 0x00, 'A', 0x00, '3', 0x00, '6', 0x00, '-', 0x00, '1', 0x00, 'A', 0x00, 'A', 0x00, 'E', 0x00, '4', 0x00,
+    '6', 0x00, '4', 0x00, '6', 0x00, '3', 0x00, '7', 0x00, '7', 0x00, '6', 0x00, '}', 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+TU_VERIFY_STATIC(sizeof(desc_ms_os_20) == MS_OS_20_DESC_LEN, "Incorrect size");
+
+bool tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage, tusb_control_request_t const* request) {
+    if (stage != CONTROL_STAGE_SETUP) return true;
+
+    if (request->bmRequestType_bit.type == TUSB_REQ_TYPE_VENDOR) {
+        if (request->bRequest == VENDOR_REQUEST_MICROSOFT && request->wIndex == 7) {
+            uint16_t total_len;
+            memcpy(&total_len, desc_ms_os_20 + 8, 2);
+            return tud_control_xfer(rhport, request, (void*)(uintptr_t)desc_ms_os_20, total_len);
+        }
+    }
+    return false;
 }

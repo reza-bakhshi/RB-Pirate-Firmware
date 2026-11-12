@@ -409,9 +409,19 @@ uint32_t pwm_get_settings(float* pwm_hz_actual, float* duty_user_value) {
                ui_const_freq_labels[period_friendly_units]);
 
         if (pwm_freq_find(&freq_hz_value, &pwm_hz_actual_temp, &pwm_ns_actual, &pwm_divider, &pwm_top)) {
-            printf("\r\n%sFrequency invalid:%s 7.46Hz-62.5MHz (134.1ms-16us period)\r\n",
+            uint32_t clk_hz = clock_get_hz(clk_sys);
+            float max_freq_hz = (float)clk_hz / 2.0f;
+            float min_freq_hz = (float)(clk_hz << 4) / (DIV_MAX * (TOP_MAX + 1));
+            float max_friendly, min_friendly;
+            uint8_t max_units, min_units;
+            freq_display_hz(&max_freq_hz, &max_friendly, &max_units);
+            freq_display_hz(&min_freq_hz, &min_friendly, &min_units);
+            printf("\r\n%sFrequency invalid:%s %.2f%s-%.2f%s (system clock %lu MHz)\r\n",
                    ui_term_color_error(),
-                   ui_term_color_reset());
+                   ui_term_color_reset(),
+                   min_friendly, ui_const_freq_labels[min_units],
+                   max_friendly, ui_const_freq_labels[max_units],
+                   (unsigned long)(clk_hz / 1000000));
             continue;
         }
         freq_display_hz(&pwm_hz_actual_temp, &freq_friendly_value, &freq_friendly_units);
@@ -497,9 +507,7 @@ uint32_t pwm_get_settings(float* pwm_hz_actual, float* duty_user_value) {
                ui_const_freq_labels[period_friendly_units]);
 
         // convert to a fraction of the period
-        // calculate the actual duty cycle
-        // each increment of the pwm is equal to 16ns (at 125MHz clock!!!! TODO: make clock independent)
-        // TODO: this needs lots of work.... defo +/-1 errors and less than optimal
+        // calculate the actual duty cycle scaled from clock-derived top and actual period
         pwm_duty = ((float)(pwm_top) * (float)(duty_user_value_temp / 100)) + 1;
         float duty_ns_actual = ((float)pwm_duty / (float)(pwm_top)) * pwm_ns_actual;
         // duty_ns_value=pwm_ns_actual*(duty_user_value/100);

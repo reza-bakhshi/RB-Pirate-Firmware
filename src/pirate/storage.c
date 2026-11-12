@@ -33,6 +33,7 @@
 #include "services/bp_storage.h"
 #include "pirate/mem.h"
 #include "ui/ui_cmdln.h"
+#include "kernel/bp_resource.h"
 
 FATFS fs; /* FatFs work area needed for each volume */
 // FIL fil;			/* File object needed for each open file */
@@ -94,6 +95,31 @@ bool storage_save_binary_blob_rollover(char* data, uint32_t ptr, uint32_t size, 
         }
     }
     return false;
+}
+
+bool storage_read_blocks(uint32_t lba, uint8_t* buffer, uint32_t count) {
+    if (!buffer || count == 0) {
+        return false;
+    }
+    blockdev_lock_acquire();
+    DRESULT res = disk_read(0, buffer, (LBA_t)lba, (UINT)count);
+    blockdev_lock_release();
+    return (res == RES_OK);
+}
+
+bool storage_write_blocks(uint32_t lba, const uint8_t* buffer, uint32_t count) {
+    if (!buffer || count == 0) {
+        return false;
+    }
+    blockdev_lock_acquire();
+    DRESULT res = disk_write(0, buffer, (LBA_t)lba, (UINT)count);
+    blockdev_lock_release();
+    return (res == RES_OK);
+}
+
+bool storage_dma_is_active(void) {
+    return (bp_res_get_owner(BP_RES_CLASS_DMA_CH, 0) == BP_RES_OWNER_STORAGE ||
+            system_config.storage_available != 0);
 }
 
 

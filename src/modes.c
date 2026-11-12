@@ -83,6 +83,9 @@
 #ifdef BP_USE_USB
 #include "mode/usb.h"
 #endif
+#ifdef BP_USE_CAN
+#include "mode/can.h"
+#endif
 
 /**
  * @defgroup null_funcs Null Function Handlers
@@ -791,6 +794,36 @@ struct _mode modes[] = {
         .mode_commands_count = &usbpd_commands_count, // mode specific commands count
         .protocol_get_speed = nullfunc7_no_error,     // get the current speed setting of the protocol
         .protocol_preflight_sanity_check = NULL,      // sanity check before executing syntax
+    },
+#endif
+#ifdef BP_USE_CAN
+    [CAN] = {
+        .protocol_name = "CAN",                          // friendly name (promptname)
+        .protocol_start = can_start,                     // start
+        .protocol_start_alt = can_start_alt,             // start with read
+        .protocol_stop = can_stop,                       // stop
+        .protocol_stop_alt = can_stop_alt,               // stop with read
+        .protocol_write = can_write,                     // send(/read) max 32 bit
+        .protocol_read = can_read,                       // read max 32 bit
+        .protocol_clkh = nullfunc1_temp,                 // set clk high
+        .protocol_clkl = nullfunc1_temp,                 // set clk low
+        .protocol_dath = nullfunc1_temp,                 // set dat hi
+        .protocol_datl = nullfunc1_temp,                 // set dat lo
+        .protocol_dats = nullfunc1_temp,                 // toggle dat (?)
+        .protocol_tick_clock = nullfunc1_temp,           // toggle clk (?)
+        .protocol_bitr = nullfunc1_temp,                 // read 1 bit (?)
+        .protocol_periodic = can_periodic,               // service to regular poll whether a byte has arrived
+        .protocol_macro = can_macro,                     // macro
+        .protocol_setup = can_setup,                     // setup UI
+        .protocol_setup_exc = can_setup_exc,             // real setup
+        .protocol_cleanup = can_cleanup,                 // cleanup for HiZ
+        .protocol_settings = can_settings,               // display settings
+        .protocol_help = can_help,                       // display small help about the protocol
+        .mode_commands = can_commands,                   // mode specific commands
+        .mode_commands_count = &can_commands_count,      // mode specific commands count
+        .protocol_get_speed = can_get_speed,             // get the current speed setting of the protocol
+        .protocol_preflight_sanity_check = can_preflight_sanity_check,
+        .setup_def = &can_setup_def,                     // command def for mode setup flags
     },
 #endif
 #ifdef BP_USE_DUMMY1

@@ -59,6 +59,7 @@ static bool core0_control_request(uint8_t request);
 #include "commands/global/p_pullups.h"
 #include "pirate/psu.h"
 #include "commands/global/w_psu.h"
+#include "pirate/hstx_dvi.h"
 // #include "mode/logicanalyzer.h"
 #include "msc_disk.h"
 #include "pirate/intercore_helpers.h"
@@ -335,6 +336,7 @@ static void main_system_initialization(void) {
         // party mode/demo mode if no config file found
         rgb_set_effect(LED_EFFECT_PARTY_MODE);
     }
+    psu_cal_load();
     spi_set_baudrate(BP_SPI_PORT, BP_SPI_HIGH_SPEED);
 #elif defined(BP_HW_STORAGE_NAND)
     BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
@@ -362,6 +364,7 @@ static void main_system_initialization(void) {
         rgb_set_effect(LED_EFFECT_PARTY_MODE);
         system_config.led_effect = LED_EFFECT_PARTY_MODE;
     }
+    psu_cal_load();
 #else
     #error "Storage device not defined in pirate.c"
 #endif
@@ -453,6 +456,7 @@ static void main_system_initialization(void) {
         "Init: binmode_setup()\n"
         );
     binmode_setup();
+    hstx_dvi_init();
 
     BP_DEBUG_PRINT(BP_DEBUG_LEVEL_VERBOSE, BP_DEBUG_CAT_EARLY_BOOT,
         "Init: main_system_initialization() complete()\n"
@@ -905,6 +909,7 @@ static void core1_infinite_loop(void) {
     while (1) {
         bp_watchdog_heartbeat(1);
         bp_service(1);
+        hstx_dvi_service();
 
 
     } // while(1)

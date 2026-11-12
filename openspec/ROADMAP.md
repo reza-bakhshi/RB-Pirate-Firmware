@@ -54,6 +54,7 @@ Level 1. F2 was already completed early as prerequisite groundwork and is archiv
 | **3** | Command conversion | C1, C2 | complete |
 | **4** | Feature parity / static audits | F1, F3–F10 (F2 archived) | complete |
 | **5** | Hardening and cleanup | C3, C4, C5 | complete |
+| **6** | Post-Architecture Enhancements, Optimizations & Hardware Acceleration | D1–D6 | complete |
 
 Level 1 bootstrap safety:
 
@@ -160,6 +161,16 @@ B7
 A3
  ├─ C3 harden-syntax-and-command-parser
  └─ C4 add-hil-and-soak-test-suite
+
+Phase D — Post-Architecture Enhancements & Optimizations (Level 6)
+
+C5
+ ├─ D1 harden-subsystems-and-clock-scaling
+ ├─ D2 add-rp2350-hardware-accelerators
+ ├─ D3 add-can-bus-and-glitch-engine
+ ├─ D4 optimize-dma-amux-and-storage
+ ├─ D5 add-psu-profiler-and-calibration
+ └─ D6 add-cmsis-dap-and-hstx-video
 ```
 
 ---
@@ -1323,6 +1334,134 @@ budget and owner.
 
 ---
 
+### D1 — `harden-subsystems-and-clock-scaling`
+
+**Status:** active  
+**Capability:** `ps2-sniffer`, `infrared`, `power-monitor`  
+**Depends on:** C5  
+**ARCH coverage:** ARCH-800, ARCH-801, ARCH-802, ARCH-803  
+**Planned folder:** `openspec/changes/harden-subsystems-and-clock-scaling/`
+
+**Intent:** Resolve latent state machine allocation index bugs, eliminate unchecked string indexing in protocol packet parsers, ensure exact PWM frequency scaling at 150 MHz on RP2350, and implement PSU inrush auto-recovery.
+
+**In scope:**
+- In `src/mode/ps2.c`, fix `kbd_sm` on `pio1` to `kbd_h2d_sm` and remove redundant `pio_sm_claim` calls.
+- In `src/commands/infrared/irtxrx.c`, add pre-bounds validation for AIR packet delimiters and enforce `count_of(data)` array boundaries on all iterations.
+- In `src/commands/global/pwm.c`, dynamically scale PWM period and duty calculations using `clock_get_hz(clk_sys)`.
+- In `src/pirate/psu.c`, add transient retry logic in `psu_enable()` for capacitive inrush recovery.
+
+**Verification:**
+- Host unit test suite `tests/test_sniffers.sh`, `tests/test_ir_protocols.sh`, and `tests/test_power_monitor.sh` pass.
+- HIL PS/2 capture, IR AIR packet transmission, and PWM frequency verification on hardware.
+
+---
+
+### D2 — `add-rp2350-hardware-accelerators`
+
+**Status:** active  
+**Capability:** `hardware-sha256`, `trng-entropy`, `binary-modes`  
+**Depends on:** C5  
+**ARCH coverage:** ARCH-810, ARCH-811, ARCH-812  
+**Planned folder:** `openspec/changes/add-rp2350-hardware-accelerators/`
+
+**Intent:** Unlock untapped RP2350 hardware peripherals for bus-speed cryptographic hashing and true random entropy, while expanding logic analyzer capture buffer depth to 256 KB.
+
+**In scope:**
+- Implement `sha256` CLI command in `src/commands/global/cmd_sha256.c` using `hardware/sha256.h` with streaming 512-byte blocks.
+- Implement RP2350 hardware TRNG entropy source in `src/pirate/trng.c` and connect to SubGHz and Infrared noise jamming routines.
+- Expand `LA_BUFFER_SIZE` to 256 KB on RP2350 targets while preserving bounded static memory headroom.
+
+**Verification:**
+- `sha256` hash verified against standard NIST vectors and Linux `sha256sum` on TF card files.
+- `entropy` / `rand` command generates high-entropy random distributions.
+- `tests/test_memory_model.sh` confirms total static allocation stays within <=380 KB limit.
+
+---
+
+### D3 — `add-can-bus-and-glitch-engine`
+
+**Status:** active  
+**Capability:** `can-bus`, `glitch-engine`  
+**Depends on:** C5  
+**ARCH coverage:** ARCH-813, ARCH-814  
+**Planned folder:** `openspec/changes/add-can-bus-and-glitch-engine/`
+
+**Intent:** Introduce native CAN bus sniffing and transmission mode up to 1 Mbps, plus a precision fault-injection engine for voltage crowbar and clock glitching.
+
+**In scope:**
+- Port `can2040` PIO assembly and driver into `src/pirate/hwcan_pio.c` under `bp_res` lease arbitration.
+- Implement CAN mode lifecycle and commands (`sniff`, `filter`, transmit) in `src/mode/can.c`.
+- Implement `glitch` command in `src/commands/global/cmd_glitch.c` for nanosecond voltage crowbar pulses via PSU override and synchronized clock glitching.
+
+**Verification:**
+- CAN loopback and traffic sniffing verified with external CAN transceiver.
+- Glitch pulse width and edge trigger jitter (<20 ns) verified with oscilloscope.
+
+---
+
+### D4 — `optimize-dma-amux-and-storage`
+
+**Status:** completed  
+**Capability:** `power-monitor`, `storage`  
+**Depends on:** C5  
+**ARCH coverage:** ARCH-820, ARCH-821, ARCH-822  
+**Planned folder:** `openspec/changes/archive/2026-11-12-optimize-dma-amux-and-storage/`
+
+**Intent:** Eliminate CPU polling by offloading AMUX sweeps to chained DMA channels, implement multi-block SPI DMA for storage, and make LCD refresh asynchronous.
+
+**In scope:**
+- Offload 74HC4067 AMUX address stepping and ADC sampling to a circular chained DMA pipeline.
+- Implement multi-block read (`CMD18`) and write (`CMD25`) with SPI DMA in `src/pirate/storage.c`.
+- Implement non-blocking DMA framebuffer updates in `src/pirate/lcd.c`.
+
+**Verification:**
+- Zero CPU busy-waits during AMUX sampling confirmed via CPU profiling.
+- TF card sequential read/write throughput benchmarks increase significantly.
+- UI prompt responsiveness verified during continuous LCD redraws.
+
+---
+
+### D5 — `add-psu-profiler-and-calibration`
+
+**Status:** completed (archived 2026-11-12)  
+**Capability:** `power-monitor`, `configuration`  
+**Depends on:** C5  
+**ARCH coverage:** ARCH-823, ARCH-824  
+**Planned folder:** `openspec/changes/add-psu-profiler-and-calibration/`
+
+**Intent:** Provide board-specific two-point analog calibration and continuous Coulomb counting power profiling.
+
+**In scope:**
+- Implement `w.cal` interactive wizard measuring zero and reference points, saving gain/offset to `/config/psu_cal.json`.
+- Implement `w.profile` integrating current into accumulated charge ($\text{mAh}$) and energy ($\text{mWh}$) with real-time CSV streaming.
+
+**Verification:**
+- Calibration accuracy verified across 1.0 V–5.0 V with calibrated external DMM.
+- Coulomb counting accuracy verified against known resistive load discharge.
+
+---
+
+### D6 — `add-cmsis-dap-and-hstx-video`
+
+**Status:** completed  
+**Capability:** `cmsis-dap`, `hstx-video`  
+**Depends on:** C5  
+**ARCH coverage:** ARCH-825, ARCH-826  
+**Planned folder:** `openspec/changes/add-cmsis-dap-and-hstx-video/`
+
+**Intent:** Expose CMSIS-DAP v2 SWD hardware debugging over USB bulk endpoints, and generate direct 640x480 DVI video output via the RP2350 HSTX serializer.
+
+**In scope:**
+- Implement WinUSB CMSIS-DAP v2 endpoints and SWD driver in `src/binmode/cmsis_dap.c`.
+- Configure RP2350 HSTX peripheral for TMDS 640x480 DVI video output in `src/pirate/hstx_dvi.c`.
+- Mirror VT100 console and logic waveforms directly to an external HDMI/DVI monitor.
+
+**Verification:**
+- OpenOCD target flashing and source-level debugging verified on RP2040/RP2350.
+- DVI video signal stability verified on HDMI/DVI monitor.
+
+---
+
 ## 7. Complete ARCH coverage map
 
 | ARCH range | Change |
@@ -1350,6 +1489,12 @@ budget and owner.
 | ARCH-500 … ARCH-513 | C4 |
 | ARCH-600 … ARCH-608 | C5 |
 | ARCH-700 … ARCH-709 | C3 |
+| ARCH-800 … ARCH-803 | D1 |
+| ARCH-810 … ARCH-812 | D2 |
+| ARCH-813 … ARCH-814 | D3 |
+| ARCH-820 … ARCH-822 | D4 |
+| ARCH-823 … ARCH-824 | D5 |
+| ARCH-825 … ARCH-826 | D6 |
 
 ---
 
@@ -1401,3 +1546,9 @@ budget and owner.
 | C3 `harden-syntax-and-command-parser` | completed | 2026-11-09 | Level 5; parser bounds checks, repeat validation, fuzzing suite |
 | C4 `add-hil-and-soak-test-suite` | completed | 2026-11-09 | Level 5; automated HIL smoke, mode cycling, binary stress, and soak suite |
 | C5 `remove-dead-code-and-update-docs` | completed | 2026-11-09 | Level 5; architecture guides, CLAUDE.md ownership rules, upstream divergence record |
+| D1 `harden-subsystems-and-clock-scaling` | completed | 2026-11-11 | Level 6; PS/2 SM index fix, IR packet bounds, RP2350 PWM clock scaling, PSU auto-recovery |
+| D2 `add-rp2350-hardware-accelerators` | completed | 2026-11-11 | Level 6; Hardware SHA-256 CLI, TRNG entropy for RF/IR jamming, 256 KB Logic Analyzer buffer |
+| D3 `add-can-bus-and-glitch-engine` | completed | 2026-11-11 | Level 6; PIO CAN / CAN-FD transceiver mode, hardware fault injection & crowbar/clock glitching |
+| D4 `optimize-dma-amux-and-storage` | completed | 2026-11-12 | Level 6; Chained DMA AMUX ADC background sweep, multi-block SPI DMA storage, async LCD DMA |
+| D5 `add-psu-profiler-and-calibration` | completed | 2026-11-12 | Level 6; Two-point persistent PSU calibration `w.cal`, Coulomb counter & power profiler `w.profile` |
+| D6 `add-cmsis-dap-and-hstx-video` | completed | 2026-11-12 | Level 6; CMSIS-DAP v2 USB SWD probe, HSTX TMDS DVI 640x480 external monitor output |

@@ -78,27 +78,30 @@ const bp_command_def_t irrx_def = {
 };
 
 //returns true (success) false (failed)
-//TODO: check for cnt overflow! this is a potential buffer overflow
 bool irtx_transmit(char* buffer){
+	if (!buffer) {
+		return false;
+	}
+
+	size_t buflen = strlen(buffer);
 	//parse the csv formatted values into 16 bit value pairs
 	uint32_t data[128];
 	uint16_t datacnt=0;
 	uint8_t mod_freq=0;
 	uint16_t cnt=0;
 
-	while(buffer[cnt]!='$'){
-		if(buffer[cnt]==0x00){
-			printf("Unable to find start of data ($) in AIR packet\r\n");
-			return false;
-		}
+	while(cnt < buflen && buffer[cnt]!='$'){
 		cnt++;
-
+	}
+	if(cnt >= buflen || buffer[cnt]!='$'){
+		printf("Unable to find start of data ($) in AIR packet\r\n");
+		return false;
 	}
 	cnt++;
 
 	//parse the ascii into an 8 bit value
-	while(buffer[cnt]!=':'){
-		if(buffer[cnt]==0x00){
+	while(cnt < buflen && buffer[cnt]!=':'){
+		if(buffer[cnt]<'0' || buffer[cnt]>'9'){
 			printf("Unable to find modulation frequency (:) in AIR packet\r\n");
 			return false;
 		}
@@ -106,15 +109,18 @@ bool irtx_transmit(char* buffer){
 		mod_freq+=buffer[cnt]-0x30;
 		cnt++;
 	} 
+	if(cnt >= buflen || buffer[cnt]!=':'){
+		printf("Unable to find modulation frequency (:) in AIR packet\r\n");
+		return false;
+	}
 	cnt++;
 
 	//parse the ascii values into 16 bit values, shove in a 32bit word
-	//would be much nicer to use pointers here, but it would be a glob of unreadable slop
 	bool mark=true;
-	while(true){
+	while(cnt < buflen){
 		uint32_t value=0;
-		while(buffer[cnt]!=','){
-			if(buffer[cnt]==0x00||buffer[cnt]<'0'||buffer[cnt]>'9'){
+		while(cnt < buflen && buffer[cnt]!=','){
+			if(buffer[cnt]<'0'||buffer[cnt]>'9'){
 				printf("Unable to find end of MARK/SPACE data (,) in AIR packet\r\n");
 				return false;
 			}
@@ -126,8 +132,16 @@ bool irtx_transmit(char* buffer){
 			}
 			cnt++;
 		}
+		if(cnt >= buflen || buffer[cnt]!=','){
+			printf("Unable to find end of MARK/SPACE data (,) in AIR packet\r\n");
+			return false;
+		}
 		if(value == 0){
 			printf("Timing value must be non-zero\r\n");
+			return false;
+		}
+		if(datacnt >= count_of(data)){
+			printf("Too many MARK/SPACE pairs in AIR packet, max 128\r\n");
 			return false;
 		}
 		if(mark){
@@ -136,22 +150,18 @@ bool irtx_transmit(char* buffer){
 		}else{
 			data[datacnt] |= (value & 0xffff);
 			datacnt++;
-			if(datacnt>=count_of(data)){
-				printf("Too many MARK/SPACE pairs in AIR packet, max 127\r\n");
-				return false;
-			}			
 			mark = true;
 		}
 		cnt++; //if 0x00 will be tossed in the next loop
-		if(buffer[cnt]==';'){
+		if(cnt < buflen && buffer[cnt]==';'){
 			//found end of AIR packet
             if(!mark){ //end with a SPACE if not included in AIR packet
+                if(datacnt >= count_of(data)){
+                    printf("Too many MARK/SPACE pairs in AIR packet, max 128\r\n");
+					return false;
+                }
                 data[datacnt] |= 0xffff;
                 datacnt++;
-                if(datacnt>=count_of(data)){
-                    printf("Too many MARK/SPACE pairs in AIR packet, max 127\r\n");
-					return false;
-                }                
             }			
 			break;
 		}

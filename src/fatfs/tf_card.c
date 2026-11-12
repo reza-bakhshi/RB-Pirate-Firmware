@@ -3,12 +3,16 @@
 #include "hardware/clocks.h"
 #include "hardware/spi.h"
 #include "hardware/gpio.h"
+#if !defined(BP_HOST_TEST)
+#include "hardware/dma.h"
+#endif
 #include "pirate.h"
 #include "system_config.h"
 
 #include "fatfs/ff.h"
 #include "fatfs/diskio.h"
 #include "fatfs/tf_card.h"
+#include "kernel/bp_resource.h"
 
 /*--------------------------------------------------------------------------
 
@@ -55,6 +59,49 @@ DSTATUS Stat = STA_NOINIT;	/* Physical drive status */
 
 static
 BYTE CardType;			/* Card type flags */
+
+/* Hardware SPI DMA channel state */
+static int32_t s_storage_dma_rx = -1;
+static int32_t s_storage_dma_tx = -1;
+static const uint8_t s_storage_dummy_tx = 0xFF;
+static uint8_t s_storage_dummy_rx = 0;
+
+int32_t tf_card_get_dma_rx_channel(void) {
+    return s_storage_dma_rx;
+}
+
+int32_t tf_card_get_dma_tx_channel(void) {
+    return s_storage_dma_tx;
+}
+
+bool tf_card_init_dma(void) {
+    if (s_storage_dma_rx >= 0 && s_storage_dma_tx >= 0) {
+        return true;
+    }
+    uint32_t ch_rx = 0;
+    uint32_t ch_tx = 0;
+    if (bp_res_claim_unused_dma_ch(BP_RES_OWNER_STORAGE, "tf_rx", &ch_rx) != BP_STATUS_OK) {
+        return false;
+    }
+    if (bp_res_claim_unused_dma_ch(BP_RES_OWNER_STORAGE, "tf_tx", &ch_tx) != BP_STATUS_OK) {
+        bp_res_release(BP_RES_CLASS_DMA_CH, ch_rx, BP_RES_OWNER_STORAGE);
+        return false;
+    }
+    s_storage_dma_rx = (int32_t)ch_rx;
+    s_storage_dma_tx = (int32_t)ch_tx;
+    return true;
+}
+
+void tf_card_deinit_dma(void) {
+    if (s_storage_dma_rx >= 0) {
+        bp_res_release(BP_RES_CLASS_DMA_CH, (uint32_t)s_storage_dma_rx, BP_RES_OWNER_STORAGE);
+        s_storage_dma_rx = -1;
+    }
+    if (s_storage_dma_tx >= 0) {
+        bp_res_release(BP_RES_CLASS_DMA_CH, (uint32_t)s_storage_dma_tx, BP_RES_OWNER_STORAGE);
+        s_storage_dma_tx = -1;
+    }
+}
 
 static inline uint32_t _millis(void)
 {
@@ -116,6 +163,7 @@ void init_spi(void)
 	gpio_put(FLASH_STORAGE_CS, 1);
 	gpio_pull_up(FLASH_STORAGE_CS);
 	gpio_pull_up(BP_SPI_CDI);
+	tf_card_init_dma();
 }
 
 /* Exchange a byte */
@@ -138,6 +186,36 @@ void rcvr_spi_multi (
 	UINT btr		/* Number of bytes to receive (even number) */
 )
 {
+#if !defined(BP_HOST_TEST)
+	if (s_storage_dma_rx >= 0 && s_storage_dma_tx >= 0 && btr >= 32) {
+		dma_channel_config c_tx = dma_channel_get_default_config((uint)s_storage_dma_tx);
+		channel_config_set_transfer_data_size(&c_tx, DMA_SIZE_8);
+		channel_config_set_dreq(&c_tx, spi_get_dreq(BP_SPI_PORT, true));
+		channel_config_set_read_increment(&c_tx, false);
+		channel_config_set_write_increment(&c_tx, false);
+		dma_channel_configure((uint)s_storage_dma_tx, &c_tx,
+		                      &spi_get_hw(BP_SPI_PORT)->dr,
+		                      &s_storage_dummy_tx,
+		                      btr,
+		                      false);
+
+		dma_channel_config c_rx = dma_channel_get_default_config((uint)s_storage_dma_rx);
+		channel_config_set_transfer_data_size(&c_rx, DMA_SIZE_8);
+		channel_config_set_dreq(&c_rx, spi_get_dreq(BP_SPI_PORT, false));
+		channel_config_set_read_increment(&c_rx, false);
+		channel_config_set_write_increment(&c_rx, true);
+		dma_channel_configure((uint)s_storage_dma_rx, &c_rx,
+		                      buff,
+		                      &spi_get_hw(BP_SPI_PORT)->dr,
+		                      btr,
+		                      false);
+
+		dma_channel_start((uint)s_storage_dma_rx);
+		dma_channel_start((uint)s_storage_dma_tx);
+		dma_channel_wait_for_finish_blocking((uint)s_storage_dma_rx);
+		return;
+	}
+#endif
 	uint8_t *b = (uint8_t *) buff;
 	spi_read_blocking(BP_SPI_PORT, 0xff, b, btr);
 }
@@ -173,11 +251,11 @@ static
 void deselect (void)
 {
 	//CS_HIGH();		/* Set CS# high */
-	asm volatile("nop \n nop \n nop"); // FIXME
+	__asm__ volatile("nop \n nop \n nop"); // FIXME
     //busy_wait_us(10);
 	gpio_put(FLASH_STORAGE_CS, 1);
 	//busy_wait_us(10);
-    asm volatile("nop \n nop \n nop"); // FIXME
+    __asm__ volatile("nop \n nop \n nop"); // FIXME
 
 	xchg_spi(0xFF);	/* Dummy clock (force DO hi-z for multiple slave SPI) */
 	//spi_busy_wait(false);
@@ -195,11 +273,11 @@ int _select (void)	/* 1:OK, 0:Timeout */
 	//CS_LOW();		/* Set CS# low */
 	//spi_busy_wait(true);
     
-	asm volatile("nop \n nop \n nop"); // FIXME
+	__asm__ volatile("nop \n nop \n nop"); // FIXME
 	//busy_wait_us(10);
     gpio_put(FLASH_STORAGE_CS, 0);
 	//busy_wait_us(10);
-    asm volatile("nop \n nop \n nop"); // FIXME
+    __asm__ volatile("nop \n nop \n nop"); // FIXME
 
 	xchg_spi(0xFF);	/* Dummy clock (force DO enabled) */
 	if (wait_ready(500)) return 1;	/* Wait for card ready */
@@ -472,6 +550,37 @@ void xmit_spi_multi (
 	UINT btx		/* Number of bytes to transmit (even number) */
 )
 {
+#if !defined(BP_HOST_TEST)
+	if (s_storage_dma_rx >= 0 && s_storage_dma_tx >= 0 && btx >= 32) {
+		dma_channel_config c_rx = dma_channel_get_default_config((uint)s_storage_dma_rx);
+		channel_config_set_transfer_data_size(&c_rx, DMA_SIZE_8);
+		channel_config_set_dreq(&c_rx, spi_get_dreq(BP_SPI_PORT, false));
+		channel_config_set_read_increment(&c_rx, false);
+		channel_config_set_write_increment(&c_rx, false);
+		dma_channel_configure((uint)s_storage_dma_rx, &c_rx,
+		                      &s_storage_dummy_rx,
+		                      &spi_get_hw(BP_SPI_PORT)->dr,
+		                      btx,
+		                      false);
+
+		dma_channel_config c_tx = dma_channel_get_default_config((uint)s_storage_dma_tx);
+		channel_config_set_transfer_data_size(&c_tx, DMA_SIZE_8);
+		channel_config_set_dreq(&c_tx, spi_get_dreq(BP_SPI_PORT, true));
+		channel_config_set_read_increment(&c_tx, true);
+		channel_config_set_write_increment(&c_tx, false);
+		dma_channel_configure((uint)s_storage_dma_tx, &c_tx,
+		                      &spi_get_hw(BP_SPI_PORT)->dr,
+		                      buff,
+		                      btx,
+		                      false);
+
+		dma_channel_start((uint)s_storage_dma_rx);
+		dma_channel_start((uint)s_storage_dma_tx);
+		dma_channel_wait_for_finish_blocking((uint)s_storage_dma_tx);
+		dma_channel_wait_for_finish_blocking((uint)s_storage_dma_rx);
+		return;
+	}
+#endif
 	const uint8_t *b = (const uint8_t *) buff;
 	spi_write_blocking(BP_SPI_PORT, b, btx);
 }

@@ -72,6 +72,48 @@ void adc_busy_wait(bool enable);
 bool adc_try_acquire(void);
 
 /**
+ * @brief Initialize autonomous DMA-driven AMUX sweeping
+ * @return true if DMA channels acquired and initialized, false otherwise
+ */
+bool amux_dma_init(void);
+
+/**
+ * @brief Release AMUX DMA resources
+ */
+void amux_dma_deinit(void);
+
+/**
+ * @brief Check if AMUX DMA pipeline is initialized and enabled
+ */
+bool amux_dma_is_enabled(void);
+
+/**
+ * @brief Check if autonomous DMA sweep is active / busy
+ * @return true if currently transferring
+ */
+bool amux_dma_is_busy(void);
+
+/**
+ * @brief Advance or trigger an autonomous AMUX DMA sweep cycle
+ * @return true if sweep started or completed successfully
+ */
+bool amux_dma_sweep_start(void);
+
+/**
+ * @brief Get coherent snapshot of all 16 AMUX channels from DMA buffer
+ * @param out_raw Buffer of at least HW_ADC_MUX_COUNT entries
+ * @param count Number of entries to copy
+ * @return true if snapshot copied coherently
+ */
+bool amux_dma_get_coherent(uint16_t* out_raw, size_t count);
+
+/**
+ * @brief Get leased DMA channel numbers for diagnostics
+ */
+int32_t amux_dma_get_data_channel(void);
+int32_t amux_dma_get_ctrl_channel(void);
+
+/**
  * @brief Get currently owning core of the ADC lock
  * @return Core ID (0 or 1), or -1 if unowned
  */

@@ -55,6 +55,7 @@
 // #define     BP_USE_USBPD
  #define     BP_USE_PS2
  #define     BP_USE_USB
+ #define     BP_USE_CAN
 
 #define BIG_BUFFER_SIZE (128 * 1024)
 

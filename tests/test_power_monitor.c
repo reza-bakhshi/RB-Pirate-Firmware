@@ -184,8 +184,8 @@ static void test_seqlock_snapshot_concurrency(void) {
     uint32_t reads_performed = 0;
     uint32_t valid_reads = 0;
 
-    while (s_writer_running || reads_performed < 30000) {
-        if ((reads_performed % 64) == 0) {
+    while (s_writer_running || (valid_reads < 500 && reads_performed < 200000)) {
+        if ((reads_performed % 16) == 0) {
             sched_yield();
         }
         if (bp_ui_snapshot_read(&snap)) {
@@ -376,6 +376,66 @@ static void test_psu_undervoltage_calculation(void) {
     printf("[PASS] PSU undervoltage limit calculations verified\n");
 }
 
+// -------------------------------------------------------------------------
+// Test 7: AMUX DMA Autonomous Sweep & Zero Spinlocks (ARCH-820)
+// -------------------------------------------------------------------------
+static void test_amux_dma_pipeline(void) {
+    printf("[TEST] AMUX DMA autonomous sweep & zero spinlock verification...\n");
+
+    /* Ensure initialized */
+    bool ok = amux_dma_init();
+    assert(ok);
+    assert(amux_dma_is_enabled());
+
+    int32_t ch_data = amux_dma_get_data_channel();
+    int32_t ch_ctrl = amux_dma_get_ctrl_channel();
+    assert(ch_data >= 0);
+    assert(ch_ctrl >= 0);
+    assert(ch_data != ch_ctrl);
+
+    /* Setup mock channel ADC readings */
+    s_mock_use_channel_adc = true;
+    for (int i = 0; i < 16; i++) {
+        s_mock_channel_adc[i] = (uint16_t)(1000 + i * 50);
+    }
+
+    /* Start DMA sweep */
+    assert(!amux_dma_is_busy());
+    ok = amux_dma_sweep_start();
+    assert(ok);
+    assert(!amux_dma_is_busy());
+
+    /* Verify coherent snapshot extraction */
+    uint16_t raw_coherent[HW_ADC_COUNT] = {0};
+    ok = amux_dma_get_coherent(raw_coherent, HW_ADC_COUNT);
+    assert(ok);
+    for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
+        assert(raw_coherent[i] == (uint16_t)(1000 + i * 50));
+    }
+
+    /* Verify amux_sweep() consumes DMA ping-pong buffer with ZERO spinlock ownership */
+    assert(adc_get_owner() == -1);
+    amux_sweep();
+    assert(adc_get_owner() == -1); // Must NOT hold or leave spinlock acquired!
+
+    for (int i = 0; i < HW_ADC_MUX_COUNT; i++) {
+        assert(hw_adc_raw[i] == (uint16_t)(1000 + i * 50));
+    }
+
+    /* Verify deinit releases resources cleanly */
+    amux_dma_deinit();
+    assert(!amux_dma_is_enabled());
+    assert(amux_dma_get_data_channel() == -1);
+    assert(amux_dma_get_ctrl_channel() == -1);
+
+    /* Re-init for subsequent test passes */
+    ok = amux_dma_init();
+    assert(ok);
+
+    s_mock_use_channel_adc = false;
+    printf("[PASS] AMUX DMA autonomous sweep & zero spinlocks verified\n");
+}
+
 int main(void) {
     printf("=== Running Power Monitor & ADC Subsystem Tests ===\n");
     amux_init();
@@ -385,6 +445,7 @@ int main(void) {
     test_psu_overcurrent_job_abort();
     test_psu_undervoltage_debounce_and_trip();
     test_psu_undervoltage_calculation();
+    test_amux_dma_pipeline();
     printf("=== ALL POWER MONITOR & ADC TESTS PASSED ===\n");
     return 0;
 }

@@ -1,3 +1,9 @@
+#pragma once
+
+#include <stdint.h>
+#include <stdbool.h>
+#include <string.h>
+
 /**
  * @file psu.h
  * @brief Power supply unit (PSU) control and monitoring interface.
@@ -5,6 +11,94 @@
  *          with overcurrent protection, undervoltage monitoring, and backflow detection.
  *          Supports both PWM and I2C DAC control depending on hardware revision.
  */
+
+/**
+ * @brief PSU calibration parameters structure (32 bytes static RAM).
+ * @details Stores integer gain (parts-per-thousand) and offset coefficients
+ *          for ADC measurements (VOUT, ISENSE) and DAC regulation outputs (VREG, IDAC).
+ */
+typedef struct psu_cal_t {
+    int16_t vout_offset_mv;    ///< VOUT ADC offset in mV (nominal 0)
+    uint16_t vout_gain_ppt;    ///< VOUT ADC gain parts-per-thousand (nominal 1000)
+    int16_t isense_offset_ua;  ///< Current sense ADC offset in uA (nominal 0)
+    uint16_t isense_gain_ppt;  ///< Current sense ADC gain parts-per-thousand (nominal 1000)
+    int16_t vdac_offset_mv;    ///< VREG DAC offset in mV (nominal 0)
+    uint16_t vdac_gain_ppt;    ///< VREG DAC gain parts-per-thousand (nominal 1000)
+    int16_t idac_offset_ma;    ///< Current DAC offset in mA (nominal 0)
+    uint16_t idac_gain_ppt;    ///< Current DAC gain parts-per-thousand (nominal 1000)
+    uint32_t magic;            ///< Magic identifier 0x50535543 ("PSUC")
+    uint32_t checksum;         ///< Integrity checksum
+    uint32_t flags;            ///< Calibration flags (1 = calibrated, 0 = default)
+    uint32_t reserved;         ///< Reserved padding (ensures 32-byte struct)
+} psu_cal_t;
+
+#define PSU_CAL_MAGIC 0x50535543
+#define PSU_CAL_FILE "/config/psu_cal.json"
+#define PSU_CAL_ALT_FILE "config/psu_cal.json"
+
+/**
+ * @brief Compute calibration checksum.
+ */
+static inline uint32_t psu_cal_calc_checksum(const psu_cal_t *cal) {
+    if (!cal) return 0;
+    uint32_t c = 0x55AA55AA;
+    const uint16_t *p = (const uint16_t*)cal;
+    for (size_t i = 0; i < 10; i++) {
+        c ^= ((uint32_t)p[i] << (i % 16));
+        c = (c << 3) | (c >> 29);
+    }
+    return c;
+}
+
+/**
+ * @brief Reset calibration struct to nominal factory defaults.
+ */
+static inline void psu_cal_reset_defaults(psu_cal_t *cal) {
+    if (!cal) return;
+    memset(cal, 0, sizeof(psu_cal_t));
+    cal->vout_gain_ppt = 1000;
+    cal->vout_offset_mv = 0;
+    cal->isense_gain_ppt = 1000;
+    cal->isense_offset_ua = 0;
+    cal->vdac_gain_ppt = 1000;
+    cal->vdac_offset_mv = 0;
+    cal->idac_gain_ppt = 1000;
+    cal->idac_offset_ma = 0;
+    cal->flags = 0;
+    cal->magic = PSU_CAL_MAGIC;
+    cal->checksum = psu_cal_calc_checksum(cal);
+}
+
+/**
+ * @brief Validate calibration coefficients.
+ * @return true if valid, false if corrupt or out of bounds.
+ */
+bool psu_cal_is_valid(const psu_cal_t *cal);
+
+/**
+ * @brief Get copy of active calibration profile.
+ */
+void psu_cal_get(psu_cal_t *out_cal);
+
+/**
+ * @brief Apply new calibration profile to active runtime.
+ * @return true if valid and applied, false if rejected.
+ */
+bool psu_cal_set(const psu_cal_t *new_cal);
+
+/**
+ * @brief Load calibration profile from TF card (/config/psu_cal.json).
+ * Falls back safely to factory defaults if missing or corrupted.
+ * @return true if valid file loaded, false if defaulted.
+ */
+bool psu_cal_load(void);
+
+/**
+ * @brief Save calibration profile to TF card (/config/psu_cal.json).
+ * @param cal Pointer to calibration struct to serialize.
+ * @return true on success, false on write error.
+ */
+bool psu_cal_save(const psu_cal_t *cal);
 
 /**
  * @brief PSU operation result codes.
@@ -66,6 +160,9 @@ extern struct psu_status_t psu_status;
  * @note Must be called before any other PSU operations.
  */
 void psu_init(void);
+
+void psu_set_v(float volts, struct psu_status_t* psu);
+void psu_set_i(float current, struct psu_status_t* psu);
 
 void psu_dac_set(uint16_t v_dac, uint16_t i_dac);
 

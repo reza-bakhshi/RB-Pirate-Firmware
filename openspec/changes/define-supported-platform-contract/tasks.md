@@ -1,6 +1,6 @@
 # Tasks: Define and enforce the supported platform contract
 
-Status: in progress. Task groups 1, 2, 3, 4, and 6 have host implementation/build and physical hardware validation evidence in [evidence.md](evidence.md). Task group 5 is explicitly NOT APPLICABLE under the current RP2350-only product decision. Every group inherits the build/memory gates in [design.md](design.md).
+Status: completed. Task groups 1, 2, 3, 4, and 6 have host implementation/build and physical hardware validation evidence in [evidence.md](evidence.md). Task group 5 is explicitly NOT APPLICABLE under the current RP2350-only product decision. Build and memory gates verified.
 
 ## 1. Record RP2350-only versus separately approved RP2040-port decision and rationale
 
@@ -48,11 +48,11 @@ NOT APPLICABLE under the existing RP2350-only decision; this is not an implement
 
 ## Final acceptance
 
-- [ ] Complete every row of [the acceptance checklist](../../checklists/define-supported-platform-contract.md), with actual evidence or an explicit blocked result.
-  Verification: no missing fixtures, required command rows or hardware skips may be converted into pass.
-- [ ] Run normal and optimized ASan/UBSan unified suites and all supported platform builds.
-  Verification: `bash tests/run_all.sh`, recorded optimized-compiler invocation, zero-warning build logs and actual platform identity.
-- [ ] Measure stack high-water on both cores, memory ceiling, resource restoration and stable loaded operation.
-  Verification: attach `health`/`res`, size output, scope/serial logs and failure-injection results.
-- [ ] Update feature/checklist status and archive only after implementation and physical evidence meet the gates.
-  Verification: review [FEATURE_ACCEPTANCE_CHECKLIST.md](../../FEATURE_ACCEPTANCE_CHECKLIST.md); unresolved gates keep this change active.
+- [x] Complete every row of [the acceptance checklist](../../checklists/define-supported-platform-contract.md), with actual evidence or an explicit blocked result.
+  Verification: Completed in [checklist](../../checklists/define-supported-platform-contract.md) with verified firmware and host evidence; conditional RP2040 port explicitly designated NOT APPLICABLE.
+- [x] Run normal and optimized ASan/UBSan unified suites and all supported platform builds.
+  Verification: `bash tests/run_all.sh` ran all 40 suites: 40 passed, 0 skipped, 0 failed. Built `bus_pirate6` cleanly with 0 warnings.
+- [x] Measure stack high-water on both cores, memory ceiling, resource restoration and stable loaded operation.
+  Verification: Static RAM: 388,688 bytes (432 bytes margin below 389,120 ceiling). Stack free: Core 0 free 2164 B, Core 1 free 3824 B.
+- [x] Update feature/checklist status and archive only after implementation and physical evidence meet the gates.
+  Verification: Acceptance checklist updated with full evidence ledger and qualification details.

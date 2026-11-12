@@ -219,7 +219,7 @@ void glitch_settings(void) {
  *****************************************************/
 uint32_t uart_glitch_setup(void) {
 
-    const char config_file[] = "uglitch.rb";
+    const char config_file[] = "rbuglitch.rb";
     const mode_config_t config_t[] = {
         // clang-format off
         { "$.trigger", &uart_glitch_config.glitch_trg, MODE_CONFIG_FORMAT_DECIMAL },

@@ -148,6 +148,10 @@ bool storage_ls(const char* location, const char* ext, const uint8_t flags) {
     FILINFO fno;
     int nfile, ndir;
 
+    if (!location || location[0] == '\0' || strcmp(location, "/") == 0) {
+        bp_storage_migrate_legacy_files();
+    }
+
     fr = f_opendir(&dir, location); /* Open the directory */
     if (fr != FR_OK) {
         return false;

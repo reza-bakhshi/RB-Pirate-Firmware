@@ -96,20 +96,20 @@ typedef struct _mode_config_t {
 } mode_config_t;
 
 /**
- * @brief Load global system configuration from config.bp file.
+ * @brief Load global system configuration from rbconfig.rb file.
  * @return FatFS result code (FR_OK on success)
  */
 uint32_t storage_load_config(void);
 
 /**
- * @brief Save global system configuration to config.bp file.
+ * @brief Save global system configuration to rbconfig.rb file.
  * @return FatFS result code (FR_OK on success)
  */
 uint32_t storage_save_config(void);
 
 /**
  * @brief Save mode-specific configuration to file.
- * @param filename  Target filename (e.g., "uart.bp")
+ * @param filename  Target filename (e.g., "rbuart.rb")
  * @param config_t  Array of mode_config_t descriptors
  * @param count     Number of config entries
  * @return FatFS result code (FR_OK on success)
@@ -118,7 +118,7 @@ uint32_t storage_save_mode(const char* filename, const mode_config_t* config_t, 
 
 /**
  * @brief Load mode-specific configuration from file.
- * @param filename  Source filename (e.g., "uart.bp")
+ * @param filename  Source filename (e.g., "rbuart.rb")
  * @param config_t  Array of mode_config_t descriptors to populate
  * @param count     Number of config entries
  * @return FatFS result code (FR_OK on success)

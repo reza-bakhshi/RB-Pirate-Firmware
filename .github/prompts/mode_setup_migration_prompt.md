@@ -199,7 +199,7 @@ For each mode migration, you will touch exactly 3 files:
   - Speed: integer range 1–1000 kHz, default 400 → flag `-s`/`--speed`
   - Clock stretch: on/off list → flag `-c`/`--clockstretch` (choice: off=0, on=1; note old code does `(temp-1)` to convert 1-based list to bool)
   - Data bits: commented out in setup, skip this parameter
-- **Config file**: `"bpi2c.bp"`, saves baudrate and clock_stretch
+- **Config file**: `"rbi2c.rb"`, saves baudrate and clock_stretch
 - **Saved config**: Has storage_load_mode pattern with "use previous settings" prompt (keep)
 - **Note**: old setup has `-y` flag via `cmdln_args_find_flag('y')` — this can be dropped (the new system handles CLI mode natively)
 - **Settings display**: `hwi2c_settings()` uses `ui_prompt_mode_settings_int/string` — does NOT reference prompt_item arrays directly, it uses `GET_T(T_ON)/GET_T(T_OFF)` for clock stretch
@@ -214,7 +214,7 @@ For each mode migration, you will touch exactly 3 files:
   - Clock polarity: 2-item list → flag `-o`/`--polarity` (choice: idle low=0, idle high=1; old code does `temp-1`)
   - Clock phase: 2-item list → flag `-a`/`--phase` (choice: leading=0, trailing=1; old code does `temp-1`)
   - CS idle: 2-item list → flag `-c`/`--csidle` (choice: low=0, high=1; old code does `temp-1`)
-- **Config file**: `"bpspi.bp"`
+- **Config file**: `"rbspi.rb"`
 - **Important**: Speed is entered in kHz but stored in Hz. In the constraint, set min/max in kHz (1–625000), then multiply by 1000 after parsing. For the CLI path, `bp_cmd_flag` will return the kHz value — multiply afterwards.
 - **Settings display**: `spi_settings()` references `spi_polarity_menu[]`, `spi_phase_menu[]`, `spi_idle_menu[]` prompt_item arrays — **KEEP these arrays** for settings display
 - **Export as**: `spi_setup_def` in `hwspi.h`
@@ -227,7 +227,7 @@ For each mode migration, you will touch exactly 3 files:
   - Parity: 3-item list (none/even/odd) → flag `-p`/`--parity` (old code does `temp--` to get 0-based)
   - Stop bits: 2-item list → flag `-s`/`--stopbits`
   - Blocking: 2-item list — currently commented out in setup, skip
-- **Config file**: `"bphduart.bp"`
+- **Config file**: `"rbhduart.rb"`
 - **Settings display**: `hwhduart_settings()` references `uart_parity_menu[]`, `uart_stop_bits_menu[]` — **KEEP these** (check actual settings function)
 - **Export as**: `hduart_setup_def` in `hwhduart.h`
 
@@ -236,7 +236,7 @@ For each mode migration, you will touch exactly 3 files:
 - **Parameters to convert**:
   - Speed: integer range 1–1000 kHz, default 400 → flag `-s`/`--speed`
   - Data bits: commented out in setup, skip
-- **Config file**: `"bp2wire.bp"`
+- **Config file**: `"rb2wire.rb"`
 - **Settings display**: `hw2wire_settings()` — just shows speed, no prompt_item refs
 - **Note**: Very simple — only one parameter
 - **Export as**: `hw2wire_setup_def` in `hw2wire.h`
@@ -246,7 +246,7 @@ For each mode migration, you will touch exactly 3 files:
 - **Parameters to convert** (only the ones actually prompted — others are commented out):
   - Speed: integer range 1–3900 kHz, default 100 → flag `-s`/`--speed` (note: stored as Hz, `mode_config.baudrate = temp * 1000`)
   - CS idle: 2-item list → flag `-c`/`--csidle` (old code does `temp-1`)
-- **Config file**: `"bp3wire.bp"` (saves baudrate and cs_idle)
+- **Config file**: `"rb3wire.rb"` (saves baudrate and cs_idle)
 - **Settings display**: `hw3wire_settings()` references `hw3wire_idle_menu[]` — **KEEP this array**
 - **Export as**: `hw3wire_setup_def` in `hw3wire.h`
 
@@ -255,7 +255,7 @@ For each mode migration, you will touch exactly 3 files:
 - **Parameters to convert**:
   - Device type: 3-item list (WS2812/APA102/WS2812 Onboard) → flag `-d`/`--device` (old code does `temp--` to convert 1-based to 0-based)
   - Num LEDs: commented out in current setup, skip
-- **Config file**: `"bpled.bp"`
+- **Config file**: `"rbled.rb"`
 - **Settings display**: `hwled_settings()` references `leds_type_menu[]` — **KEEP this array**
 - **Export as**: `led_setup_def` in `hwled.h`
 
@@ -265,7 +265,7 @@ For each mode migration, you will touch exactly 3 files:
   - Protocol: 3-item list (RAW/NEC/RC5) → flag `-p`/`--protocol` (old code does `temp--`)
   - TX frequency: integer range 20–60 kHz, default 38 → flag `-f`/`--freq` (note: stored as Hz, `mode_config.tx_freq *= 1000`; but only prompted for RAW protocol — other protocols auto-set freq)
   - RX sensor: 3-item list (barrier/38kHz demod/56kHz demod) → flag `-r`/`--rxsensor` (old code does `temp--`)
-- **Config file**: `"bpirrxtx.bp"`
+- **Config file**: `"rbirrxtx.rb"`
 - **Special logic**: TX frequency is conditionally prompted — only for RAW protocol. In CLI mode, always accept the flag; in interactive mode, only prompt if protocol is RAW.
 - **Settings display**: `infrared_settings()` references `infrared_protocol_menu[]` and `infrared_rx_sensor_menu[]` — **KEEP these arrays**
 - **Export as**: `infrared_setup_def` in `infrared.h`
@@ -275,7 +275,7 @@ For each mode migration, you will touch exactly 3 files:
 - **Parameters to convert**:
   - Sample rate: integer range 4000–96000 Hz, default 44100 → flag `-f`/`--freq`
   - Data bits: integer range 16–16 (fixed), default 16 → flag `-d`/`--databits` (note: currently min==max==16, keep the constraint anyway for future)
-- **Config file**: `"bpi2s.bp"`
+- **Config file**: `"rbi2s.rb"`
 - **Special logic**: Has a `do/while` loop that validates frequency via `update_pio_frequency()`. In CLI mode, just parse and check once. In interactive mode, loop until valid.
 - **Settings display**: `i2s_settings()` — no prompt_item refs, uses `ui_prompt_mode_settings_int` directly
 - **Export as**: `i2s_setup_def` in `i2s.h` (note: header file is `src/mode/i2s.h`)

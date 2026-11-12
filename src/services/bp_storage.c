@@ -131,6 +131,130 @@ bp_status_t bp_storage_init(void) {
     return BP_STATUS_OK;
 }
 
+static bool bp_storage_should_migrate_name(const char *name, char *new_name, size_t max_len) {
+    if (!name || !new_name || max_len < 16) {
+        return false;
+    }
+    size_t len = strlen(name);
+    if (len < 5 || len >= max_len) {
+        return false;
+    }
+
+    /* Convert to lowercase for comparison */
+    char lower[64];
+    if (len >= sizeof(lower)) return false;
+    for (size_t i = 0; i <= len; i++) {
+        char c = name[i];
+        if (c >= 'A' && c <= 'Z') c += ('a' - 'A');
+        lower[i] = c;
+    }
+
+    /* Special case: uglitch */
+    if (strcmp(lower, "uglitch.bp") == 0 || strcmp(lower, "uglitch.rb") == 0 || strcmp(lower, "rbuglitch.bp") == 0) {
+        snprintf(new_name, max_len, "rbuglitch.rb");
+        return (strcmp(name, new_name) != 0);
+    }
+
+    const char *dot = strrchr(lower, '.');
+    if (!dot) {
+        return false;
+    }
+
+    bool is_dot_bp = (strcmp(dot, ".bp") == 0);
+    bool is_dot_rb = (strcmp(dot, ".rb") == 0);
+    bool is_dot_bak = (strcmp(dot, ".bak") == 0);
+
+    /* 1. Starts with bp */
+    if (lower[0] == 'b' && lower[1] == 'p') {
+        const char *base = lower + 2; /* after "bp" */
+        size_t base_len = (size_t)(dot - base);
+        if (base_len == 0 || base_len > 24) return false;
+
+        if (is_dot_bp || is_dot_rb) {
+            snprintf(new_name, max_len, "rb%.*s.rb", (int)base_len, base);
+            return (strcmp(name, new_name) != 0);
+        } else if (is_dot_bak) {
+            snprintf(new_name, max_len, "rb%.*s.bak", (int)base_len, base);
+            return (strcmp(name, new_name) != 0);
+        }
+    }
+
+    /* 2. Starts with rb but ends with .bp */
+    if (lower[0] == 'r' && lower[1] == 'b' && is_dot_bp) {
+        size_t base_len = (size_t)(dot - lower);
+        if (base_len > 26) return false;
+        snprintf(new_name, max_len, "%.*s.rb", (int)base_len, lower);
+        return (strcmp(name, new_name) != 0);
+    }
+
+    return false;
+}
+
+static void bp_storage_migrate_dir(const char *dir_path) {
+    const char *path = (dir_path && dir_path[0]) ? dir_path : "";
+
+    for (int cycle = 0; cycle < 32; cycle++) {
+        DIR dir;
+        FILINFO fno;
+        char old_leaf[32];
+        char new_leaf[32];
+        bool found = false;
+
+        FRESULT fr = f_opendir(&dir, path);
+        if (fr != FR_OK) {
+            break;
+        }
+
+        while (f_readdir(&dir, &fno) == FR_OK && fno.fname[0] != '\0') {
+            if (fno.fattrib & AM_DIR) {
+                continue;
+            }
+            if (bp_storage_should_migrate_name(fno.fname, new_leaf, sizeof(new_leaf))) {
+                strncpy(old_leaf, fno.fname, sizeof(old_leaf) - 1);
+                old_leaf[sizeof(old_leaf) - 1] = '\0';
+                found = true;
+                break;
+            }
+        }
+        f_closedir(&dir);
+
+        if (!found) {
+            break;
+        }
+
+        char old_full[64];
+        char new_full[64];
+        if (path[0]) {
+            snprintf(old_full, sizeof(old_full), "%s/%s", path, old_leaf);
+            snprintf(new_full, sizeof(new_full), "%s/%s", path, new_leaf);
+        } else {
+            snprintf(old_full, sizeof(old_full), "%s", old_leaf);
+            snprintf(new_full, sizeof(new_full), "%s", new_leaf);
+        }
+
+        FILINFO dest_info;
+        if (f_stat(new_full, &dest_info) == FR_OK) {
+            f_unlink(old_full);
+        } else {
+            fr = f_rename(old_full, new_full);
+            if (fr == FR_EXIST) {
+                f_unlink(old_full);
+            }
+        }
+    }
+}
+
+bp_status_t bp_storage_migrate_legacy_files(void) {
+    if (s_stats.state != BP_STORAGE_STATE_MOUNTED) {
+        return BP_STATUS_DISCONNECTED;
+    }
+
+    bp_storage_migrate_dir("");
+    bp_storage_migrate_dir("config");
+
+    return BP_STATUS_OK;
+}
+
 bp_status_t bp_storage_mount(void) {
     s_stats.mount_attempts++;
     s_stats.state = BP_STORAGE_STATE_MOUNTING;
@@ -155,6 +279,9 @@ bp_status_t bp_storage_mount(void) {
     system_config.storage_mount_error = 0;
     system_config.storage_fat_type = s_fs.fs_type;
     system_config.storage_size = s_stats.capacity_gb;
+
+    /* Automatically migrate legacy bp*.bp / bp*.rb / *.bp files to rb*.rb */
+    bp_storage_migrate_legacy_files();
 
     return BP_STATUS_OK;
 }
@@ -646,6 +773,8 @@ bp_status_t bp_storage_load_config(void) {
     if (s_stats.state != BP_STORAGE_STATE_MOUNTED) {
         return BP_STATUS_DISCONNECTED;
     }
+
+    bp_storage_migrate_legacy_files();
 
     bp_status_t res = bp_storage_load_mode(CONFIG_FILENAME, system_config_json, system_config_json_count);
     if (res != BP_STATUS_OK) {

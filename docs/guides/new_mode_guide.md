@@ -206,7 +206,7 @@ Returns `1` on success (proceed to `setup_exc`), `0` on cancel or error.
 Map each config field to a JSON tag for flash persistence:
 
 ```c
-const char config_file[] = "bpdummy1.bp";
+const char config_file[] = "rbdummy1.rb";
 const mode_config_t config_t[] = {
     // clang-format off
     { "$.speed",  &mode_config.speed,  MODE_CONFIG_FORMAT_DECIMAL },

@@ -22,7 +22,7 @@ extern "C" {
 #define BP_CONFIG_CURRENT_VERSION 1
 
 /**
- * @brief Persisted system settings (saved to/from bpconfig.bp on storage).
+ * @brief Persisted system settings (saved to/from rbconfig.rb on storage).
  */
 typedef struct bp_config {
     uint32_t version;                   /* Configuration schema version */

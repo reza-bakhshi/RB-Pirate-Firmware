@@ -46,7 +46,7 @@ typedef struct _mode_config_t {
 A mode registers its persistent settings by defining a filename and a `mode_config_t` array. From `dummy1.c`:
 
 ```c
-const char config_file[] = "bpdummy1.bp";
+const char config_file[] = "rbdummy1.rb";
 const mode_config_t config_t[] = {
     { "$.speed",  &mode_config.speed,  MODE_CONFIG_FORMAT_DECIMAL },
     { "$.output", &mode_config.output, MODE_CONFIG_FORMAT_DECIMAL },

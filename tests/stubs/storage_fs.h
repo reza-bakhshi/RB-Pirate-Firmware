@@ -59,6 +59,7 @@ typedef struct {
 
 typedef struct {
     uint32_t dummy;
+    char path[32];
 } DIR;
 
 #define FA_READ 0x01
@@ -66,6 +67,12 @@ typedef struct {
 #define FA_OPEN_EXISTING 0x00
 #define FA_CREATE_ALWAYS 0x08
 #define FA_OPEN_APPEND 0x30
+
+#define AM_RDO 0x01
+#define AM_HID 0x02
+#define AM_SYS 0x04
+#define AM_DIR 0x10
+#define AM_ARC 0x20
 
 #define BP_FLASH_DISK_BLOCK_SIZE 512
 #ifndef FLASH_STORAGE_CS
@@ -155,8 +162,44 @@ static inline FRESULT f_rename(const char *old, const char *newn) {
     if (mock_rename_error) return FR_DISK_ERR;
     int i = mock_find(old); if (i < 0) return FR_NO_FILE;
     if (mock_find(newn) >= 0) return FR_EXIST;
-    snprintf(mock_files[i].name, 64, "%s", newn); return FR_OK;
+    snprintf(mock_files[i].name, sizeof(mock_files[i].name), "%s", newn); return FR_OK;
 }
+static inline FRESULT f_opendir(DIR *dp, const char *path) {
+    dp->dummy = 0;
+    if (path) {
+        snprintf(dp->path, sizeof(dp->path), "%s", path);
+    } else {
+        dp->path[0] = '\0';
+    }
+    return FR_OK;
+}
+static inline FRESULT f_readdir(DIR *dp, FILINFO *fno) {
+    while (dp->dummy < 16) {
+        int idx = dp->dummy++;
+        if (mock_files[idx].name[0]) {
+            const char *name = mock_files[idx].name;
+            if (dp->path[0] != '\0') {
+                size_t plen = strlen(dp->path);
+                if (strncmp(name, dp->path, plen) == 0 && name[plen] == '/') {
+                    snprintf(fno->fname, sizeof(fno->fname), "%s", name + plen + 1);
+                    fno->fattrib = 0;
+                    fno->fsize = mock_files[idx].size;
+                    return FR_OK;
+                }
+            } else {
+                if (strchr(name, '/') == NULL) {
+                    snprintf(fno->fname, sizeof(fno->fname), "%s", name);
+                    fno->fattrib = 0;
+                    fno->fsize = mock_files[idx].size;
+                    return FR_OK;
+                }
+            }
+        }
+    }
+    fno->fname[0] = 0;
+    return FR_OK;
+}
+static inline FRESULT f_closedir(DIR *dp) { (void)dp; return FR_OK; }
 static inline int disk_ioctl(uint8_t pdrv, uint8_t cmd, void *buff) { (void)pdrv; (void)cmd; (void)buff; return 0; }
 #define CTRL_SYNC 0
 

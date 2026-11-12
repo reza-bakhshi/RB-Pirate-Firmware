@@ -227,6 +227,11 @@ bp_status_t bp_storage_save_mode(const char *filename, const mode_config_t *conf
  */
 bp_status_t bp_storage_load_mode(const char *filename, const mode_config_t *config_t, uint8_t count);
 
+/**
+ * @brief Scan storage root and migrate legacy bp*.bp / bp*.rb / *.bp files to rb*.rb.
+ */
+bp_status_t bp_storage_migrate_legacy_files(void);
+
 /* --- Block Device Lock --- */
 
 /**

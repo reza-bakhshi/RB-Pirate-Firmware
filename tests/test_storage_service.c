@@ -352,8 +352,58 @@ static void test_delayed_replies_and_replacement_media(void) {
     printf("[PASS] Delayed replies and replacement media assertions verified\n");
 }
 
+static void test_storage_legacy_migration(void) {
+    printf("[TEST] Legacy file migration (bp*.bp / bp*.rb -> rb*.rb)...\n");
+    bp_storage_init();
+    memset(mock_files, 0, sizeof(mock_files));
+
+    /* Create legacy mock files */
+    snprintf(mock_files[0].name, 64, "bprfid.bp");
+    mock_files[0].size = 10;
+    snprintf(mock_files[1].name, 64, "bpuart.bp");
+    mock_files[1].size = 10;
+    snprintf(mock_files[2].name, 64, "uglitch.bp");
+    mock_files[2].size = 10;
+    snprintf(mock_files[3].name, 64, "rbconfig.bp");
+    mock_files[3].size = 10;
+    snprintf(mock_files[4].name, 64, "rbuart.rb");
+    mock_files[4].size = 10;
+
+    /* Mount triggers automatic migration */
+    assert(bp_storage_mount() == BP_STATUS_OK);
+
+    /* Verify bprfid.bp was renamed to rbrfid.rb */
+    assert(mock_find("bprfid.bp") == -1);
+    assert(mock_find("rbrfid.rb") >= 0);
+
+    /* Verify bpuart.bp was renamed/unlinked because rbuart.rb already exists */
+    assert(mock_find("bpuart.bp") == -1);
+    assert(mock_find("rbuart.rb") >= 0);
+
+    /* Verify uglitch.bp was renamed to rbuglitch.rb */
+    assert(mock_find("uglitch.bp") == -1);
+    assert(mock_find("rbuglitch.rb") >= 0);
+
+    /* Verify rbconfig.bp was renamed to rbconfig.rb */
+    assert(mock_find("rbconfig.bp") == -1);
+    assert(mock_find("rbconfig.rb") >= 0);
+
+    /* Verify rbuart.rb is still present */
+    assert(mock_find("rbuart.rb") >= 0);
+
+    /* Test config subdir migration */
+    snprintf(mock_files[5].name, 64, "config/bppsu.bp");
+    mock_files[5].size = 10;
+    assert(bp_storage_migrate_legacy_files() == BP_STATUS_OK);
+    assert(mock_find("config/bppsu.bp") == -1);
+    assert(mock_find("config/rbpsu.rb") >= 0);
+
+    printf("[PASS] Legacy file migration verified\n");
+}
+
 int main(void) {
     printf("=== Running Storage Service Unit Tests ===\n");
+    test_storage_legacy_migration();
     test_storage_integrity();
     test_init_and_mount();
     test_guarded_unmount();

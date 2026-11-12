@@ -616,8 +616,8 @@
         "EN_US": "Target glitching stopped for unknown reason"
     },
     "T_UART_GLITCH_SETUP_ERR": {
-        "Localized": "Błąd konfiguracji glitch'era - sprawdź plik uglitch.bp",
-        "EN_US": "Error setting up glitcher - check uglitch.bp file"
+        "Localized": "Błąd konfiguracji glitch'era - sprawdź plik rbuglitch.rb",
+        "EN_US": "Error setting up glitcher - check rbuglitch.rb file"
     },
     "T_UART_ACTUAL_SPEED_BAUD": {
         "Localized": "Faktyczna prędkość transmisji",

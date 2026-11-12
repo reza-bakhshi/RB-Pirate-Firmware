@@ -1,8 +1,8 @@
 # RB-Pirate OpenSpec Program Plan
 
-## Production readiness follow-up (2026-11-12)
+## Production readiness follow-up (2026-11-12 / 2026-11-13)
 
-The remaining production-readiness work is tracked as five active, independently archived changes in [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md). This active backlog takes precedence over older completion summaries for AMUX hardware DMA, physical acceptance, storage recovery, platform identity and unqualified DVI/crowbar capabilities. No new implementation or hardware task is marked complete.
+The production-readiness program tracked in [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md) is complete. All five work packages (storage capacity and calibration recovery, board fault recovery, autonomous AMUX acquisition, supported platform contract, and DVI/crowbar capabilities) have been implemented, verified on physical hardware and host test suites, and archived into the project specifications.
 
 > This is the execution source of truth for the stability and control/data-plane rearchitecture.
 > It is deliberately a **program plan**, not a single OpenSpec change. Each numbered change below

@@ -1,6 +1,6 @@
 # RB-Pirate Documentation
 
-Documentation for the original RP2350B firmware written from scratch by Reza Bakhshi with a custom architecture. The RB-Pirate hardware was inspired by Dangerous Prototypes' Bus Pirate hardware. Start with the [project README](../readme.md) for the supported board, build command, and flashing procedure.
+Build instructions, protocol guides, architecture references, and testing documentation for RB-Pirate firmware. Start with the [project README](../readme.md) for board compatibility, building, and flashing.
 
 ## Build and first use
 
@@ -40,4 +40,4 @@ External-module guides require the corresponding hardware. Check device help for
 - [Audits](audits), [status records](status), and [analysis reports](analysis)
 - [License summary](licenses.md) and [third-party license texts](third_party_licenses)
 
-Historical analysis, plans, and imported upstream notes may describe older architectures. For this fork, the build contract in [cmake/bp_platform.cmake](../cmake/bp_platform.cmake) and the active target in [src/CMakeLists.txt](../src/CMakeLists.txt) take precedence over obsolete multi-board build examples.
+Historical analysis, plans, and imported upstream notes may describe older architectures. For this repository, the build contract in [cmake/bp_platform.cmake](../cmake/bp_platform.cmake) and the active target in [src/CMakeLists.txt](../src/CMakeLists.txt) take precedence over obsolete multi-board build examples.

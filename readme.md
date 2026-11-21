@@ -1,14 +1,6 @@
 # RB-Pirate Firmware
 
-Original **RP2350B firmware for the [RB-Pirate hardware](https://github.com/reza-bakhshi/RB-Pirate)**, written from scratch by **Reza Bakhshi** with a new, custom architecture. It provides an interactive serial terminal for digital protocols, hardware measurements, logic capture, storage, and host automation.
-
-## Project origin and authorship
-
-The RB-Pirate **hardware** was inspired by the Bus Pirate hardware from
-[Dangerous Prototypes](https://dangerousprototypes.com/). The **firmware**
-was developed independently from scratch by Reza Bakhshi, including its
-custom dual-core architecture. Bundled third-party libraries and components
-retain their individual authorship, licenses, and notices.
+Firmware for the **[RB-Pirate hardware](https://github.com/reza-bakhshi/RB-Pirate)**, providing an interactive terminal for I²C, SPI, UART, and other digital protocols. It supports logic capture, programmable target power, voltage and current monitoring, microSD storage, and host automation.
 
 [Build and flash](#build-and-flash) · [Documentation](docs/README.md) · [Hardware](https://github.com/reza-bakhshi/RB-Pirate) · [Host toolkit](https://github.com/reza-bakhshi/RB-Pirate-Skill)
 

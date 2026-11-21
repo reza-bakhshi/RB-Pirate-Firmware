@@ -1,12 +1,20 @@
 # RB-Pirate Firmware
 
-Custom **RP2350B firmware for the [RB-Pirate hardware](https://github.com/reza-bakhshi/RB-Pirate)**, derived from [Bus Pirate 5/6 firmware](https://github.com/DangerousPrototypes/BusPirate5-firmware) by Dangerous Prototypes. It provides an interactive serial terminal for digital protocols, hardware measurements, logic capture, storage, and host automation.
+Original **RP2350B firmware for the [RB-Pirate hardware](https://github.com/reza-bakhshi/RB-Pirate)**, written from scratch by **Reza Bakhshi** with a new, custom architecture. It provides an interactive serial terminal for digital protocols, hardware measurements, logic capture, storage, and host automation.
+
+## Project origin and authorship
+
+The RB-Pirate **hardware** was inspired by the Bus Pirate hardware from
+[Dangerous Prototypes](https://dangerousprototypes.com/). The **firmware**
+was developed independently from scratch by Reza Bakhshi, including its
+custom dual-core architecture. Bundled third-party libraries and components
+retain their individual authorship, licenses, and notices.
 
 [Build and flash](#build-and-flash) · [Documentation](docs/README.md) · [Hardware](https://github.com/reza-bakhshi/RB-Pirate) · [Host toolkit](https://github.com/reza-bakhshi/RB-Pirate-Skill)
 
 ## Hardware compatibility
 
-This repository's build configuration supports **RP2350 Arm Secure on `rb-pirate` only**. Mainline Bus Pirate 5, 5XL, 6, and 7 boards require their corresponding upstream firmware. The output target retains the name `bus_pirate6` for this custom board.
+This repository's build configuration supports **RP2350 Arm Secure on `rb-pirate` only**. Mainline Bus Pirate 5, 5XL, 6, and 7 boards require their corresponding upstream firmware. The build target is named `bus_pirate6` and produces firmware specifically for this custom board.
 
 The base board supplies buffered I/O, configurable target power, voltage/current monitoring, USB connectivity, and microSD storage. RF, NFC, and infrared functions require the appropriate external modules and wiring.
 
@@ -22,7 +30,7 @@ The base board supplies buffered I/O, configurable target power, voltage/current
 | External NFC reader | PN532 integration | [RFID guide](docs/guides/rfid_guide.md) |
 | Display traffic | Passive display-bus capture and reconstruction | [LCDTAP guide](docs/guides/lcdtap_guide.md) |
 
-Available commands depend on the build, selected mode, and attached hardware. Check the device's help and `features` output rather than assuming every upstream command is supported.
+Available commands depend on the build, selected mode, and attached hardware. Check the device's help and `features` output to confirm the commands supported by this firmware.
 
 ## Build and flash
 
@@ -67,7 +75,7 @@ The custom implementation separates USB, terminal, storage, and monitoring work 
 - [Dual-core guide](docs/architecture/dual_core_guide.md)
 - [Memory model](docs/architecture/memory-model.md)
 - [Cooperative kernel](docs/architecture/kernel-guide.md)
-- [Differences from upstream](docs/architecture/upstream-divergence.md)
+- [Architecture comparison notes](docs/architecture/upstream-divergence.md)
 
 ## Validation
 
@@ -84,7 +92,7 @@ See the [testing guide](docs/testing/testing_guide.md) and [HIL rig guide](docs/
 - [RB-Pirate](https://github.com/reza-bakhshi/RB-Pirate): base-board KiCad files.
 - [RGB & Button HAT](https://github.com/reza-bakhshi/RB-Pirate-RGB-HAT): optional visual feedback and physical input.
 - [RB-Pirate Skill](https://github.com/reza-bakhshi/RB-Pirate-Skill): host serial automation and agent references.
-- [Dangerous Prototypes Bus Pirate](https://github.com/DangerousPrototypes/BusPirate5-firmware): upstream firmware foundation.
+- [Dangerous Prototypes Bus Pirate](https://docs.buspirate.com/docs/hardware/bp6rev2/introduction/): inspiration for the RB-Pirate hardware design.
 
 ## License
 

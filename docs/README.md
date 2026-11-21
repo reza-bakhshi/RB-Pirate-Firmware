@@ -1,6 +1,6 @@
 # RB-Pirate Documentation
 
-Documentation for this custom RP2350B firmware, derived from the Dangerous Prototypes Bus Pirate codebase. Start with the [project README](../readme.md) for the supported board, build command, and flashing procedure.
+Documentation for the original RP2350B firmware written from scratch by Reza Bakhshi with a custom architecture. The RB-Pirate hardware was inspired by Dangerous Prototypes' Bus Pirate hardware. Start with the [project README](../readme.md) for the supported board, build command, and flashing procedure.
 
 ## Build and first use
 
